@@ -49,6 +49,7 @@ Out of scope for now:
 - [docs/risks-benefits.md](C:\Users\stall\Documents\Playground\docs\risks-benefits.md)
 - [docs/bringup-plan.md](C:\Users\stall\Documents\Playground\docs\bringup-plan.md)
 - [docs/version-strategy.md](C:\Users\stall\Documents\Playground\docs\version-strategy.md)
+- [docs/forensics-360-test-1be7a16.md](C:\Users\stall\Documents\Playground\docs\forensics-360-test-1be7a16.md)
 - [docs/sources.md](C:\Users\stall\Documents\Playground\docs\sources.md)
 
 ## Working assumptions

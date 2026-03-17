@@ -4,6 +4,7 @@ out/
 dist/
 bin/
 obj/
+_forensics/
 
 # CMake / Ninja
 CMakeFiles/
