@@ -48,6 +48,7 @@ Out of scope for now:
 - [docs/stack-reconstruction.md](C:\Users\stall\Documents\Playground\docs\stack-reconstruction.md)
 - [docs/risks-benefits.md](C:\Users\stall\Documents\Playground\docs\risks-benefits.md)
 - [docs/bringup-plan.md](C:\Users\stall\Documents\Playground\docs\bringup-plan.md)
+- [docs/rebuild-action-plan.md](C:\Users\stall\Documents\Playground\docs\rebuild-action-plan.md)
 - [docs/version-strategy.md](C:\Users\stall\Documents\Playground\docs\version-strategy.md)
 - [docs/forensics-360-test-1be7a16.md](C:\Users\stall\Documents\Playground\docs\forensics-360-test-1be7a16.md)
 - [docs/device-recovery-playbook.md](C:\Users\stall\Documents\Playground\docs\device-recovery-playbook.md)
