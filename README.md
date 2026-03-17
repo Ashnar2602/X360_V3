@@ -48,6 +48,7 @@ Out of scope for now:
 - [docs/stack-reconstruction.md](C:\Users\stall\Documents\Playground\docs\stack-reconstruction.md)
 - [docs/risks-benefits.md](C:\Users\stall\Documents\Playground\docs\risks-benefits.md)
 - [docs/bringup-plan.md](C:\Users\stall\Documents\Playground\docs\bringup-plan.md)
+- [docs/version-strategy.md](C:\Users\stall\Documents\Playground\docs\version-strategy.md)
 - [docs/sources.md](C:\Users\stall\Documents\Playground\docs\sources.md)
 
 ## Working assumptions
@@ -64,3 +65,9 @@ This repo should let us answer, in a reproducible way:
 - which parts can be mocked or stubbed during bring-up
 - which tests prove that the pipeline is alive before game boot
 - which signs indicate we are rebuilding the same architecture that previously worked
+
+## Current versioning direction
+
+- FEX baseline: `2601`
+- FEX modernization track: evaluate `2603` only after baseline recovery is stable
+- Mesa baseline strategy: support two packaged Vulkan/Mesa stacks and select one at runtime
