@@ -1,0 +1,36 @@
+# Build outputs
+build/
+out/
+dist/
+bin/
+obj/
+
+# CMake / Ninja
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+.ninja_deps
+.ninja_log
+compile_commands.json
+
+# Logs and traces
+*.log
+*.trace
+*.dmp
+*.tmp
+
+# Android / Gradle
+.gradle/
+local.properties
+
+# Editors
+.idea/
+.vscode/
+*.user
+*.suo
+
+# Archives
+*.zip
+*.7z
+*.tar
+*.gz
