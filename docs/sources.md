@@ -26,6 +26,7 @@ These are the primary public sources used to anchor the reconstruction notes.
 ## Vulkan reference
 
 - Headless surface extension: [VK_EXT_headless_surface](https://registry.khronos.org/vulkan/specs/latest/man/html/VK_EXT_headless_surface.html)
+- Vulkan loader driver interface: [Loader Driver Interface](https://vulkan.lunarg.com/doc/view/1.4.328.1/windows/LoaderDriverInterface.html)
 
 ## Context status
 
