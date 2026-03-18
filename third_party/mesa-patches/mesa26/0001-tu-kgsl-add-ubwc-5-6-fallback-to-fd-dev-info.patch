@@ -1,0 +1,91 @@
+diff --git a/src/freedreno/vulkan/msm_kgsl.h b/src/freedreno/vulkan/msm_kgsl.h
+--- a/src/freedreno/vulkan/msm_kgsl.h
++++ b/src/freedreno/vulkan/msm_kgsl.h
+@@ -247,6 +247,8 @@ enum kgsl_user_mem_type {
+ #define KGSL_UBWC_2_0	2
+ #define KGSL_UBWC_3_0	3
+ #define KGSL_UBWC_4_0	4
++#define KGSL_UBWC_5_0	5
++#define KGSL_UBWC_6_0	6
+ 
+ /*
+  * Reset status values for context
+diff --git a/src/freedreno/vulkan/tu_knl_kgsl.cc b/src/freedreno/vulkan/tu_knl_kgsl.cc
+--- a/src/freedreno/vulkan/tu_knl_kgsl.cc
++++ b/src/freedreno/vulkan/tu_knl_kgsl.cc
+@@ -1752,6 +1752,42 @@ tu_kgsl_get_raytracing(int fd)
+    return value;
+ }
+ 
++static VkResult
++tu_kgsl_init_ubwc_config(struct tu_instance *instance,
++                         struct tu_physical_device *device,
++                         uint32_t ubwc_version)
++{
++   switch (ubwc_version) {
++   case KGSL_UBWC_1_0:
++      device->ubwc_config.bank_swizzle_levels = 0x7;
++      device->ubwc_config.macrotile_mode = FDL_MACROTILE_4_CHANNEL;
++      return VK_SUCCESS;
++   case KGSL_UBWC_2_0:
++      device->ubwc_config.bank_swizzle_levels = 0x6;
++      device->ubwc_config.macrotile_mode = FDL_MACROTILE_4_CHANNEL;
++      return VK_SUCCESS;
++   case KGSL_UBWC_3_0:
++      device->ubwc_config.bank_swizzle_levels = 0x6;
++      device->ubwc_config.macrotile_mode = FDL_MACROTILE_4_CHANNEL;
++      return VK_SUCCESS;
++   case KGSL_UBWC_4_0:
++      device->ubwc_config.bank_swizzle_levels = 0x6;
++      device->ubwc_config.macrotile_mode = FDL_MACROTILE_8_CHANNEL;
++      return VK_SUCCESS;
++   case KGSL_UBWC_5_0:
++   case KGSL_UBWC_6_0:
++      /* Gen8 parts expose newer UBWC tags through KGSL. Reuse the a8xx
++       * fd_dev_info defaults rather than carrying a second hardcoded table.
++       */
++      device->ubwc_config.bank_swizzle_levels = ~0u;
++      device->ubwc_config.macrotile_mode = FDL_MACROTILE_INVALID;
++      return VK_SUCCESS;
++   default:
++      return vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
++                       "unknown UBWC version 0x%x", ubwc_version);
++   }
++}
++
+ VkResult
+ tu_knl_kgsl_load(struct tu_instance *instance, int fd)
+ {
+@@ -1874,28 +1910,11 @@ tu_knl_kgsl_load(struct tu_instance *instance, int fd)
+    /* The other config values can be partially inferred from the UBWC version,
+     * but kgsl also hardcodes overrides for specific a6xx versions that we
+     * have to follow here. Yuck.
++    * For newer gen8 UBWC tags, fall back to fd_dev_info defaults.
+     */
+-   switch (ubwc_version) {
+-   case KGSL_UBWC_1_0:
+-      device->ubwc_config.bank_swizzle_levels = 0x7;
+-      device->ubwc_config.macrotile_mode = FDL_MACROTILE_4_CHANNEL;
+-      break;
+-   case KGSL_UBWC_2_0:
+-      device->ubwc_config.bank_swizzle_levels = 0x6;
+-      device->ubwc_config.macrotile_mode = FDL_MACROTILE_4_CHANNEL;
+-      break;
+-   case KGSL_UBWC_3_0:
+-      device->ubwc_config.bank_swizzle_levels = 0x6;
+-      device->ubwc_config.macrotile_mode = FDL_MACROTILE_4_CHANNEL;
+-      break;
+-   case KGSL_UBWC_4_0:
+-      device->ubwc_config.bank_swizzle_levels = 0x6;
+-      device->ubwc_config.macrotile_mode = FDL_MACROTILE_8_CHANNEL;
+-      break;
+-   default:
+-      return vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
+-                       "unknown UBWC version 0x%x", ubwc_version);
+-   }
++   result = tu_kgsl_init_ubwc_config(instance, device, ubwc_version);
++   if (result != VK_SUCCESS)
++      goto fail;
+ 
+    /* kgsl unfortunately hardcodes some settings for certain GPUs and doesn't
+     * expose them in the uAPI so hardcode them here to match.

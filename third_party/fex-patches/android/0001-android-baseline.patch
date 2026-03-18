@@ -1,0 +1,643 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2adcf3c80..cfac4ee12 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -53,7 +53,7 @@ if (NOT HOSTLIBS_DATA_DIRECTORY)
+ endif()
+ 
+ ## Platform Checks ##
+-# Only 64-bit Linux and Windows are supported
++# Only 64-bit Linux, Android, and Windows are supported
+ 
+ # NB: SIZEOF_VOID_P is in bytes, not bits
+ # On 32-bit systems this is set to 4
+@@ -61,9 +61,9 @@ if (NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+   message(FATAL_ERROR "Unsupported pointer size ${CMAKE_SIZEOF_VOID_P}."
+     " FEX only supports 64-bit (8-byte pointer) systems."
+     " If you believe this is in error, file an issue.")
+-elseif (NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
++elseif (NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID))
+   message(FATAL_ERROR "Unsupported system type ${CMAKE_SYSTEM_NAME}."
+-    " FEX only supports Linux and Windows."
++    " FEX only supports Linux, Android, and Windows."
+     " If you believe this is in error, file an issue.")
+ endif()
+ 
+@@ -234,7 +234,11 @@ check_cxx_source_compiles(
+   return program_invocation_name == nullptr;
+   }"
+   HAS_PROGRAM_INVOCATION_NAME)
+-add_compile_definitions("HAS_PROGRAM_INVOCATION_NAME=${HAS_PROGRAM_INVOCATION_NAME}")
++if (HAS_PROGRAM_INVOCATION_NAME)
++  add_compile_definitions(HAS_PROGRAM_INVOCATION_NAME=1)
++else()
++  add_compile_definitions(HAS_PROGRAM_INVOCATION_NAME=0)
++endif()
+ 
+ if (ENABLE_VIXL_SIMULATOR)
+   # We can run the simulator on both x86-64 or AArch64 hosts
+@@ -259,7 +263,11 @@ if (ENABLE_COMPILE_TIME_TRACE)
+   link_libraries(-ftime-trace)
+ endif()
+ 
+-set(PTHREAD_LIB pthread)
++if (ANDROID)
++  set(PTHREAD_LIB "")
++else()
++  set(PTHREAD_LIB pthread)
++endif()
+ 
+ if (USE_LINKER)
+   message(STATUS "Overriding linker to: ${USE_LINKER}")
+@@ -378,6 +386,7 @@ if (ENABLE_FEXCORE_PROFILER AND FEXCORE_PROFILER_BACKEND STREQUAL "TRACY")
+ endif()
+ 
+ find_package(Python 3.9 REQUIRED COMPONENTS Interpreter)
++set(FEX_PYTHON_EXECUTABLE "${Python_EXECUTABLE}")
+ 
+ set(BUILD_SHARED_LIBS OFF)
+ 
+@@ -474,12 +483,12 @@ if (TUNE_CPU STREQUAL "native")
+         list(APPEND FEX_TUNE_COMPILE_FLAGS "-mcpu=native")
+       endif()
+     else()
+-      execute_process(COMMAND python3 "${PROJECT_SOURCE_DIR}/Scripts/aarch64_fit_native.py" "/proc/cpuinfo" "${CMAKE_CXX_COMPILER_VERSION}"
++      execute_process(COMMAND "${FEX_PYTHON_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/Scripts/aarch64_fit_native.py" "/proc/cpuinfo" "${CMAKE_CXX_COMPILER_VERSION}"
+         OUTPUT_VARIABLE AARCH64_CPU)
+ 
+       string(STRIP ${AARCH64_CPU} AARCH64_CPU)
+ 
+-      execute_process(COMMAND python3 "${PROJECT_SOURCE_DIR}/Scripts/NeedDisabledSVE.py"
++      execute_process(COMMAND "${FEX_PYTHON_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/Scripts/NeedDisabledSVE.py"
+         RESULT_VARIABLE NEEDS_SVE_DISABLED)
+       if (NEEDS_SVE_DISABLED)
+         message(STATUS "Platform has bugged SVE. Disabling")
+diff --git a/FEXCore/Source/CMakeLists.txt b/FEXCore/Source/CMakeLists.txt
+index 8150844b3..8221f0770 100644
+--- a/FEXCore/Source/CMakeLists.txt
++++ b/FEXCore/Source/CMakeLists.txt
+@@ -139,7 +139,7 @@ add_custom_command(
+   OUTPUT "${OUTPUT_NAME}" "${OUTPUT_DISPATCHER_NAME}"
+   DEPENDS "${INPUT_NAME}"
+   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/json_ir_generator.py"
+-  COMMAND "python3" "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/json_ir_generator.py"
++  COMMAND "${FEX_PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/json_ir_generator.py"
+     "${INPUT_NAME}" "${OUTPUT_NAME}" "${OUTPUT_DISPATCHER_NAME}")
+ 
+ set_source_files_properties(${OUTPUT_NAME} PROPERTIES GENERATED TRUE)
+@@ -151,7 +151,7 @@ add_custom_command(
+   OUTPUT "${OUTPUT_IR_DOC}"
+   DEPENDS "${INPUT_NAME}"
+   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/json_ir_doc_generator.py"
+-  COMMAND "python3" "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/json_ir_doc_generator.py"
++  COMMAND "${FEX_PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/json_ir_doc_generator.py"
+     "${INPUT_NAME}" "${OUTPUT_IR_DOC}")
+ 
+ set_source_files_properties(${OUTPUT_IR_NAME} PROPERTIES GENERATED TRUE)
+@@ -177,13 +177,13 @@ add_custom_command(
+   OUTPUT "${OUTPUT_MAN_NAME}"
+   DEPENDS "${INPUT_CONFIG_NAME}"
+   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/config_generator.py"
+-  COMMAND "python3" "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/config_generator.py" "${INPUT_CONFIG_NAME}" "${OUTPUT_CONFIG_NAME}" "${OUTPUT_MAN_NAME}"
++  COMMAND "${FEX_PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/config_generator.py" "${INPUT_CONFIG_NAME}" "${OUTPUT_CONFIG_NAME}" "${OUTPUT_MAN_NAME}"
+   "${OUTPUT_CONFIG_OPTION_NAME}")
+ 
+ add_custom_command(
+   OUTPUT "${OUTPUT_MAN_NAME_COMPRESS}"
+   DEPENDS "${OUTPUT_MAN_NAME}"
+-  COMMAND "gzip" "-kf9n" "${OUTPUT_MAN_NAME}")
++  COMMAND "${CMAKE_COMMAND}" -E copy "${OUTPUT_MAN_NAME}" "${OUTPUT_MAN_NAME_COMPRESS}")
+ 
+ set_source_files_properties(${OUTPUT_CONFIG_NAME} PROPERTIES
+   GENERATED TRUE)
+@@ -270,11 +270,7 @@ function(AddLibrary Name Type)
+   add_library(${Name} ${Type} $<TARGET_OBJECTS:${PROJECT_NAME}_object>)
+   set_target_properties(${Name} PROPERTIES OUTPUT_NAME FEXCore)
+ 
+-  # During generation of the import library (dll.a), MinGW needs some extra symbols from libraries
+-  # such as fmt, which are propagated by FEXCore_Base. Wonderful.
+-  if (MINGW)
+-    target_link_libraries(${Name} PRIVATE FEXCore_Base)
+-  endif()
++  target_link_libraries(${Name} PRIVATE FEXCore_Base)
+   AddDefaultOptionsToTarget(${Name})
+ endfunction()
+ 
+diff --git a/FEXCore/include/atomic b/FEXCore/include/atomic
+new file mode 100644
+index 000000000..b1dd4ee6e
+--- /dev/null
++++ b/FEXCore/include/atomic
+@@ -0,0 +1,87 @@
++#pragma once
++
++#include_next <atomic>
++
++#if !defined(__cpp_lib_atomic_ref)
++namespace std {
++template<class T>
++class atomic_ref {
++public:
++  using value_type = T;
++  static constexpr bool is_always_lock_free = atomic<T>::is_always_lock_free;
++  static constexpr size_t required_alignment = alignof(T);
++
++  explicit atomic_ref(T& value) noexcept
++    : ref_(reinterpret_cast<atomic<T>*>(&value)) {}
++
++  atomic_ref(const atomic_ref&) noexcept = default;
++
++  void store(T desired, memory_order order = memory_order_seq_cst) const noexcept {
++    ref_->store(desired, order);
++  }
++
++  T load(memory_order order = memory_order_seq_cst) const noexcept {
++    return ref_->load(order);
++  }
++
++  operator T() const noexcept {
++    return load();
++  }
++
++  T fetch_add(T operand, memory_order order = memory_order_seq_cst) const noexcept {
++    return ref_->fetch_add(operand, order);
++  }
++
++  T fetch_sub(T operand, memory_order order = memory_order_seq_cst) const noexcept {
++    return ref_->fetch_sub(operand, order);
++  }
++
++  bool compare_exchange_strong(T& expected, T desired, memory_order order = memory_order_seq_cst) const noexcept {
++    return ref_->compare_exchange_strong(expected, desired, order);
++  }
++
++  bool compare_exchange_strong(
++    T& expected,
++    T desired,
++    memory_order success,
++    memory_order failure) const noexcept {
++    return ref_->compare_exchange_strong(expected, desired, success, failure);
++  }
++
++  bool compare_exchange_weak(T& expected, T desired, memory_order order = memory_order_seq_cst) const noexcept {
++    return ref_->compare_exchange_weak(expected, desired, order);
++  }
++
++  bool compare_exchange_weak(
++    T& expected,
++    T desired,
++    memory_order success,
++    memory_order failure) const noexcept {
++    return ref_->compare_exchange_weak(expected, desired, success, failure);
++  }
++
++  T exchange(T desired, memory_order order = memory_order_seq_cst) const noexcept {
++    return ref_->exchange(desired, order);
++  }
++
++  T fetch_or(T operand, memory_order order = memory_order_seq_cst) const noexcept {
++    return ref_->fetch_or(operand, order);
++  }
++
++  T fetch_and(T operand, memory_order order = memory_order_seq_cst) const noexcept {
++    return ref_->fetch_and(operand, order);
++  }
++
++  T operator++() const noexcept {
++    return fetch_add(1) + 1;
++  }
++
++  T operator++(int) const noexcept {
++    return fetch_add(1);
++  }
++
++private:
++  atomic<T>* ref_;
++};
++}
++#endif
+diff --git a/Source/Common/CMakeLists.txt b/Source/Common/CMakeLists.txt
+index 259dec4b3..e78edc78a 100644
+--- a/Source/Common/CMakeLists.txt
++++ b/Source/Common/CMakeLists.txt
+@@ -11,10 +11,17 @@ set(SRCS
+   VolatileMetadata.cpp)
+ 
+ if (NOT MINGW)
+-  list(APPEND SRCS
+-    FEXServerClient.cpp
+-    FileFormatCheck.cpp
+-    Linux/SBRKAllocations.cpp)
++  if (ANDROID)
++    list(APPEND SRCS
++      FEXServerClient_Android.cpp
++      FileFormatCheck.cpp
++      Linux/SBRKAllocations.cpp)
++  else()
++    list(APPEND SRCS
++      FEXServerClient.cpp
++      FileFormatCheck.cpp
++      Linux/SBRKAllocations.cpp)
++  endif()
+ endif()
+ 
+ add_library(${NAME} STATIC ${SRCS})
+diff --git a/Source/Common/FEXServerClient_Android.cpp b/Source/Common/FEXServerClient_Android.cpp
+new file mode 100644
+index 000000000..962dbbc23
+--- /dev/null
++++ b/Source/Common/FEXServerClient_Android.cpp
+@@ -0,0 +1,130 @@
++// SPDX-License-Identifier: MIT
++#include "Common/Config.h"
++#include "Common/FEXServerClient.h"
++
++#include <FEXCore/Utils/LogManager.h>
++#include <FEXCore/fextl/fmt.h>
++#include <FEXCore/fextl/string.h>
++
++#include <array>
++#include <cstdlib>
++#include <cstring>
++#include <ctime>
++#include <unistd.h>
++
++namespace FEXServerClient {
++namespace {
++int ServerFD = -1;
++}
++
++Logging::PacketHeader Logging::FillHeader(PacketTypes Type) {
++  Logging::PacketHeader msg {};
++  msg.PacketType = Type;
++  msg.PID = ::getpid();
++  msg.TID = ::getpid();
++  clock_gettime(CLOCK_MONOTONIC, &msg.Timestamp);
++  return msg;
++}
++
++fextl::string GetServerLockFolder() {
++  return GetTempFolder() + "/fex-server";
++}
++
++fextl::string GetServerLockFile() {
++  return GetServerLockFolder() + "/Server.lock";
++}
++
++fextl::string GetServerRootFSLockFile() {
++  return GetServerLockFolder() + "/RootFS.lock";
++}
++
++fextl::string GetTempFolder() {
++  const std::array<const char*, 5> vars = {
++    "TMPDIR", "TMP", "TEMP", "TEMPDIR", "HOME",
++  };
++
++  for (auto* var : vars) {
++    const char* path = getenv(var);
++    if (path && path[0] != '\0') {
++      return path;
++    }
++  }
++
++  return fextl::string {"/tmp"};
++}
++
++fextl::string GetServerMountFolder() {
++  return GetTempFolder();
++}
++
++fextl::string GetServerSocketName() {
++  return "android-no-server";
++}
++
++fextl::string GetServerSocketPath() {
++  return GetTempFolder() + "/android-no-server.sock";
++}
++
++int GetServerFD() {
++  return ServerFD;
++}
++
++bool SetupClient(std::string_view) {
++  ServerFD = -1;
++  return true;
++}
++
++int StartServer(std::string_view, int) {
++  return -1;
++}
++
++int ConnectToAndStartServer(std::string_view) {
++  return -1;
++}
++
++int ConnectToServer(ConnectionOption) {
++  return -1;
++}
++
++void RequestServerKill(int) {}
++
++int RequestLogFD(int) {
++  return -1;
++}
++
++fextl::string RequestRootFSPath(int) {
++  FEX_CONFIG_OPT(RootFSPath, ROOTFS);
++  if (!RootFSPath().empty()) {
++    return RootFSPath();
++  }
++
++  const char* env = getenv("FEX_ROOTFS");
++  if (env && env[0] != '\0') {
++    return env;
++  }
++
++  return {};
++}
++
++int RequestPIDFD(int) {
++  return -1;
++}
++
++void PopulateCodeCache(int, int, bool) {}
++
++int RequestCodeMapFD(int, int, bool) {
++  return -1;
++}
++
++void MsgHandler(int, LogMan::DebugLevels, const char* Message) {
++  if (Message && Message[0] != '\0') {
++    write(STDERR_FILENO, Message, std::strlen(Message));
++  }
++}
++
++void AssertHandler(int, const char* Message) {
++  if (Message && Message[0] != '\0') {
++    write(STDERR_FILENO, Message, std::strlen(Message));
++  }
++}
++} // namespace FEXServerClient
+diff --git a/Source/Tools/CMakeLists.txt b/Source/Tools/CMakeLists.txt
+index 4e4320f80..550ab49de 100644
+--- a/Source/Tools/CMakeLists.txt
++++ b/Source/Tools/CMakeLists.txt
+@@ -1,6 +1,9 @@
+ add_subdirectory(CommonTools)
+ 
+-if (NOT MINGW)
++if (ANDROID)
++  add_subdirectory(LinuxEmulation/)
++  add_subdirectory(FEXInterpreter/)
++elseif (NOT MINGW)
+   if (BUILD_FEXCONFIG)
+     find_package(Qt6 COMPONENTS Qml Quick Widgets QUIET)
+     if (NOT Qt6_FOUND)
+diff --git a/Source/Tools/FEXInterpreter/CMakeLists.txt b/Source/Tools/FEXInterpreter/CMakeLists.txt
+index f3b23e961..da806ac35 100644
+--- a/Source/Tools/FEXInterpreter/CMakeLists.txt
++++ b/Source/Tools/FEXInterpreter/CMakeLists.txt
+@@ -19,6 +19,13 @@ set_target_properties(FEX PROPERTIES
+   CXX_VISIBILITY_PRESET hidden
+   VISIBILITY_INLINES_HIDDEN TRUE)
+ 
++if (ANDROID)
++  set_target_properties(FEX PROPERTIES
++    PREFIX ""
++    OUTPUT_NAME "libFEXLoader"
++    SUFFIX ".so")
++endif()
++
+ target_include_directories(FEX PRIVATE ${CMAKE_BINARY_DIR}/generated)
+ 
+ target_link_libraries(FEX PRIVATE ${LIBS})
+diff --git a/Source/Tools/FEXInterpreter/ELFCodeLoader.h b/Source/Tools/FEXInterpreter/ELFCodeLoader.h
+index 4deea3e94..961b8d287 100644
+--- a/Source/Tools/FEXInterpreter/ELFCodeLoader.h
++++ b/Source/Tools/FEXInterpreter/ELFCodeLoader.h
+@@ -66,8 +66,8 @@ class ELFCodeLoader final : public FEX::CodeLoader {
+       }
+ 
+       had_pt_load = true;
+-      min_map_address = std::min(min_map_address, PAGE_START(it.p_vaddr));
+-      max_map_address = std::max(max_map_address, it.p_vaddr + it.p_memsz);
++      min_map_address = std::min(min_map_address, static_cast<size_t>(PAGE_START(it.p_vaddr)));
++      max_map_address = std::max(max_map_address, static_cast<size_t>(it.p_vaddr + it.p_memsz));
+     }
+ 
+     if (!had_pt_load) {
+diff --git a/Source/Tools/FEXInterpreter/FEXInterpreter.cpp b/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
+index f5113c8c4..ba67338d3 100644
+--- a/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
++++ b/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
+@@ -14,7 +14,9 @@ $end_info$
+ #include "PortabilityInfo.h"
+ #include "ELFCodeLoader.h"
+ #include "VDSO_Emulation.h"
++#ifndef ANDROID
+ #include "LinuxSyscalls/GdbServer.h"
++#endif
+ #include "LinuxSyscalls/LinuxAllocator.h"
+ #include "LinuxSyscalls/Syscalls.h"
+ #include "LinuxSyscalls/Utils/Threads.h"
+@@ -548,11 +550,13 @@ int main(int argc, char** argv, char** const envp) {
+     CTX->SetCodeMapWriter(fextl::make_unique<FEXCore::CodeMapWriter>(*SyscallHandler));
+   }
+ 
++#ifndef ANDROID
+   FEX_CONFIG_OPT(GdbServer, GDBSERVER);
+   fextl::unique_ptr<FEX::GdbServer> DebugServer;
+   if (GdbServer) {
+     DebugServer = fextl::make_unique<FEX::GdbServer>(CTX.get(), SignalDelegation.get(), SyscallHandler.get());
+   }
++#endif
+ 
+   // Now that we have the syscall handler. Track some FDs that are FEX owned.
+   if (FEX::Logging::OutputFD > 2) {
+@@ -611,7 +615,9 @@ int main(int argc, char** argv, char** const envp) {
+ 
+   CTX->ExecuteThread(ParentThread->Thread);
+ 
++#ifndef ANDROID
+   DebugServer.reset();
++#endif
+   SyscallHandler->TM.Stop();
+ 
+   auto ProgramStatus = ParentThread->StatusCode;
+@@ -621,7 +627,9 @@ int main(int argc, char** argv, char** const envp) {
+   SignalDelegation->UninstallTLSState(ParentThread);
+   SyscallHandler->TM.DestroyThread(ParentThread);
+ 
++#ifndef ANDROID
+   DebugServer.reset();
++#endif
+   SyscallHandler.reset();
+   SignalDelegation.reset();
+ 
+diff --git a/Source/Tools/LinuxEmulation/CMakeLists.txt b/Source/Tools/LinuxEmulation/CMakeLists.txt
+index 715a8f132..eceaac3ec 100644
+--- a/Source/Tools/LinuxEmulation/CMakeLists.txt
++++ b/Source/Tools/LinuxEmulation/CMakeLists.txt
+@@ -1,12 +1,10 @@
+ # TODO: why is this add_compile_options instead of target?
+ add_compile_options(-fno-operator-names)
+ 
+-add_library(LinuxEmulation STATIC
++set(LINUX_EMULATION_SRCS
+   VDSO_Emulation.cpp
+   Thunks.cpp
+   ArchHelpers/MContext.cpp
+-  GdbServer/Info.cpp
+-  LinuxSyscalls/GdbServer.cpp
+   LinuxSyscalls/EmulatedFiles/EmulatedFiles.cpp
+   LinuxSyscalls/FaultSafeUserMemAccess.cpp
+   LinuxSyscalls/FileManagement.cpp
+@@ -62,6 +60,14 @@ add_library(LinuxEmulation STATIC
+   LinuxSyscalls/Syscalls/NotImplemented.cpp
+   LinuxSyscalls/Syscalls/Stubs.cpp)
+ 
++if (NOT ANDROID)
++  list(APPEND LINUX_EMULATION_SRCS
++    GdbServer/Info.cpp
++    LinuxSyscalls/GdbServer.cpp)
++endif()
++
++add_library(LinuxEmulation STATIC ${LINUX_EMULATION_SRCS})
++
+ target_compile_options(LinuxEmulation PRIVATE
+   -Wall
+   -Werror=cast-qual
+@@ -140,19 +146,19 @@ foreach(Index RANGE 0 ${ARG_COUNT} 2)
+ 
+   add_test(NAME ${TEST_NAME}_x86_64
+     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+-    COMMAND "python3" "${CMAKE_SOURCE_DIR}/Scripts/StructPackVerifier.py" "-c1" "x86_64" "${REL_HEADER}" ${ARGS})
++    COMMAND "${FEX_PYTHON_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/Scripts/StructPackVerifier.py" "-c1" "x86_64" "${REL_HEADER}" ${ARGS})
+ 
+   add_test(NAME ${TEST_NAME}_aarch64
+     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+-    COMMAND "python3" "${CMAKE_SOURCE_DIR}/Scripts/StructPackVerifier.py" "-c1" "aarch64" "${REL_HEADER}" ${ARGS})
++    COMMAND "${FEX_PYTHON_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/Scripts/StructPackVerifier.py" "-c1" "aarch64" "${REL_HEADER}" ${ARGS})
+ 
+   add_test(NAME ${TEST_NAME_ARCH}_x86_64
+     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+-    COMMAND "python3" "${CMAKE_SOURCE_DIR}/Scripts/StructPackVerifier.py" "-c1" "x86_64" "-c2" "${TEST_TYPE}" "${REL_HEADER}" ${ARGS})
++    COMMAND "${FEX_PYTHON_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/Scripts/StructPackVerifier.py" "-c1" "x86_64" "-c2" "${TEST_TYPE}" "${REL_HEADER}" ${ARGS})
+ 
+   add_test(NAME ${TEST_NAME_ARCH}_aarch64
+     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+-    COMMAND "python3" "${CMAKE_SOURCE_DIR}/Scripts/StructPackVerifier.py" "-c1" "aarch64" "-c2" "${TEST_TYPE}" "${REL_HEADER}" ${ARGS})
++    COMMAND "${FEX_PYTHON_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/Scripts/StructPackVerifier.py" "-c1" "aarch64" "-c2" "${TEST_TYPE}" "${REL_HEADER}" ${ARGS})
+ 
+   set_property(TEST ${TEST_NAME}_x86_64 APPEND PROPERTY DEPENDS "${HEADER}")
+   set_property(TEST ${TEST_NAME}_aarch64 APPEND PROPERTY DEPENDS "${HEADER}")
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+index 916d0af66..c822ff9ac 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+@@ -42,6 +42,14 @@ $end_info$
+ #endif
+ 
+ namespace FEX::HLE {
++namespace {
++uint64_t GetSigMaskWord0(const sigset_t& set) {
++  uint64_t mask {};
++  std::memcpy(&mask, &set, sizeof(mask));
++  return mask;
++}
++}
++
+ #ifdef ARCHITECTURE_x86_64
+ __attribute__((naked)) static void sigrestore() {
+   __asm volatile("syscall;" ::"a"(0xF) : "memory");
+@@ -652,7 +660,7 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
+     ThreadObject->SignalInfo.DeferredSignalFrames.emplace_back(ThreadStateObject::DeferredSignalState {
+       .Info = SigInfo,
+       .Signal = Signal,
+-      .SigMask = _context->uc_sigmask.__val[0],
++      .SigMask = GetSigMaskWord0(_context->uc_sigmask),
+     });
+ 
+     uint64_t NewMask = GetNewSigMask(Signal);
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp
+index 4ed079ba0..0163b8321 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp
+@@ -29,6 +29,9 @@ void ThreadManager::StatAlloc::Initialize() {
+     return;
+   }
+ 
++#ifdef ANDROID
++  return;
++#else
+   int fd = shm_open(fextl::fmt::format("fex-{}-stats", ::getpid()).c_str(), O_CREAT | O_TRUNC | O_RDWR, USER_PERMS);
+   if (fd == -1) {
+     return;
+@@ -68,9 +71,13 @@ void ThreadManager::StatAlloc::Initialize() {
+ 
+ err:
+   close(fd);
++#endif
+ }
+ 
+ uint32_t ThreadManager::StatAlloc::FrontendAllocateSlots(uint32_t NewSize) {
++#ifdef ANDROID
++  return CurrentSize;
++#else
+   if (CurrentSize == MAX_STATS_SIZE) {
+     // Allocator has reached maximum slots. We can't allocate anymore.
+     // New threads won't get stats.
+@@ -101,6 +108,7 @@ uint32_t ThreadManager::StatAlloc::FrontendAllocateSlots(uint32_t NewSize) {
+ err:
+   close(fd);
+   return NewSize;
++#endif
+ }
+ 
+ FEXCore::SHMStats::ThreadStats* ThreadManager::StatAlloc::AllocateSlot(uint32_t TID) {
+@@ -118,7 +126,11 @@ void ThreadManager::StatAlloc::DeallocateSlot(FEXCore::SHMStats::ThreadStats* Al
+ }
+ 
+ void ThreadManager::StatAlloc::CleanupForExit() {
++#ifdef ANDROID
++  return;
++#else
+   shm_unlink(fextl::fmt::format("fex-{}-stats", ::getpid()).c_str());
++#endif
+ }
+ 
+ void ThreadManager::StatAlloc::LockBeforeFork() {
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h
+index 2b51c6130..705ca9174 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h
+@@ -28,9 +28,9 @@ $end_info$
+ #include <cstdint>
+ #include <mutex>
+ #include <optional>
++#include <signal.h>
+ #include <sys/stat.h>
+ 
+-#include <bits/types/sigset_t.h>
+ #include <linux/seccomp.h>
+ 
+ namespace FEX::HLE {
+diff --git a/Source/Tools/LinuxEmulation/VDSO_Emulation.cpp b/Source/Tools/LinuxEmulation/VDSO_Emulation.cpp
+index 9182fc884..5c3c255d8 100644
+--- a/Source/Tools/LinuxEmulation/VDSO_Emulation.cpp
++++ b/Source/Tools/LinuxEmulation/VDSO_Emulation.cpp
+@@ -26,6 +26,14 @@
+ #include <sys/time.h>
+ #include <unistd.h>
+ 
++#ifndef ELF32_ST_VISIBILITY
++#define ELF32_ST_VISIBILITY(o) ((o) & 0x3)
++#endif
++
++#ifndef ELF64_ST_VISIBILITY
++#define ELF64_ST_VISIBILITY(o) ((o) & 0x3)
++#endif
++
+ namespace FEX::VDSO {
+ VDSOEntrypoints VDSOPointers {};
+ namespace VDSOHandlers {

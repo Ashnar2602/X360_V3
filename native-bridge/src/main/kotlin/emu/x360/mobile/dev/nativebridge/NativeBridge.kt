@@ -1,0 +1,15 @@
+package emu.x360.mobile.dev.nativebridge
+
+object NativeBridge {
+    init {
+        System.loadLibrary("nativebridge")
+    }
+
+    external fun healthCheck(): String
+
+    external fun bootstrapStub(runtimeRoot: String): String
+
+    external fun describeSurfaceHookPlaceholder(rootfsTmpPath: String): String
+
+    external fun inspectKgslProperties(): String
+}

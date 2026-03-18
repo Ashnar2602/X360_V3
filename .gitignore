@@ -22,7 +22,13 @@ compile_commands.json
 
 # Android / Gradle
 .gradle/
+.cxx/
 local.properties
+_local/
+.tmpwrapper/
+_tmp_fex_probe/
+mesa25_prefs.xml
+window_dump_*.xml
 
 # Editors
 .idea/
