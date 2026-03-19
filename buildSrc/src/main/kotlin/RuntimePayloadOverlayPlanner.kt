@@ -36,6 +36,7 @@ class RuntimePayloadOverlayPlanner {
         generatedFexRuntimeDir: Path?,
         generatedVulkanRuntimeDir: Path?,
         generatedTurnipRuntimeDir: Path?,
+        generatedXeniaRuntimeDir: Path?,
         localRuntimeDropDir: Path?,
         outputDir: Path,
         includeLocalDrop: Boolean,
@@ -60,6 +61,9 @@ class RuntimePayloadOverlayPlanner {
             if (generatedTurnipRuntimeDir != null && generatedTurnipRuntimeDir.exists()) {
                 add(RuntimePayloadLayer(generatedTurnipRuntimeDir, RuntimePhaseTag.TURNIP_BASELINE))
             }
+            if (generatedXeniaRuntimeDir != null && generatedXeniaRuntimeDir.exists()) {
+                add(RuntimePayloadLayer(generatedXeniaRuntimeDir, RuntimePhaseTag.XENIA_BRINGUP))
+            }
             if (includeLocalDrop && localRuntimeDropDir != null && localRuntimeDropDir.exists()) {
                 add(RuntimePayloadLayer(localRuntimeDropDir, RuntimePhaseTag.BOOTSTRAP, preserveExistingPhase = true))
             }
@@ -73,21 +77,17 @@ class RuntimePayloadOverlayPlanner {
             }
         }
 
+        val profile = when {
+            generatedXeniaRuntimeDir != null && generatedXeniaRuntimeDir.exists() -> "xenia-bringup"
+            generatedTurnipRuntimeDir != null && generatedTurnipRuntimeDir.exists() -> "turnip-baseline"
+            generatedVulkanRuntimeDir != null && generatedVulkanRuntimeDir.exists() -> "vulkan-baseline"
+            generatedFexRuntimeDir != null && generatedFexRuntimeDir.exists() -> "fex-baseline"
+            else -> "bootstrap-mock"
+        }
+
         val manifest = RuntimePayloadManifest(
             version = 1,
-            profile = if (generatedVulkanRuntimeDir != null && generatedVulkanRuntimeDir.exists()) {
-                if (generatedTurnipRuntimeDir != null && generatedTurnipRuntimeDir.exists()) {
-                    "turnip-baseline"
-                } else {
-                    "vulkan-baseline"
-                }
-            } else if (generatedTurnipRuntimeDir != null && generatedTurnipRuntimeDir.exists()) {
-                "turnip-baseline"
-            } else if (generatedFexRuntimeDir != null && generatedFexRuntimeDir.exists()) {
-                "fex-baseline"
-            } else {
-                "bootstrap-mock"
-            },
+            profile = profile,
             generatedBy = "buildSrc:RuntimePayloadOverlayPlanner",
             assets = filesRoot
                 .walk()
@@ -203,4 +203,5 @@ private enum class RuntimePhaseTag(
     FEX_BASELINE("fex-baseline"),
     VULKAN_BASELINE("vulkan-baseline"),
     TURNIP_BASELINE("turnip-baseline"),
+    XENIA_BRINGUP("xenia-bringup"),
 }

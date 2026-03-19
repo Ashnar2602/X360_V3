@@ -5,6 +5,7 @@ import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.attribute.DosFileAttributeView
 import java.security.MessageDigest
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
@@ -19,11 +20,13 @@ internal fun deleteRecursively(path: Path) {
         path,
         object : SimpleFileVisitor<Path>() {
             override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                clearReadOnly(file)
                 Files.deleteIfExists(file)
                 return FileVisitResult.CONTINUE
             }
 
             override fun postVisitDirectory(dir: Path, exc: java.io.IOException?): FileVisitResult {
+                clearReadOnly(dir)
                 Files.deleteIfExists(dir)
                 return FileVisitResult.CONTINUE
             }
@@ -92,4 +95,11 @@ internal fun sha256(path: Path): String {
 internal fun writeUtf8(path: Path, content: String) {
     path.parent?.createDirectories()
     Files.writeString(path, content, StandardCharsets.UTF_8)
+}
+
+private fun clearReadOnly(path: Path) {
+    runCatching {
+        Files.getFileAttributeView(path, DosFileAttributeView::class.java)?.setReadOnly(false)
+    }
+    path.toFile().setWritable(true, false)
 }

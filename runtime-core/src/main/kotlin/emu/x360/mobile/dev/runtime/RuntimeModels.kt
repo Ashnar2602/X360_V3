@@ -94,6 +94,14 @@ data class RuntimeDirectories(
     val rootfsOpt: Path = rootfs.resolve("opt")
     val rootfsOptX360V3: Path = rootfsOpt.resolve("x360-v3")
     val rootfsMesaRoot: Path = rootfsOptX360V3.resolve("mesa")
+    val rootfsXeniaRoot: Path = rootfsOptX360V3.resolve("xenia")
+    val rootfsXeniaBin: Path = rootfsXeniaRoot.resolve("bin")
+    val rootfsXeniaContent: Path = rootfsXeniaRoot.resolve("content")
+    val xeniaBinary: Path = rootfsXeniaBin.resolve("xenia-canary")
+    val xeniaConfigFile: Path = rootfsXeniaBin.resolve("xenia-canary.config.toml")
+    val xeniaPortableMarker: Path = rootfsXeniaBin.resolve("portable.txt")
+    val xeniaLogsRoot: Path = rootfsXeniaBin.resolve("logs")
+    val xeniaCacheRoot: Path = rootfsXeniaBin.resolve("cache")
     val mesa25Root: Path = rootfsMesaRoot.resolve("mesa25")
     val mesa25LibRoot: Path = mesa25Root.resolve("lib")
     val mesa25IcdRoot: Path = mesa25Root.resolve("icd")
@@ -118,6 +126,8 @@ data class RuntimeDirectories(
     val guestRuntimeLockManifest: Path = payloadConfig.resolve("ubuntu-24.04-amd64-lvp.lock.json")
     val mesaRuntimeMetadata: Path = payloadConfig.resolve("mesa-runtime-metadata.json")
     val mesaRuntimeLockManifest: Path = payloadConfig.resolve("mesa-turnip-source-lock.json")
+    val xeniaSourceLock: Path = payloadConfig.resolve("xenia-source-lock.json")
+    val xeniaBuildMetadata: Path = payloadConfig.resolve("xenia-build-metadata.json")
     val glibcLoader: Path = rootfsLib64.resolve("ld-linux-x86-64.so.2")
     val guestVulkanLoader: Path = rootfsUsrLibX86_64LinuxGnu.resolve("libvulkan.so.1")
     val guestLavapipeDriver: Path = rootfsUsrLibX86_64LinuxGnu.resolve("libvulkan_lvp.so")
@@ -150,6 +160,11 @@ data class RuntimeDirectories(
         rootfsUsrShareX360V3,
         rootfsOpt,
         rootfsOptX360V3,
+        rootfsXeniaRoot,
+        rootfsXeniaBin,
+        rootfsXeniaContent,
+        xeniaLogsRoot,
+        xeniaCacheRoot,
         rootfsMesaRoot,
         mesa25Root,
         mesa25LibRoot,
@@ -198,6 +213,24 @@ enum class ExitClassification {
     SUCCESS,
     VALIDATION_ERROR,
     PROCESS_ERROR,
+}
+
+@Serializable
+enum class XeniaStartupStage {
+    @SerialName("process-started")
+    PROCESS_STARTED,
+
+    @SerialName("config-ready")
+    CONFIG_READY,
+
+    @SerialName("vulkan-backend-selected")
+    VULKAN_BACKEND_SELECTED,
+
+    @SerialName("vulkan-initialized")
+    VULKAN_INITIALIZED,
+
+    @SerialName("failed")
+    FAILED,
 }
 
 fun RuntimeManifest.filteredForPhase(targetPhase: RuntimePhase): RuntimeManifest {

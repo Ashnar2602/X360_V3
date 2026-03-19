@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
                         state = state,
                         onRefresh = viewModel::refresh,
                         onInstall = viewModel::installRuntime,
+                        onLaunchXeniaBringup = viewModel::launchXeniaBringup,
                         onLaunchTurnipProbe = viewModel::launchTurnipProbe,
                         onLaunchLavapipeProbe = viewModel::launchLavapipeProbe,
                         onLaunchDynamicHello = viewModel::launchDynamicHello,
@@ -68,6 +69,7 @@ private fun MainScreen(
     state: MainUiState,
     onRefresh: () -> Unit,
     onInstall: () -> Unit,
+    onLaunchXeniaBringup: () -> Unit,
     onLaunchTurnipProbe: () -> Unit,
     onLaunchLavapipeProbe: () -> Unit,
     onLaunchDynamicHello: () -> Unit,
@@ -92,13 +94,13 @@ private fun MainScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(
-                text = "X360 Rebuild Phase 3B",
+                text = "X360 Rebuild Phase 4A",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
                 color = Color(0xFFF5F7FA),
             )
             Text(
-                text = "Dual-Mesa Turnip baseline: Ubuntu guest runtime plus selectable mesa25/mesa26 hardware probe under FEX, with lavapipe kept as regression fallback.",
+                text = "Pinned-source Xenia bring-up: validated FEX + dual-Mesa Turnip baseline with Xenia staged into the guest runtime and driven up to Vulkan initialization.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = Color(0xFFD6DEE7),
             )
@@ -107,21 +109,24 @@ private fun MainScreen(
                 Button(onClick = onInstall, enabled = !state.isBusy) {
                     Text("Install / Extract")
                 }
-                Button(onClick = onLaunchTurnipProbe, enabled = !state.isBusy) {
-                    Text("Launch Turnip Probe")
+                Button(onClick = onLaunchXeniaBringup, enabled = !state.isBusy) {
+                    Text("Launch Xenia Bring-up")
                 }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = onLaunchTurnipProbe, enabled = !state.isBusy) {
+                    Text("Launch Turnip Probe")
+                }
                 OutlinedButton(onClick = onLaunchLavapipeProbe, enabled = !state.isBusy) {
                     Text("Launch Lavapipe Probe")
                 }
-                OutlinedButton(onClick = onLaunchDynamicHello, enabled = !state.isBusy) {
-                    Text("Launch Dynamic Hello")
-                }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = onLaunchDynamicHello, enabled = !state.isBusy) {
+                    Text("Launch Dynamic Hello")
+                }
                 OutlinedButton(onClick = onLaunchFexHello, enabled = !state.isBusy) {
                     Text("Launch FEX Hello")
                 }
@@ -168,6 +173,24 @@ private fun MainScreen(
                     "Runtime root: ${state.runtimeRoot}",
                     "Last action: ${state.lastAction}",
                 ),
+            )
+
+            StatusCard(
+                title = "Xenia Diagnostics",
+                lines = listOf(
+                    "Commit: ${state.xeniaCommit}",
+                    "Patch set: ${state.xeniaPatchSet}",
+                    "Build profile: ${state.xeniaBuildProfile}",
+                    "Binary installed: ${state.xeniaBinaryInstalled}",
+                    "Config present: ${state.xeniaConfigPresent}",
+                    "Portable marker present: ${state.xeniaPortableMarkerPresent}",
+                    "Content mode: ${state.xeniaContentMode}",
+                    "Last startup stage: ${state.xeniaStartupStage}",
+                    "Startup detail: ${state.xeniaStartupDetail}",
+                    "Last log path: ${state.xeniaLogPath}",
+                    "Executable: ${state.xeniaExecutablePath}",
+                ),
+                accent = Color(0xFFFF8B7B),
             )
 
             StatusCard(

@@ -20,6 +20,11 @@ import emu.x360.mobile.dev.runtime.RuntimeInstaller
 import emu.x360.mobile.dev.runtime.RuntimeManifest
 import emu.x360.mobile.dev.runtime.RuntimeManifestCodec
 import emu.x360.mobile.dev.runtime.RuntimePhase
+import emu.x360.mobile.dev.runtime.XeniaBuildMetadata
+import emu.x360.mobile.dev.runtime.XeniaBuildMetadataCodec
+import emu.x360.mobile.dev.runtime.XeniaSourceLock
+import emu.x360.mobile.dev.runtime.XeniaSourceLockCodec
+import emu.x360.mobile.dev.runtime.XeniaStartupStage
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.InputStream
@@ -41,7 +46,7 @@ class AppRuntimeManager(
     private val context: Context,
     private val baseDir: Path = context.filesDir.toPath(),
 ) {
-    private val targetPhase = RuntimePhase.TURNIP_BASELINE
+    private val targetPhase = RuntimePhase.XENIA_BRINGUP
     private val directories = RuntimeDirectories(baseDir)
     private val installer = RuntimeInstaller(directories)
     private val manifestLoader = RuntimeAssetManifestLoader(context)
@@ -50,9 +55,12 @@ class AppRuntimeManager(
     private val metadataLoader = FexMetadataLoader(assetSource, directories)
     private val guestRuntimeMetadataLoader = GuestRuntimeMetadataLoader(assetSource, directories)
     private val mesaRuntimeMetadataLoader = MesaRuntimeMetadataLoader(assetSource, directories)
+    private val xeniaSourceLockLoader = XeniaSourceLockLoader(assetSource, directories)
+    private val xeniaBuildMetadataLoader = XeniaBuildMetadataLoader(assetSource, directories)
     private val mesaOverrideStore = MesaRuntimeOverrideStore(context)
     private val stubGuestLauncher = StubGuestLauncher(logStore)
     private val fexGuestLauncher = FexGuestLauncher(context, directories, logStore)
+    private val xeniaGuestLauncher = XeniaGuestLauncher(context, directories, logStore)
 
     fun snapshot(
         lastAction: String = "Ready",
@@ -63,6 +71,8 @@ class AppRuntimeManager(
         val metadata = metadataLoader.load()
         val guestRuntimeMetadata = guestRuntimeMetadataLoader.load()
         val mesaRuntimeMetadata = mesaRuntimeMetadataLoader.load()
+        val xeniaSourceLock = xeniaSourceLockLoader.load()
+        val xeniaBuildMetadata = xeniaBuildMetadataLoader.load()
         val latestLogs = logStore.latestLogs()
         val hostArtifacts = HostArtifactsStatus.from(context)
         val deviceProperties = DeviceProperties.read()
@@ -89,6 +99,12 @@ class AppRuntimeManager(
                 resolvedMesaRuntime = resolvedMesaRuntime,
                 overrideMode = overrideMode,
                 kgslAccess = kgslAccess,
+            ),
+            xeniaDiagnostics = buildXeniaDiagnostics(
+                sourceLock = xeniaSourceLock,
+                buildMetadata = xeniaBuildMetadata,
+                installState = installState,
+                latestLogs = latestLogs,
             ),
             lastAction = lastAction,
         )
@@ -151,7 +167,7 @@ class AppRuntimeManager(
         val manifest = manifestLoader.load()
         val installState = installer.inspect(manifest, targetPhase)
         if (installState !is RuntimeInstallState.Installed) {
-            return snapshot(lastAction = "Launch blocked: Turnip baseline runtime is not installed")
+            return snapshot(lastAction = "Launch blocked: Xenia bring-up runtime is not installed")
         }
 
         val resolvedMesaRuntime = DeviceMesaRuntimePolicy.resolve(
@@ -194,7 +210,7 @@ class AppRuntimeManager(
         val manifest = manifestLoader.load()
         val installState = installer.inspect(manifest, targetPhase)
         if (installState !is RuntimeInstallState.Installed) {
-            return snapshot(lastAction = "Launch blocked: Turnip baseline runtime is not installed")
+            return snapshot(lastAction = "Launch blocked: Xenia bring-up runtime is not installed")
         }
 
         val request = createRequest(
@@ -211,6 +227,31 @@ class AppRuntimeManager(
 
     fun launchVulkanProbe(): RuntimeSnapshot {
         return launchTurnipProbe()
+    }
+
+    fun launchXeniaBringup(): RuntimeSnapshot {
+        val manifest = manifestLoader.load()
+        val installState = installer.inspect(manifest, targetPhase)
+        if (installState !is RuntimeInstallState.Installed) {
+            return snapshot(lastAction = "Launch blocked: Xenia bring-up runtime is not installed")
+        }
+
+        val resolvedMesaRuntime = DeviceMesaRuntimePolicy.resolve(
+            overrideMode = mesaOverrideStore.read(),
+            properties = DeviceProperties.read(),
+        )
+        val request = createRequest(
+            sessionId = SessionIdFactory.create(),
+            executable = directories.xeniaBinary.toString(),
+            args = buildXeniaBringupArgs(directories),
+            environment = buildVulkanGuestEnvironment(resolvedMesaRuntime.branch, directories),
+            workingDirectory = directories.rootfsXeniaBin.toString(),
+        )
+        val result = xeniaGuestLauncher.launch(request)
+        val stage = XeniaStartupStageParser.analyze(logStore.latestLogs().guestLog).stage
+        return snapshot(
+            lastAction = "Xenia bring-up ${result.exitClassification.name.lowercase()} at ${stage.name.lowercase()} for session ${result.sessionId}",
+        )
     }
 
     fun setMesaOverride(
@@ -246,6 +287,7 @@ class AppRuntimeManager(
         executable: String,
         args: List<String>,
         environment: Map<String, String>,
+        workingDirectory: String = directories.rootfs.toString(),
     ): GuestLaunchRequest {
         val logs = logStore.createSession(sessionId)
         return GuestLaunchRequest(
@@ -253,7 +295,7 @@ class AppRuntimeManager(
             executable = executable,
             args = args,
             environment = environment,
-            workingDirectory = directories.rootfs.toString(),
+            workingDirectory = workingDirectory,
             logDestinations = GuestLogDestinations(
                 appLog = logs.appLog,
                 fexLog = logs.fexLog,
@@ -328,6 +370,31 @@ class AppRuntimeManager(
             lastLaunchResult = latestLogs.resultSummary ?: "none",
         )
     }
+
+    private fun buildXeniaDiagnostics(
+        sourceLock: XeniaSourceLock?,
+        buildMetadata: XeniaBuildMetadata?,
+        installState: RuntimeInstallState,
+        latestLogs: LatestSessionLogs,
+    ): XeniaDiagnostics {
+        val startupAnalysis = XeniaStartupStageParser.analyze(latestLogs.guestLog)
+        val lastLogPath = latestLogs.sessionId
+            ?.let { sessionId -> directories.guestLogs.resolve("session-$sessionId.guest.log").toString() }
+            ?: "none"
+        return XeniaDiagnostics(
+            commit = buildMetadata?.sourceRevision ?: sourceLock?.sourceRevision ?: "unavailable",
+            patchSetId = buildMetadata?.patchSetId ?: sourceLock?.patchSetId ?: "unavailable",
+            buildProfile = buildMetadata?.buildProfile ?: sourceLock?.buildProfile ?: "unavailable",
+            binaryInstalled = installState is RuntimeInstallState.Installed && directories.xeniaBinary.exists(),
+            configPresent = directories.xeniaConfigFile.exists(),
+            portableMarkerPresent = directories.xeniaPortableMarker.exists(),
+            contentMode = detectXeniaContentMode(directories),
+            lastStartupStage = startupAnalysis.stage.name.lowercase(),
+            lastStartupDetail = startupAnalysis.detail,
+            lastLogPath = lastLogPath,
+            executablePath = directories.xeniaBinary.toString(),
+        )
+    }
 }
 
 data class RuntimeSnapshot(
@@ -339,6 +406,7 @@ data class RuntimeSnapshot(
     val latestLogs: LatestSessionLogs,
     val outputPreview: OutputPreviewState,
     val fexDiagnostics: FexDiagnostics,
+    val xeniaDiagnostics: XeniaDiagnostics,
     val lastAction: String,
 )
 
@@ -383,6 +451,20 @@ data class FexDiagnostics(
     val lastProbeDriverMode: String,
     val lastLaunchBackend: String,
     val lastLaunchResult: String,
+)
+
+data class XeniaDiagnostics(
+    val commit: String,
+    val patchSetId: String,
+    val buildProfile: String,
+    val binaryInstalled: Boolean,
+    val configPresent: Boolean,
+    val portableMarkerPresent: Boolean,
+    val contentMode: String,
+    val lastStartupStage: String,
+    val lastStartupDetail: String,
+    val lastLogPath: String,
+    val executablePath: String,
 )
 
 data class OutputPreviewState(
@@ -492,6 +574,46 @@ private class MesaRuntimeMetadataLoader(
 
     companion object {
         const val MESA_RUNTIME_METADATA_ASSET_PATH = "runtime-payload/files/payload/config/mesa-runtime-metadata.json"
+    }
+}
+
+private class XeniaSourceLockLoader(
+    private val assetSource: RuntimeAssetSource,
+    private val directories: RuntimeDirectories,
+) {
+    fun load(): XeniaSourceLock? {
+        if (directories.xeniaSourceLock.exists()) {
+            return runCatching { XeniaSourceLockCodec.decode(directories.xeniaSourceLock.readText()) }.getOrNull()
+        }
+
+        val assetStream = assetSource.open(XENIA_SOURCE_LOCK_ASSET_PATH) ?: return null
+        return assetStream.bufferedReader().use { reader ->
+            runCatching { XeniaSourceLockCodec.decode(reader.readText()) }.getOrNull()
+        }
+    }
+
+    companion object {
+        const val XENIA_SOURCE_LOCK_ASSET_PATH = "runtime-payload/files/payload/config/xenia-source-lock.json"
+    }
+}
+
+private class XeniaBuildMetadataLoader(
+    private val assetSource: RuntimeAssetSource,
+    private val directories: RuntimeDirectories,
+) {
+    fun load(): XeniaBuildMetadata? {
+        if (directories.xeniaBuildMetadata.exists()) {
+            return runCatching { XeniaBuildMetadataCodec.decode(directories.xeniaBuildMetadata.readText()) }.getOrNull()
+        }
+
+        val assetStream = assetSource.open(XENIA_BUILD_METADATA_ASSET_PATH) ?: return null
+        return assetStream.bufferedReader().use { reader ->
+            runCatching { XeniaBuildMetadataCodec.decode(reader.readText()) }.getOrNull()
+        }
+    }
+
+    companion object {
+        const val XENIA_BUILD_METADATA_ASSET_PATH = "runtime-payload/files/payload/config/xenia-build-metadata.json"
     }
 }
 
@@ -675,6 +797,142 @@ private class FexGuestLauncher(
             sentinelArg.startsWith("/") -> directories.rootfs.resolve(sentinelArg.removePrefix("/")).normalize()
             else -> directories.rootfs.resolve(sentinelArg).normalize()
         }
+    }
+}
+
+private class XeniaGuestLauncher(
+    private val context: Context,
+    private val directories: RuntimeDirectories,
+    private val logStore: SessionLogStore,
+) : GuestLauncher {
+    override val backendName: String = "fex-xenia"
+
+    override fun launch(request: GuestLaunchRequest): GuestLaunchResult {
+        val startedAt = Instant.now()
+        val nativeLibraryDir = File(context.applicationInfo.nativeLibraryDir).toPath()
+        val loaderPath = nativeLibraryDir.resolve("libFEXLoader.so")
+        val corePath = nativeLibraryDir.resolve("libFEXCore.so")
+        val guestExecutable = File(request.executable).toPath()
+
+        val missingArtifact = when {
+            !loaderPath.exists() -> loaderPath
+            !corePath.exists() -> corePath
+            !guestExecutable.exists() -> guestExecutable
+            !directories.xeniaConfigFile.exists() -> directories.xeniaConfigFile
+            else -> null
+        }
+        if (missingArtifact != null) {
+            val result = GuestLaunchResult(
+                sessionId = request.sessionId,
+                exitClassification = ExitClassification.VALIDATION_ERROR,
+                exitCode = null,
+                startedAt = startedAt,
+                finishedAt = Instant.now(),
+                detail = "Missing required artifact: $missingArtifact",
+            )
+            logStore.writeLaunchFailure(request, backendName, result)
+            return result
+        }
+
+        directories.fexEmuHome.createDirectories()
+        directories.fexConfigFile.parent?.createDirectories()
+        directories.rootfsTmp.createDirectories()
+        directories.fexConfigFile.toFile().writeText(buildFexConfig(directories))
+
+        logStore.writeFexPreamble(
+            request = request,
+            backend = backendName,
+            loaderPath = loaderPath,
+            configPath = directories.fexConfigFile,
+            homePath = directories.baseDir,
+        )
+        logStore.writeGuestPreamble(request, backendName)
+
+        val launchSpec = buildFexLaunchSpec(loaderPath, directories, request)
+        val processBuilder = ProcessBuilder(launchSpec.command)
+            .directory(File(request.workingDirectory))
+            .redirectInput(ProcessBuilder.Redirect.PIPE)
+
+        val environment = processBuilder.environment()
+        launchSpec.environment.forEach { (key, value) -> environment[key] = value }
+
+        val process = try {
+            processBuilder.start()
+        } catch (throwable: Throwable) {
+            val result = GuestLaunchResult(
+                sessionId = request.sessionId,
+                exitClassification = ExitClassification.PROCESS_ERROR,
+                exitCode = null,
+                startedAt = startedAt,
+                finishedAt = Instant.now(),
+                detail = "Failed to start Xenia through FEX: ${throwable.message}",
+            )
+            logStore.writeLaunchFailure(request, backendName, result)
+            return result
+        }
+
+        val stdoutPump = logStore.pump(process.inputStream, request.logDestinations.guestLog)
+        val stderrPump = logStore.pump(process.errorStream, request.logDestinations.fexLog)
+
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+        var startupAnalysis = XeniaStartupAnalysis(
+            stage = XeniaStartupStage.PROCESS_STARTED,
+            detail = "xenia process started",
+        )
+        var timedOut = false
+        while (process.isAlive && System.nanoTime() < deadline) {
+            val logContent = runCatching { request.logDestinations.guestLog.readText() }.getOrDefault("")
+            startupAnalysis = XeniaStartupStageParser.analyze(logContent)
+            if (startupAnalysis.stage == XeniaStartupStage.VULKAN_INITIALIZED ||
+                startupAnalysis.stage == XeniaStartupStage.FAILED
+            ) {
+                process.destroy()
+                process.waitFor(3, TimeUnit.SECONDS)
+                if (process.isAlive) {
+                    process.destroyForcibly()
+                }
+                break
+            }
+            Thread.sleep(250)
+        }
+
+        if (process.isAlive) {
+            timedOut = true
+            process.destroy()
+            process.waitFor(3, TimeUnit.SECONDS)
+            if (process.isAlive) {
+                process.destroyForcibly()
+            }
+        }
+
+        stdoutPump.join()
+        stderrPump.join()
+
+        val finalGuestLog = runCatching { request.logDestinations.guestLog.readText() }.getOrDefault("")
+        startupAnalysis = XeniaStartupStageParser.analyze(finalGuestLog)
+        val exitCode = runCatching { process.exitValue() }.getOrNull()
+        val classification = when {
+            startupAnalysis.stage == XeniaStartupStage.VULKAN_INITIALIZED -> ExitClassification.SUCCESS
+            startupAnalysis.stage == XeniaStartupStage.FAILED -> ExitClassification.PROCESS_ERROR
+            timedOut -> ExitClassification.PROCESS_ERROR
+            else -> ExitClassification.VALIDATION_ERROR
+        }
+        val detail = when {
+            startupAnalysis.stage == XeniaStartupStage.VULKAN_INITIALIZED ->
+                "Xenia reached ${startupAnalysis.stage.name.lowercase()} via ${startupAnalysis.detail}"
+            timedOut -> "Xenia bring-up timed out at ${startupAnalysis.stage.name.lowercase()}"
+            else -> "Xenia stopped at ${startupAnalysis.stage.name.lowercase()}: ${startupAnalysis.detail}"
+        }
+        val result = GuestLaunchResult(
+            sessionId = request.sessionId,
+            exitClassification = classification,
+            exitCode = exitCode,
+            startedAt = startedAt,
+            finishedAt = Instant.now(),
+            detail = detail,
+        )
+        logStore.writeLaunchResult(request, backendName, result)
+        return result
     }
 }
 

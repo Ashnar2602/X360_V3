@@ -37,6 +37,10 @@ class MainViewModel(
         runAction { manager.launchTurnipProbe() }
     }
 
+    fun launchXeniaBringup() {
+        runAction { manager.launchXeniaBringup() }
+    }
+
     fun launchLavapipeProbe() {
         runAction { manager.launchLavapipeProbe() }
     }
@@ -109,6 +113,17 @@ data class MainUiState(
     val selectionReason: String = "",
     val lastProbeDeviceName: String = "",
     val lastProbeDriverMode: String = "",
+    val xeniaCommit: String = "",
+    val xeniaPatchSet: String = "",
+    val xeniaBuildProfile: String = "",
+    val xeniaBinaryInstalled: String = "",
+    val xeniaConfigPresent: String = "",
+    val xeniaPortableMarkerPresent: String = "",
+    val xeniaContentMode: String = "",
+    val xeniaStartupStage: String = "",
+    val xeniaStartupDetail: String = "",
+    val xeniaLogPath: String = "",
+    val xeniaExecutablePath: String = "",
     val lastLaunchBackend: String = "",
     val lastLaunchResult: String = "",
     val appLog: String = "",
@@ -164,6 +179,17 @@ data class MainUiState(
                 selectionReason = snapshot.fexDiagnostics.selectionReason,
                 lastProbeDeviceName = snapshot.fexDiagnostics.lastProbeDeviceName,
                 lastProbeDriverMode = snapshot.fexDiagnostics.lastProbeDriverMode,
+                xeniaCommit = snapshot.xeniaDiagnostics.commit,
+                xeniaPatchSet = snapshot.xeniaDiagnostics.patchSetId,
+                xeniaBuildProfile = snapshot.xeniaDiagnostics.buildProfile,
+                xeniaBinaryInstalled = snapshot.xeniaDiagnostics.binaryInstalled.toString(),
+                xeniaConfigPresent = snapshot.xeniaDiagnostics.configPresent.toString(),
+                xeniaPortableMarkerPresent = snapshot.xeniaDiagnostics.portableMarkerPresent.toString(),
+                xeniaContentMode = snapshot.xeniaDiagnostics.contentMode,
+                xeniaStartupStage = snapshot.xeniaDiagnostics.lastStartupStage,
+                xeniaStartupDetail = snapshot.xeniaDiagnostics.lastStartupDetail,
+                xeniaLogPath = snapshot.xeniaDiagnostics.lastLogPath,
+                xeniaExecutablePath = snapshot.xeniaDiagnostics.executablePath,
                 lastLaunchBackend = snapshot.fexDiagnostics.lastLaunchBackend,
                 lastLaunchResult = snapshot.fexDiagnostics.lastLaunchResult,
                 appLog = snapshot.latestLogs.appLog,

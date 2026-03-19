@@ -7,6 +7,7 @@ val fexCmakeVersion = "3.22.1"
 val fexAndroidApi = 33
 val guestRuntimeLockManifestPath = "fixtures/guest-runtime/ubuntu-24.04-amd64-lvp.lock.json"
 val mesaRuntimeLockManifestPath = "fixtures/mesa-runtime/mesa-turnip-source-lock.json"
+val xeniaSourceLockManifestPath = "fixtures/xenia-runtime/xenia-source-lock.json"
 val androidSdkDirValue = providers.environmentVariable("ANDROID_HOME")
     .orElse(providers.environmentVariable("ANDROID_SDK_ROOT"))
     .orNull
@@ -144,15 +145,23 @@ androidComponents.onVariants(androidComponents.selector().all()) { variant ->
         outputDir.set(layout.buildDirectory.dir("generated/turnipMesaAssets/${variant.name}"))
     }
 
+    val generateXeniaBringupAssetsTask = tasks.register<GenerateXeniaBringupAssetsTask>("generate${variantName}XeniaBringupAssets") {
+        xeniaSourceLockManifest.set(rootProject.layout.projectDirectory.file(xeniaSourceLockManifestPath))
+        patchesDir.set(rootProject.layout.projectDirectory.dir("third_party/xenia-patches"))
+        outputDir.set(layout.buildDirectory.dir("generated/xeniaBringupAssets/${variant.name}"))
+    }
+
     val taskName = "stage${variant.name.replaceFirstChar(Char::uppercaseChar)}RuntimePayload"
     val taskProvider = tasks.register<StageRuntimePayloadTask>(taskName) {
         dependsOn(generateFexGuestAssetsTask)
         dependsOn(generateVulkanGuestAssetsTask)
         dependsOn(generateTurnipMesaAssetsTask)
+        dependsOn(generateXeniaBringupAssetsTask)
         mockRuntimeDir.set(layout.projectDirectory.dir("src/main/mock-runtime"))
         generatedFexRuntimeDir.set(generateFexGuestAssetsTask.flatMap { it.outputDir })
         generatedVulkanRuntimeDir.set(generateVulkanGuestAssetsTask.flatMap { it.outputDir })
         generatedTurnipRuntimeDir.set(generateTurnipMesaAssetsTask.flatMap { it.outputDir })
+        generatedXeniaRuntimeDir.set(generateXeniaBringupAssetsTask.flatMap { it.outputDir })
         val localDrop = rootProject.layout.projectDirectory.dir("_local/runtime-drop")
         if (localDrop.asFile.exists()) {
             localRuntimeDropDir.set(localDrop)

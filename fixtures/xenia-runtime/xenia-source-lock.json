@@ -1,0 +1,7 @@
+{
+  "sourceUrl": "https://github.com/xenia-canary/xenia-canary.git",
+  "sourceRef": "canary_experimental",
+  "sourceRevision": "c50b036178108f87cb0acaf3691a7c3caf07820f",
+  "buildProfile": "linux-x64-release",
+  "patchSetId": "none"
+}

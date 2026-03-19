@@ -25,6 +25,10 @@ abstract class StageRuntimePayloadTask : DefaultTask() {
 
     @get:Optional
     @get:InputDirectory
+    abstract val generatedXeniaRuntimeDir: DirectoryProperty
+
+    @get:Optional
+    @get:InputDirectory
     abstract val localRuntimeDropDir: DirectoryProperty
 
     @get:Input
@@ -40,6 +44,7 @@ abstract class StageRuntimePayloadTask : DefaultTask() {
             generatedFexRuntimeDir = generatedFexRuntimeDir.orNull?.asFile?.toPath(),
             generatedVulkanRuntimeDir = generatedVulkanRuntimeDir.orNull?.asFile?.toPath(),
             generatedTurnipRuntimeDir = generatedTurnipRuntimeDir.orNull?.asFile?.toPath(),
+            generatedXeniaRuntimeDir = generatedXeniaRuntimeDir.orNull?.asFile?.toPath(),
             localRuntimeDropDir = localRuntimeDropDir.orNull?.asFile?.toPath(),
             outputDir = outputDir.get().asFile.toPath(),
             includeLocalDrop = includeLocalDrop.getOrElse(false),
