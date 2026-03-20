@@ -1,9 +1,12 @@
 package emu.x360.mobile.dev
 
-import android.os.Bundle
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,7 +29,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -34,22 +40,42 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import android.os.Bundle
 import emu.x360.mobile.dev.runtime.MesaRuntimeBranch
 import emu.x360.mobile.dev.ui.theme.X360RebuildTheme
 
 class MainActivity : ComponentActivity() {
+    private var pendingImportUri by mutableStateOf<Uri?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingImportUri = extractImportUri(intent)
         enableEdgeToEdge()
         setContent {
             X360RebuildTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val viewModel: MainViewModel = viewModel()
                     val state by viewModel.uiState.collectAsStateWithLifecycle()
+                    val importFromIntent = pendingImportUri
+                    val isoPicker = rememberLauncherForActivityResult(OpenDocument()) { uri ->
+                        if (uri != null) {
+                            viewModel.importIso(uri)
+                        }
+                    }
+                    if (importFromIntent != null) {
+                        LaunchedEffect(importFromIntent) {
+                            viewModel.importIso(importFromIntent)
+                            pendingImportUri = null
+                        }
+                    }
                     MainScreen(
                         state = state,
                         onRefresh = viewModel::refresh,
+                        onRefreshLibrary = viewModel::refreshLibrary,
                         onInstall = viewModel::installRuntime,
+                        onImportIso = { isoPicker.launch(arrayOf("*/*")) },
+                        onLaunchImportedTitle = viewModel::launchImportedTitle,
+                        onRemoveLibraryEntry = viewModel::removeLibraryEntry,
                         onLaunchXeniaBringup = viewModel::launchXeniaBringup,
                         onLaunchTurnipProbe = viewModel::launchTurnipProbe,
                         onLaunchLavapipeProbe = viewModel::launchLavapipeProbe,
@@ -62,13 +88,33 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingImportUri = extractImportUri(intent)
+    }
+
+    private fun extractImportUri(intent: Intent?): Uri? {
+        val data = intent?.data ?: return null
+        val pathish = data.lastPathSegment.orEmpty().lowercase()
+        return if (pathish.contains(".iso")) {
+            data
+        } else {
+            null
+        }
+    }
 }
 
 @Composable
 private fun MainScreen(
     state: MainUiState,
     onRefresh: () -> Unit,
+    onRefreshLibrary: () -> Unit,
     onInstall: () -> Unit,
+    onImportIso: () -> Unit,
+    onLaunchImportedTitle: (String) -> Unit,
+    onRemoveLibraryEntry: (String) -> Unit,
     onLaunchXeniaBringup: () -> Unit,
     onLaunchTurnipProbe: () -> Unit,
     onLaunchLavapipeProbe: () -> Unit,
@@ -94,13 +140,13 @@ private fun MainScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text(
-                text = "X360 Rebuild Phase 4A",
+                text = "X360 Rebuild Phase 4C",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
                 color = Color(0xFFF5F7FA),
             )
             Text(
-                text = "Pinned-source Xenia bring-up: validated FEX + dual-Mesa Turnip baseline with Xenia staged into the guest runtime and driven up to Vulkan initialization.",
+                text = "Steady-state headless title run: keep Dante alive after module load, harden Xenia cache paths and retain the ISO-first no-copy launch path on the validated FEX + Turnip runtime.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = Color(0xFFD6DEE7),
             )
@@ -113,6 +159,15 @@ private fun MainScreen(
                     Text("Launch Xenia Bring-up")
                 }
             }
+
+            LibraryCard(
+                entries = state.libraryEntries,
+                isBusy = state.isBusy,
+                onImportIso = onImportIso,
+                onRefreshLibrary = onRefreshLibrary,
+                onLaunchEntry = onLaunchImportedTitle,
+                onRemoveEntry = onRemoveLibraryEntry,
+            )
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(onClick = onLaunchTurnipProbe, enabled = !state.isBusy) {
@@ -187,6 +242,10 @@ private fun MainScreen(
                     "Content mode: ${state.xeniaContentMode}",
                     "Last startup stage: ${state.xeniaStartupStage}",
                     "Startup detail: ${state.xeniaStartupDetail}",
+                    "Alive after module load (s): ${state.xeniaAliveAfterModuleLoadSeconds}",
+                    "Cache backend status: ${state.xeniaCacheBackendStatus}",
+                    "Cache root: ${state.xeniaCacheRootPath}",
+                    "Title metadata seen: ${state.xeniaTitleMetadataSeen}",
                     "Last log path: ${state.xeniaLogPath}",
                     "Executable: ${state.xeniaExecutablePath}",
                 ),
@@ -249,6 +308,108 @@ private fun MainScreen(
             LogCard(title = "FEX Log", content = state.fexLog)
             LogCard(title = "Guest Log", content = state.guestLog)
             Spacer(modifier = Modifier.height(12.dp))
+        }
+    }
+}
+
+@Composable
+private fun LibraryCard(
+    entries: List<GameLibraryEntryUi>,
+    isBusy: Boolean,
+    onImportIso: () -> Unit,
+    onRefreshLibrary: () -> Unit,
+    onLaunchEntry: (String) -> Unit,
+    onRemoveEntry: (String) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xCC14202C)),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "Library",
+                style = MaterialTheme.typography.titleLarge,
+                color = Color(0xFF5FD9FF),
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "ISO-first, no-copy references. Entries stay in the library even when the original file goes missing.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFE5EBF1),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = onImportIso, enabled = !isBusy) {
+                    Text("Import ISO")
+                }
+                OutlinedButton(onClick = onRefreshLibrary, enabled = !isBusy) {
+                    Text("Refresh Library")
+                }
+            }
+            if (entries.isEmpty()) {
+                Text(
+                    text = "No imported titles yet.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFC7D2DC),
+                )
+            } else {
+                entries.forEach { entry ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xB3122230)),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = entry.displayName,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = Color(0xFFF0F4F8),
+                                fontWeight = FontWeight.Medium,
+                            )
+                            Text(
+                                text = "Status: ${entry.status} | Source: ${entry.sourceKind} | ${entry.sizeSummary}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFC7D2DC),
+                            )
+                            Text(
+                                text = "Guest path: ${entry.guestPath}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFC7D2DC),
+                            )
+                            Text(
+                                text = "Title: ${entry.titleName}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFC7D2DC),
+                            )
+                            Text(
+                                text = "Last launch: ${entry.lastLaunchSummary}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFC7D2DC),
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Button(
+                                    onClick = { onLaunchEntry(entry.id) },
+                                    enabled = !isBusy,
+                                ) {
+                                    Text("Launch Headless")
+                                }
+                                OutlinedButton(
+                                    onClick = { onRemoveEntry(entry.id) },
+                                    enabled = !isBusy,
+                                ) {
+                                    Text("Remove")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

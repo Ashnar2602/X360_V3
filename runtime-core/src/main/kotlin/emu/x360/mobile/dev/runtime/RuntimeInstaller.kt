@@ -30,7 +30,18 @@ class RuntimeInstaller(
             return RuntimeInstallState.NotInstalled
         }
 
+        val installedPhaseManifest = manifest.filteredForPhase(marker.installedPhase)
         val filteredManifest = manifest.filteredForPhase(targetPhase)
+        val expectedFingerprint = manifestFingerprint(installedPhaseManifest)
+        if (marker.manifestFingerprint != expectedFingerprint) {
+            return RuntimeInstallState.Invalid(
+                RuntimeInstallIssue.ManifestFingerprintMismatch(
+                    expectedFingerprint = expectedFingerprint,
+                    installedFingerprint = marker.manifestFingerprint,
+                ),
+            )
+        }
+
         for (asset in filteredManifest.assets) {
             val installPath = resolveInstallPath(asset.installPath)
                 ?: return RuntimeInstallState.Invalid(RuntimeInstallIssue.InvalidInstallPath(asset.installPath))
@@ -65,12 +76,11 @@ class RuntimeInstaller(
         assetSource: RuntimeAssetSource,
         targetPhase: RuntimePhase,
     ): RuntimeInstallState {
+        directories.requiredDirectories().forEach { it.createDirectories() }
         val current = inspect(manifest, targetPhase)
         if (current is RuntimeInstallState.Installed) {
             return current
         }
-
-        directories.requiredDirectories().forEach { it.createDirectories() }
 
         val filteredManifest = manifest.filteredForPhase(targetPhase)
         for (asset in filteredManifest.assets) {

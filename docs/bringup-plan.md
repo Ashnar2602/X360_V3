@@ -62,33 +62,44 @@ Pass outcome:
 - headless bring-up through FEX is real
 - Xenia reaches `VULKAN_INITIALIZED` on both validated devices without requiring a game image
 
+### Phase 6: Title-aware boot and steady-state headless run
+
+Status: complete
+
+Pass outcome:
+
+- no-copy ISO launch path is real
+- imported titles resolve through the guest portal under `rootfs/mnt/library`
+- `Dante's Inferno` reaches `TITLE_MODULE_LOADING`
+- `Dante's Inferno` survives a fixed observation window without fatal aborts
+- final launch stage reaches `TITLE_RUNNING_HEADLESS` on both validated devices
+
 ## Next phases
-
-### Phase 6: Title-aware Xenia bring-up
-
-Test objective:
-
-- move from no-title Xenia startup to first deterministic target launch
-
-Pass criteria:
-
-- Xenia still reaches Vulkan init first
-- title handoff is real and logged
-- failures can be attributed to Xenia title boot rather than FEX or Turnip
 
 ### Phase 7: Rebuild presentation
 
 Test objective:
 
-- recover a visible rendering/output path on Android
+- recover a visible rendering/output path on Android while keeping the new headless steady-state title run green
 
 Pass criteria:
 
 - frame production survives beyond startup
 - output can be surfaced to Android without breaking the validated guest Vulkan path
-- no regression in the now-working Xenia startup milestone
+- no regression in the now-working Xenia startup and steady-state title milestones
 
-### Phase 8: Revalidate historical game cases
+### Phase 8: Rebuild interaction layers
+
+Test objective:
+
+- recover input and audio only after presentation is visible and diagnosable
+
+Pass criteria:
+
+- input and audio attach without destabilizing the running title
+- regressions can still be attributed cleanly by subsystem
+
+### Phase 9: Revalidate historical game cases
 
 Priority titles:
 
@@ -123,6 +134,7 @@ Pass criteria:
 - cold start
 - repeated relaunch
 - connected-test bring-up for probes and Xenia startup
+- opt-in Dante steady-state title smoke
 - recovery after app data clear
 
 ### Rendering and startup checks
@@ -130,12 +142,13 @@ Pass criteria:
 - Vulkan probe still passes
 - Turnip hardware path still passes
 - Xenia reaches `VULKAN_INITIALIZED`
+- `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
 - no regression in the separated `app`, `fex`, and `guest` log contract
 
 ## Reconstruction priorities from here
 
-1. Preserve the working Phase 4A baseline and its artifacts.
-2. Add title-aware Xenia bring-up without disturbing FEX or Turnip.
-3. Recover presentation only after title boot is diagnosable.
+1. Preserve the working Phase 4C baseline and its artifacts.
+2. Recover presentation without disturbing FEX, Turnip, or title steady-state.
+3. Add interaction layers only after visible output is diagnosable.
 4. Keep exact observations separate from guesses.
 5. Only then chase performance tuning.

@@ -3,11 +3,11 @@
 This repository now contains both:
 
 - the reconstruction notes for the historical stack
-- a working Android wrapper project that has completed Phase 4A bring-up
+- a working Android wrapper project that has completed Phase 4C headless title validation
 
 Current implemented bring-up:
 
-`Android app shell -> FEX host on Android arm64 -> Ubuntu 24.04 amd64 guest slice -> dynamic Linux x86_64 probes -> guest Vulkan loader -> dual Mesa guest trees -> lavapipe fallback + Turnip hardware probe -> pinned-source Xenia Canary -> verified Vulkan init`
+`Android app shell -> FEX host on Android arm64 -> Ubuntu 24.04 amd64 guest slice -> dynamic Linux x86_64 probes -> guest Vulkan loader -> dual Mesa guest trees -> lavapipe fallback + Turnip hardware probe -> pinned-source Xenia Canary -> no-copy ISO library -> verified title boot -> steady-state headless title run`
 
 Target end-state remains:
 
@@ -39,24 +39,28 @@ Implemented in this repo today:
   - `vulkan_probe_x86_64`
 - pinned-source Xenia build pipeline from `canary_experimental@c50b036178108f87cb0acaf3691a7c3caf07820f`
 - repo-owned Xenia patch queue under `third_party/xenia-patches/phase4`
+- persistent incremental Xenia dev workspace for local rebuilds, with clean full-build fallback
 - generated Xenia guest runtime slice with:
   - `rootfs/opt/x360-v3/xenia/bin/xenia-canary`
   - `xenia-canary.config.toml`
   - `portable.txt`
   - `logs/`
   - `cache/`
-- current Xenia patch set `phase4-headless-posix-v2`
+- no-copy ISO game library persisted under `filesDir/library`
+- verified title-aware launch path for imported ISOs through `rootfs/mnt/library/<entry-id>.iso`
+- current Xenia patch set `phase4-headless-steady-v1`
 - `RuntimePhase.XENIA_BRINGUP` as the current default target
 - passing unit tests plus connected Android tests on:
   - `AYN Odin2 Mini` / Android 13 / API 33
   - `Odin3` / Android 15 / API 35
 - verified hardware Turnip probe on both devices
 - verified `Xenia Canary` bring-up to Vulkan initialization on both devices without requiring a game image
+- verified `Dante's Inferno` title boot from ISO to `TITLE_RUNNING_HEADLESS` on both devices
 
 Still deferred to later milestones:
 
 - visible frame presentation
-- title boot and gameplay validation
+- input, audio, and gameplay validation
 - framebuffer bridge recovery (`xenia_fb`, `ANativeWindow`, `xcb/android_surface`)
 - thunk optimization beyond the minimum runtime already proven
 
@@ -93,7 +97,7 @@ Why NDK `27` and not the old historical pin:
   - Odin3 fix patch set: `ubwc5-a830-v1`
 - Active Xenia bring-up pin:
   - `canary_experimental@c50b036178108f87cb0acaf3691a7c3caf07820f`
-  - patch set: `phase4-headless-posix-v2`
+  - patch set: `phase4-headless-steady-v1`
 - Historical Xenia forensic reference:
   - `canary_experimental@d9747704bedc4e691ba243bf399647b836ce493e`
   - kept as a historical anchor, not as the current build target
@@ -107,7 +111,7 @@ Why NDK `27` and not the old historical pin:
 - `fixtures/guest-tests/`: checked-in guest probes plus source
 - `fixtures/guest-runtime/`: Ubuntu 24.04 lock manifest and notes for the generated guest runtime slice
 - `fixtures/mesa-runtime/`: Mesa source lock manifest for dual-Mesa Turnip bundles
-- `fixtures/xenia-runtime/`: Xenia source lock manifest for Phase 4A bring-up
+- `fixtures/xenia-runtime/`: Xenia source lock manifest for the current Phase 4 bring-up
 - `third_party/FEX/`: pinned FEX submodule
 - `third_party/fex-patches/android/`: repo-owned Android patch queue for the pinned FEX baseline
 - `third_party/mesa-patches/`: repo-owned Mesa patch queues applied during guest Turnip asset generation
@@ -143,7 +147,14 @@ The current wrapper fixes these paths under `filesDir`:
 - `rootfs/opt/x360-v3/xenia/bin/portable.txt`
 - `rootfs/opt/x360-v3/xenia/bin/logs/`
 - `rootfs/opt/x360-v3/xenia/bin/cache/`
+- `rootfs/opt/x360-v3/xenia/bin/cache0/`
+- `rootfs/opt/x360-v3/xenia/bin/cache1/`
+- `rootfs/opt/x360-v3/xenia/bin/scratch/`
+- `rootfs/opt/x360-v3/xenia/cache-host/`
+- `rootfs/opt/x360-v3/xenia/cache-host/modules/`
+- `rootfs/opt/x360-v3/xenia/cache-host/shaders/shareable/`
 - `rootfs/opt/x360-v3/xenia/content/`
+- `rootfs/mnt/library/`
 - `.fex-emu/Config.json`
 - `payload/config/fex-build-metadata.json`
 - `payload/config/guest-runtime-metadata.json`
@@ -152,6 +163,7 @@ The current wrapper fixes these paths under `filesDir`:
 - `payload/config/mesa-turnip-source-lock.json`
 - `payload/config/xenia-source-lock.json`
 - `payload/config/xenia-build-metadata.json`
+- `library/game-library.json`
 - `payload/guest-tests/bin/hello_x86_64`
 - `payload/guest-tests/bin/dyn_hello_x86_64`
 - `payload/guest-tests/bin/vulkan_probe_x86_64`
@@ -222,6 +234,12 @@ Run the specific Xenia bring-up proof on connected devices:
 adb shell am instrument -w -e class emu.x360.mobile.dev.RuntimeBootstrapInstrumentedTest#launchXeniaBringupReachesVulkanInitialized emu.x360.mobile.dev.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
+Run the opt-in Dante steady-state smoke on connected devices:
+
+```bash
+adb shell am instrument -w -r -e class emu.x360.mobile.dev.DanteSmokeInstrumentedTest -e enable_dante_smoke 1 -e dante_uri_mode file emu.x360.mobile.dev.test/androidx.test.runner.AndroidJUnitRunner
+```
+
 Install on connected devices:
 
 ```bash
@@ -244,9 +262,9 @@ adb shell run-as emu.x360.mobile.dev ls files/rootfs/opt/x360-v3/xenia/bin/xenia
 adb shell run-as emu.x360.mobile.dev cat files/payload/config/xenia-build-metadata.json
 ```
 
-## Verified Phase 4A result
+## Verified Phase 4C result
 
-Phase 4A is now real in this repo:
+Phase 4C is now real in this repo:
 
 - FEX host artifacts are built from vendored source inside this repo
 - the Android app installs and extracts its runtime deterministically
@@ -257,23 +275,28 @@ Phase 4A is now real in this repo:
 - pinned-source `Xenia Canary` is built inside this repo from `c50b036178108f87cb0acaf3691a7c3caf07820f`
 - the repo-owned Xenia patch queue removes the GTK hard dependency, switches POSIX shared memory to `memfd_create`, and makes headless bring-up null-safe without an ImGui window
 - `Launch Xenia Bring-up` reaches `VULKAN_INITIALIZED` on both connected devices without requiring a game image
+- imported ISO titles launch through the no-copy library path and reach deterministic title-aware stages
+- `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS` on both connected devices and stays alive for the observation window without crashing
 
-Verified per-device Vulkan bring-up:
+Verified per-device bring-up:
 
 - `AYN Odin2 Mini`
   - Mesa branch: `mesa25`
   - device: `Turnip Adreno (TM) 740`
   - Xenia reaches `VULKAN_INITIALIZED`
+  - `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
 - `Odin3`
   - Mesa branch: `mesa26`
   - device: `Adreno (TM) 830`
   - Xenia reaches `VULKAN_INITIALIZED`
+  - `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
 
-What Phase 4A does not prove yet:
+What Phase 4C does not prove yet:
 
-- title boot
-- gameplay correctness
 - visible frame presentation
+- input
+- audio
+- gameplay correctness
 - Android surface handoff
 
 ## Historical context

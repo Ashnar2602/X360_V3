@@ -1,0 +1,27 @@
+diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
+--- a/src/xenia/emulator.cc
++++ b/src/xenia/emulator.cc
+@@ -38,6 +38,7 @@
+ #include "xenia/cpu/cpu_flags.h"
+ #include "xenia/cpu/thread_state.h"
+ #include "xenia/gpu/command_processor.h"
++#include "xenia/kernel/kernel_flags.h"
+ #include "xenia/gpu/graphics_system.h"
+ #include "xenia/hid/input_driver.h"
+ #include "xenia/hid/input_system.h"
+@@ -1588,9 +1589,12 @@
+   title_id_ = std::nullopt;
+   title_name_ = "";
+   title_version_ = "";
+-  display_window_->SetIcon(nullptr, 0);
+-
+-  XELOGI("CompleteLaunch: icon cleared");
++  if (cvars::headless || !display_window_) {
++    XELOGI("CompleteLaunch: headless mode active, skipping icon update");
++  } else {
++    display_window_->SetIcon(nullptr, 0);
++    XELOGI("CompleteLaunch: icon cleared");
++  }
+   // Allow xam to request module loads.
+   auto xam = kernel_state()->GetKernelModule<kernel::xam::XamModule>("xam.xex");
+   XELOGI("CompleteLaunch: xam module ready");

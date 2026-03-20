@@ -1,10 +1,12 @@
 package emu.x360.mobile.dev
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import emu.x360.mobile.dev.bootstrap.AppRuntimeManager
 import emu.x360.mobile.dev.bootstrap.RuntimeSnapshot
+import emu.x360.mobile.dev.runtime.GameLibraryEntry
 import emu.x360.mobile.dev.runtime.MesaRuntimeBranch
 import emu.x360.mobile.dev.runtime.RuntimeInstallState
 import kotlinx.coroutines.Dispatchers
@@ -39,6 +41,22 @@ class MainViewModel(
 
     fun launchXeniaBringup() {
         runAction { manager.launchXeniaBringup() }
+    }
+
+    fun importIso(uri: Uri) {
+        runAction { manager.importIso(uri) }
+    }
+
+    fun refreshLibrary() {
+        runAction { manager.refreshLibrary() }
+    }
+
+    fun removeLibraryEntry(entryId: String) {
+        runAction { manager.removeLibraryEntry(entryId) }
+    }
+
+    fun launchImportedTitle(entryId: String) {
+        runAction { manager.launchImportedTitle(entryId) }
     }
 
     fun launchLavapipeProbe() {
@@ -122,8 +140,13 @@ data class MainUiState(
     val xeniaContentMode: String = "",
     val xeniaStartupStage: String = "",
     val xeniaStartupDetail: String = "",
+    val xeniaAliveAfterModuleLoadSeconds: String = "",
+    val xeniaCacheBackendStatus: String = "",
+    val xeniaCacheRootPath: String = "",
+    val xeniaTitleMetadataSeen: String = "",
     val xeniaLogPath: String = "",
     val xeniaExecutablePath: String = "",
+    val libraryEntries: List<GameLibraryEntryUi> = emptyList(),
     val lastLaunchBackend: String = "",
     val lastLaunchResult: String = "",
     val appLog: String = "",
@@ -188,14 +211,45 @@ data class MainUiState(
                 xeniaContentMode = snapshot.xeniaDiagnostics.contentMode,
                 xeniaStartupStage = snapshot.xeniaDiagnostics.lastStartupStage,
                 xeniaStartupDetail = snapshot.xeniaDiagnostics.lastStartupDetail,
+                xeniaAliveAfterModuleLoadSeconds = snapshot.xeniaDiagnostics.aliveAfterModuleLoadSeconds.toString(),
+                xeniaCacheBackendStatus = snapshot.xeniaDiagnostics.cacheBackendStatus,
+                xeniaCacheRootPath = snapshot.xeniaDiagnostics.cacheRootPath,
+                xeniaTitleMetadataSeen = snapshot.xeniaDiagnostics.titleMetadataSeen.toString(),
                 xeniaLogPath = snapshot.xeniaDiagnostics.lastLogPath,
                 xeniaExecutablePath = snapshot.xeniaDiagnostics.executablePath,
+                libraryEntries = snapshot.gameLibraryEntries.map(GameLibraryEntryUi::from),
                 lastLaunchBackend = snapshot.fexDiagnostics.lastLaunchBackend,
                 lastLaunchResult = snapshot.fexDiagnostics.lastLaunchResult,
                 appLog = snapshot.latestLogs.appLog,
                 fexLog = snapshot.latestLogs.fexLog,
                 guestLog = snapshot.latestLogs.guestLog,
                 lastAction = snapshot.lastAction,
+            )
+        }
+    }
+}
+
+data class GameLibraryEntryUi(
+    val id: String,
+    val displayName: String,
+    val status: String,
+    val sourceKind: String,
+    val guestPath: String,
+    val titleName: String,
+    val lastLaunchSummary: String,
+    val sizeSummary: String,
+) {
+    companion object {
+        fun from(entry: GameLibraryEntry): GameLibraryEntryUi {
+            return GameLibraryEntryUi(
+                id = entry.id,
+                displayName = entry.displayName,
+                status = entry.lastKnownStatus.name.lowercase(),
+                sourceKind = entry.sourceKind.name.lowercase(),
+                guestPath = entry.lastResolvedGuestPath ?: "none",
+                titleName = entry.lastKnownTitleName ?: "unknown",
+                lastLaunchSummary = entry.lastLaunchSummary ?: "none",
+                sizeSummary = if (entry.sizeBytes > 0L) "${entry.sizeBytes} bytes" else "size unavailable",
             )
         }
     }

@@ -1,4 +1,5 @@
 import com.android.build.api.variant.AndroidComponentsExtension
+import org.gradle.api.tasks.Delete
 
 val fexCommitId = "49a37c7d6fec7d94923507e5ce10d55c2920e380"
 val fexPatchSetName = "android-baseline-v1"
@@ -148,7 +149,14 @@ androidComponents.onVariants(androidComponents.selector().all()) { variant ->
     val generateXeniaBringupAssetsTask = tasks.register<GenerateXeniaBringupAssetsTask>("generate${variantName}XeniaBringupAssets") {
         xeniaSourceLockManifest.set(rootProject.layout.projectDirectory.file(xeniaSourceLockManifestPath))
         patchesDir.set(rootProject.layout.projectDirectory.dir("third_party/xenia-patches"))
+        buildMode.set(if (variant.buildType == "debug") "incremental" else "full")
+        sourceCacheDir.set(layout.buildDirectory.dir("xeniaSourceCache/${variant.name}"))
+        workspaceCacheDir.set(layout.buildDirectory.dir("xeniaDevWorkspaces/${variant.name}"))
         outputDir.set(layout.buildDirectory.dir("generated/xeniaBringupAssets/${variant.name}"))
+    }
+
+    tasks.register<Delete>("reset${variantName}XeniaDevWorkspace") {
+        delete(layout.buildDirectory.dir("xeniaDevWorkspaces/${variant.name}"))
     }
 
     val taskName = "stage${variant.name.replaceFirstChar(Char::uppercaseChar)}RuntimePayload"

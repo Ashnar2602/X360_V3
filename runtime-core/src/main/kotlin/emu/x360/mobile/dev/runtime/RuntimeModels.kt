@@ -66,6 +66,11 @@ sealed interface RuntimeInstallIssue {
 
     data class InvalidInstallPath(val installPath: String) : RuntimeInstallIssue
 
+    data class ManifestFingerprintMismatch(
+        val expectedFingerprint: String,
+        val installedFingerprint: String,
+    ) : RuntimeInstallIssue
+
     data class ChecksumMismatch(
         val installPath: String,
         val expectedSha256: String,
@@ -76,10 +81,14 @@ sealed interface RuntimeInstallIssue {
 data class RuntimeDirectories(
     val baseDir: Path,
 ) {
+    val libraryRoot: Path = baseDir.resolve("library")
+    val libraryDatabase: Path = libraryRoot.resolve("game-library.json")
     val rootfs: Path = baseDir.resolve("rootfs")
     val rootfsLib: Path = rootfs.resolve("lib")
     val rootfsLib64: Path = rootfs.resolve("lib64")
     val rootfsLibX86_64LinuxGnu: Path = rootfsLib.resolve("x86_64-linux-gnu")
+    val rootfsMnt: Path = rootfs.resolve("mnt")
+    val rootfsMntLibrary: Path = rootfsMnt.resolve("library")
     val rootfsTmp: Path = rootfs.resolve("tmp")
     val rootfsProc: Path = rootfs.resolve("proc")
     val rootfsDev: Path = rootfs.resolve("dev")
@@ -97,11 +106,19 @@ data class RuntimeDirectories(
     val rootfsXeniaRoot: Path = rootfsOptX360V3.resolve("xenia")
     val rootfsXeniaBin: Path = rootfsXeniaRoot.resolve("bin")
     val rootfsXeniaContent: Path = rootfsXeniaRoot.resolve("content")
+    val xeniaCacheHostRoot: Path = rootfsXeniaRoot.resolve("cache-host")
+    val xeniaModuleCacheRoot: Path = xeniaCacheHostRoot.resolve("modules")
+    val xeniaShaderCacheRoot: Path = xeniaCacheHostRoot.resolve("shaders")
+    val xeniaShaderCacheShareableRoot: Path = xeniaShaderCacheRoot.resolve("shareable")
+    val xeniaShaderCacheLocalRoot: Path = xeniaShaderCacheRoot.resolve("local")
     val xeniaBinary: Path = rootfsXeniaBin.resolve("xenia-canary")
     val xeniaConfigFile: Path = rootfsXeniaBin.resolve("xenia-canary.config.toml")
     val xeniaPortableMarker: Path = rootfsXeniaBin.resolve("portable.txt")
     val xeniaLogsRoot: Path = rootfsXeniaBin.resolve("logs")
     val xeniaCacheRoot: Path = rootfsXeniaBin.resolve("cache")
+    val xeniaCacheSlot0: Path = rootfsXeniaBin.resolve("cache0")
+    val xeniaCacheSlot1: Path = rootfsXeniaBin.resolve("cache1")
+    val xeniaScratchRoot: Path = rootfsXeniaBin.resolve("scratch")
     val mesa25Root: Path = rootfsMesaRoot.resolve("mesa25")
     val mesa25LibRoot: Path = mesa25Root.resolve("lib")
     val mesa25IcdRoot: Path = mesa25Root.resolve("icd")
@@ -143,10 +160,13 @@ data class RuntimeDirectories(
 
     fun requiredDirectories(): List<Path> = listOf(
         baseDir,
+        libraryRoot,
         rootfs,
         rootfsLib,
         rootfsLib64,
         rootfsLibX86_64LinuxGnu,
+        rootfsMnt,
+        rootfsMntLibrary,
         rootfsTmp,
         rootfsProc,
         rootfsDev,
@@ -163,8 +183,16 @@ data class RuntimeDirectories(
         rootfsXeniaRoot,
         rootfsXeniaBin,
         rootfsXeniaContent,
+        xeniaCacheHostRoot,
+        xeniaModuleCacheRoot,
+        xeniaShaderCacheRoot,
+        xeniaShaderCacheShareableRoot,
+        xeniaShaderCacheLocalRoot,
         xeniaLogsRoot,
         xeniaCacheRoot,
+        xeniaCacheSlot0,
+        xeniaCacheSlot1,
+        xeniaScratchRoot,
         rootfsMesaRoot,
         mesa25Root,
         mesa25LibRoot,
@@ -197,6 +225,7 @@ data class GuestLaunchRequest(
     val args: List<String>,
     val environment: Map<String, String>,
     val workingDirectory: String,
+    val stdinRedirectPath: String? = null,
     val logDestinations: GuestLogDestinations,
 )
 
@@ -229,8 +258,43 @@ enum class XeniaStartupStage {
     @SerialName("vulkan-initialized")
     VULKAN_INITIALIZED,
 
+    @SerialName("disc-image-accepted")
+    DISC_IMAGE_ACCEPTED,
+
+    @SerialName("title-module-loading")
+    TITLE_MODULE_LOADING,
+
+    @SerialName("title-metadata-available")
+    TITLE_METADATA_AVAILABLE,
+
+    @SerialName("title-running-headless")
+    TITLE_RUNNING_HEADLESS,
+
     @SerialName("failed")
     FAILED,
+
+    ;
+
+    fun reaches(target: XeniaStartupStage): Boolean {
+        if (this == FAILED || target == FAILED) {
+            return this == target
+        }
+        return progressionIndex() >= target.progressionIndex()
+    }
+
+    private fun progressionIndex(): Int {
+        return when (this) {
+            PROCESS_STARTED -> 0
+            CONFIG_READY -> 1
+            VULKAN_BACKEND_SELECTED -> 2
+            VULKAN_INITIALIZED -> 3
+            DISC_IMAGE_ACCEPTED -> 4
+            TITLE_MODULE_LOADING -> 5
+            TITLE_METADATA_AVAILABLE -> 6
+            TITLE_RUNNING_HEADLESS -> 7
+            FAILED -> -1
+        }
+    }
 }
 
 fun RuntimeManifest.filteredForPhase(targetPhase: RuntimePhase): RuntimeManifest {

@@ -12,4 +12,8 @@ object NativeBridge {
     external fun describeSurfaceHookPlaceholder(rootfsTmpPath: String): String
 
     external fun inspectKgslProperties(): String
+
+    external fun adoptFdForExec(rawFd: Int, minimumFd: Int): Int
+
+    external fun closeFd(fd: Int): Boolean
 }

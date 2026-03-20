@@ -57,6 +57,57 @@ class RuntimeInstallerTest {
     }
 
     @Test
+    fun `inspect reports manifest fingerprint mismatch when manifest changes`() {
+        val baseDir = Files.createTempDirectory("runtime-installer-manifest")
+        val installer = RuntimeInstaller(RuntimeDirectories(baseDir))
+        val originalManifest = manifestFor(
+            installPath = "payload/config/runtime.env",
+            assetPath = "runtime-payload/files/payload/config/runtime.env",
+            content = "MODE=mock\n",
+        )
+        val updatedManifest = originalManifest.copy(
+            generatedBy = "unit-test-updated",
+        )
+        val source = FakeRuntimeAssetSource(
+            mapOf("runtime-payload/files/payload/config/runtime.env" to "MODE=mock\n".toByteArray()),
+        )
+
+        installer.install(originalManifest, source, RuntimePhase.BOOTSTRAP)
+
+        val state = installer.inspect(updatedManifest, RuntimePhase.BOOTSTRAP)
+
+        assertThat(state).isInstanceOf(RuntimeInstallState.Invalid::class.java)
+        val invalid = state as RuntimeInstallState.Invalid
+        assertThat(invalid.issue).isInstanceOf(RuntimeInstallIssue.ManifestFingerprintMismatch::class.java)
+    }
+
+    @Test
+    fun `install rewrites marker when manifest fingerprint changes`() {
+        val baseDir = Files.createTempDirectory("runtime-installer-manifest-reinstall")
+        val installer = RuntimeInstaller(RuntimeDirectories(baseDir))
+        val originalManifest = manifestFor(
+            installPath = "payload/config/runtime.env",
+            assetPath = "runtime-payload/files/payload/config/runtime.env",
+            content = "MODE=mock\n",
+        )
+        val updatedManifest = originalManifest.copy(
+            profile = "bootstrap-mock-v2",
+        )
+        val source = FakeRuntimeAssetSource(
+            mapOf("runtime-payload/files/payload/config/runtime.env" to "MODE=mock\n".toByteArray()),
+        )
+
+        installer.install(originalManifest, source, RuntimePhase.BOOTSTRAP)
+        val originalMarkerTime = installer.runtimeDirectories().installMarker.getLastModifiedTime()
+        Thread.sleep(20)
+
+        val reinstall = installer.install(updatedManifest, source, RuntimePhase.BOOTSTRAP)
+
+        assertThat(reinstall).isInstanceOf(RuntimeInstallState.Installed::class.java)
+        assertThat(installer.runtimeDirectories().installMarker.getLastModifiedTime()).isGreaterThan(originalMarkerTime)
+    }
+
+    @Test
     fun `install rejects path traversal`() {
         val baseDir = Files.createTempDirectory("runtime-installer-path")
         val installer = RuntimeInstaller(RuntimeDirectories(baseDir))
@@ -121,6 +172,43 @@ class RuntimeInstallerTest {
         assertThat(bootstrapInstall).isInstanceOf(RuntimeInstallState.Installed::class.java)
         assertThat(bootstrapState).isInstanceOf(RuntimeInstallState.Installed::class.java)
         assertThat(fexStateBeforeUpgrade).isEqualTo(RuntimeInstallState.NotInstalled)
+    }
+
+    @Test
+    fun `inspect bootstrap stays installed after higher phase install`() {
+        val baseDir = Files.createTempDirectory("runtime-installer-higher-phase")
+        val installer = RuntimeInstaller(RuntimeDirectories(baseDir))
+        val manifest = RuntimeManifest(
+            version = 1,
+            profile = "fex-baseline",
+            generatedBy = "unit-test",
+            assets = listOf(
+                RuntimeAsset(
+                    assetPath = "runtime-payload/files/payload/config/runtime.env",
+                    installPath = "payload/config/runtime.env",
+                    checksumSha256 = sha256("MODE=bootstrap\n".toByteArray()),
+                    minPhase = RuntimePhase.BOOTSTRAP,
+                ),
+                RuntimeAsset(
+                    assetPath = "runtime-payload/files/payload/guest-tests/bin/hello_x86_64",
+                    installPath = "payload/guest-tests/bin/hello_x86_64",
+                    executable = true,
+                    checksumSha256 = sha256("HELLO\n".toByteArray()),
+                    minPhase = RuntimePhase.FEX_BASELINE,
+                ),
+            ),
+        )
+        val source = FakeRuntimeAssetSource(
+            mapOf(
+                "runtime-payload/files/payload/config/runtime.env" to "MODE=bootstrap\n".toByteArray(),
+                "runtime-payload/files/payload/guest-tests/bin/hello_x86_64" to "HELLO\n".toByteArray(),
+            ),
+        )
+
+        installer.install(manifest, source, RuntimePhase.FEX_BASELINE)
+
+        assertThat(installer.inspect(manifest, RuntimePhase.BOOTSTRAP))
+            .isInstanceOf(RuntimeInstallState.Installed::class.java)
     }
 
     @Test

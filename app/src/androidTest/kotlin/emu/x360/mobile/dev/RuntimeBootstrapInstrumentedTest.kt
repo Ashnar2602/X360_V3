@@ -1,12 +1,14 @@
 package emu.x360.mobile.dev
 
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertWithMessage
 import com.google.common.truth.Truth.assertThat
 import emu.x360.mobile.dev.bootstrap.AppRuntimeManager
+import emu.x360.mobile.dev.runtime.GameLibraryEntryStatus
 import emu.x360.mobile.dev.runtime.MesaRuntimeBranch
 import emu.x360.mobile.dev.runtime.RuntimeInstallState
 import java.nio.file.Path
@@ -66,6 +68,13 @@ class RuntimeBootstrapInstrumentedTest {
         assertThat(baseDir.resolve("rootfs/opt/x360-v3/mesa/mesa25/icd/turnip_icd.json").exists()).isTrue()
         assertThat(baseDir.resolve("rootfs/opt/x360-v3/mesa/mesa26/lib/libvulkan_freedreno.so").exists()).isTrue()
         assertThat(baseDir.resolve("rootfs/opt/x360-v3/mesa/mesa26/icd/turnip_icd.json").exists()).isTrue()
+        assertThat(baseDir.resolve("rootfs/opt/x360-v3/xenia/cache-host").exists()).isTrue()
+        assertThat(baseDir.resolve("rootfs/opt/x360-v3/xenia/cache-host/modules").exists()).isTrue()
+        assertThat(baseDir.resolve("rootfs/opt/x360-v3/xenia/cache-host/shaders/shareable").exists()).isTrue()
+        assertThat(baseDir.resolve("rootfs/opt/x360-v3/xenia/bin/cache").exists()).isTrue()
+        assertThat(baseDir.resolve("rootfs/opt/x360-v3/xenia/bin/cache0").exists()).isTrue()
+        assertThat(baseDir.resolve("rootfs/opt/x360-v3/xenia/bin/cache1").exists()).isTrue()
+        assertThat(baseDir.resolve("rootfs/opt/x360-v3/xenia/bin/scratch").exists()).isTrue()
         assertThat(baseDir.resolve("logs/app").exists()).isTrue()
     }
 
@@ -204,6 +213,7 @@ class RuntimeBootstrapInstrumentedTest {
         assertThat(context.filesDir.toPath().resolve("payload/config/xenia-build-metadata.json").exists()).isTrue()
         assertThat(launchSnapshot.xeniaDiagnostics.binaryInstalled).isTrue()
         assertThat(launchSnapshot.xeniaDiagnostics.configPresent).isTrue()
+        assertThat(launchSnapshot.xeniaDiagnostics.cacheRootPath).contains("cache-host")
         assertWithMessage(
             buildString {
                 appendLine("Expected Xenia bring-up to reach Vulkan initialization.")
@@ -218,6 +228,60 @@ class RuntimeBootstrapInstrumentedTest {
                 appendLine(launchSnapshot.latestLogs.appLog)
             },
         ).that(launchSnapshot.xeniaDiagnostics.lastStartupStage).isEqualTo("vulkan_initialized")
+    }
+
+    @Test
+    fun importIsoPersistsLibraryEntryAsReady() {
+        val manager = AppRuntimeManager(context, baseDir)
+        manager.install()
+        val isoPath = baseDir.resolve("shared/DantesInferno.iso")
+        isoPath.parent.toFile().mkdirs()
+        isoPath.toFile().writeBytes(ByteArray(256) { it.toByte() })
+
+        val snapshot = manager.importIso(Uri.fromFile(isoPath.toFile()))
+
+        assertThat(baseDir.resolve("library/game-library.json").exists()).isTrue()
+        assertThat(snapshot.gameLibraryEntries).hasSize(1)
+        val entry = snapshot.gameLibraryEntries.single()
+        assertThat(entry.displayName).isEqualTo("DantesInferno.iso")
+        assertThat(entry.lastKnownStatus).isEqualTo(GameLibraryEntryStatus.READY)
+        assertThat(entry.lastResolvedGuestPath).isEqualTo("/mnt/library/${entry.id}.iso")
+    }
+
+    @Test
+    fun refreshLibraryMarksEntryMissingWhenSourceDisappears() {
+        val manager = AppRuntimeManager(context, baseDir)
+        manager.install()
+        val isoPath = baseDir.resolve("shared/DantesInferno.iso")
+        isoPath.parent.toFile().mkdirs()
+        isoPath.toFile().writeBytes(ByteArray(64) { 0x42.toByte() })
+
+        val imported = manager.importIso(Uri.fromFile(isoPath.toFile()))
+        isoPath.toFile().delete()
+        val refreshed = manager.refreshLibrary()
+
+        val entry = refreshed.gameLibraryEntries.single { it.id == imported.gameLibraryEntries.single().id }
+        assertThat(entry.lastKnownStatus).isEqualTo(GameLibraryEntryStatus.MISSING)
+    }
+
+    @Test
+    fun launchImportedTitleBlocksWhenEntryIsMissing() {
+        val manager = AppRuntimeManager(context, baseDir)
+        manager.install()
+        val isoPath = baseDir.resolve("shared/DantesInferno.iso")
+        isoPath.parent.toFile().mkdirs()
+        isoPath.toFile().writeBytes(ByteArray(64) { 0x24.toByte() })
+
+        val imported = manager.importIso(Uri.fromFile(isoPath.toFile()))
+        val entryId = imported.gameLibraryEntries.single().id
+        isoPath.toFile().delete()
+        manager.refreshLibrary()
+
+        val blocked = manager.launchImportedTitle(entryId)
+
+        assertThat(blocked.latestLogs.appLog).contains("backend=fex-xenia")
+        assertThat(blocked.latestLogs.appLog).contains("exitClassification=VALIDATION_ERROR")
+        assertThat(blocked.lastAction).contains("validation_error")
     }
 
     private fun isTurnipHardwarePassDevice(): Boolean {

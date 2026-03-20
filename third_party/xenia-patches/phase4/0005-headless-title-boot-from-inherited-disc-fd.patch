@@ -1,0 +1,176 @@
+diff --git a/src/xenia/base/mapped_memory.h b/src/xenia/base/mapped_memory.h
+index ce89b651a..b415ac0cc 100644
+--- a/src/xenia/base/mapped_memory.h
++++ b/src/xenia/base/mapped_memory.h
+@@ -28,6 +28,8 @@ class MappedMemory {
+   static std::unique_ptr<MappedMemory> Open(const std::filesystem::path& path,
+                                             Mode mode, size_t offset = 0,
+                                             size_t length = 0);
++  static std::unique_ptr<MappedMemory> OpenFileDescriptor(
++      int file_descriptor, Mode mode, size_t offset = 0, size_t length = 0);
+ #if XE_PLATFORM_ANDROID
+   static std::unique_ptr<MappedMemory> OpenForAndroidContentUri(
+       const std::string_view uri, Mode mode, size_t offset = 0,
+diff --git a/src/xenia/base/mapped_memory_posix.cc b/src/xenia/base/mapped_memory_posix.cc
+index ddedf0f17..8d03dab2e 100644
+--- a/src/xenia/base/mapped_memory_posix.cc
++++ b/src/xenia/base/mapped_memory_posix.cc
+@@ -108,6 +108,16 @@ std::unique_ptr<MappedMemory> MappedMemory::Open(
+                                                length);
+ }
+ 
++std::unique_ptr<MappedMemory> MappedMemory::OpenFileDescriptor(
++    int file_descriptor, Mode mode, size_t offset, size_t length) {
++  int duplicated_descriptor = dup(file_descriptor);
++  if (duplicated_descriptor < 0) {
++    return nullptr;
++  }
++  return PosixMappedMemory::WrapFileDescriptor(duplicated_descriptor, mode,
++                                               offset, length);
++}
++
+ #if XE_PLATFORM_ANDROID
+ std::unique_ptr<MappedMemory> MappedMemory::OpenForAndroidContentUri(
+     const std::string_view uri, Mode mode, size_t offset, size_t length) {
+diff --git a/src/xenia/vfs/devices/disc_image_device.h b/src/xenia/vfs/devices/disc_image_device.h
+index 3b098944c..f0318908e 100644
+--- a/src/xenia/vfs/devices/disc_image_device.h
++++ b/src/xenia/vfs/devices/disc_image_device.h
+@@ -27,6 +27,8 @@ class DiscImageDevice : public Device {
+  public:
+   DiscImageDevice(const std::string_view mount_path,
+                   const std::filesystem::path& host_path);
++  DiscImageDevice(const std::string_view mount_path,
++                  const std::filesystem::path& host_path, int inherited_fd);
+   ~DiscImageDevice() override;
+ 
+   bool Initialize() override;
+@@ -56,6 +58,7 @@ class DiscImageDevice : public Device {
+ 
+   std::string name_;
+   std::filesystem::path host_path_;
++  int inherited_fd_ = -1;
+   std::unique_ptr<Entry> root_entry_;
+   std::unique_ptr<MappedMemory> mmap_;
+ 
+diff --git a/src/xenia/vfs/devices/disc_image_device.cc b/src/xenia/vfs/devices/disc_image_device.cc
+index 123d5a262..101e37cf6 100644
+--- a/src/xenia/vfs/devices/disc_image_device.cc
++++ b/src/xenia/vfs/devices/disc_image_device.cc
+@@ -25,12 +25,29 @@ DiscImageDevice::DiscImageDevice(const std::string_view mount_path,
+                                  const std::filesystem::path& host_path)
+     : Device(mount_path), name_("GDFX"), host_path_(host_path) {}
+ 
++DiscImageDevice::DiscImageDevice(const std::string_view mount_path,
++                                 const std::filesystem::path& host_path,
++                                 int inherited_fd)
++    : Device(mount_path),
++      name_("GDFX"),
++      host_path_(host_path),
++      inherited_fd_(inherited_fd) {}
++
+ DiscImageDevice::~DiscImageDevice() = default;
+ 
+ bool DiscImageDevice::Initialize() {
+-  mmap_ = MappedMemory::Open(host_path_, MappedMemory::Mode::kRead);
++  if (inherited_fd_ >= 0) {
++    mmap_ = MappedMemory::OpenFileDescriptor(inherited_fd_,
++                                             MappedMemory::Mode::kRead);
++  } else {
++    mmap_ = MappedMemory::Open(host_path_, MappedMemory::Mode::kRead);
++  }
+   if (!mmap_) {
+-    XELOGE("Disc image could not be mapped");
++    if (inherited_fd_ >= 0) {
++      XELOGE("Disc image inherited fd {} could not be mapped", inherited_fd_);
++    } else {
++      XELOGE("Disc image could not be mapped");
++    }
+     return false;
+   } else {
+     XELOGFS("DiscImageDevice::Initialize");
+diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
+index b26756ba7..81b802543 100644
+--- a/src/xenia/emulator.cc
++++ b/src/xenia/emulator.cc
+@@ -7,6 +7,9 @@
+  ******************************************************************************
+  */
+ 
++#include <cerrno>
++#include <cstdlib>
++#include <cstring>
+ #include <ranges>
+ 
+ #include "xenia/emulator.h"
+@@ -358,6 +361,26 @@ X_STATUS Emulator::TerminateTitle() {
+ 
+ const std::unique_ptr<vfs::Device> Emulator::CreateVfsDevice(
+     const std::filesystem::path& path, const std::string_view mount_path) {
++  const auto path_string = xe::path_to_utf8(path);
++  const char* inherited_disc_path = std::getenv("X360_TITLE_SOURCE_PATH");
++  const char* inherited_disc_fd = std::getenv("X360_TITLE_SOURCE_FD");
++  if (inherited_disc_path && inherited_disc_fd &&
++      path_string == inherited_disc_path) {
++    errno = 0;
++    char* parse_end = nullptr;
++    const long parsed_fd = std::strtol(inherited_disc_fd, &parse_end, 10);
++    if (errno == 0 && parse_end != inherited_disc_fd && parse_end &&
++        *parse_end == '\0' && parsed_fd >= 0) {
++      XELOGI("CreateVfsDevice: using inherited disc fd {} for '{}'",
++             parsed_fd, path_string);
++      return std::make_unique<vfs::DiscImageDevice>(mount_path, path,
++                                                    static_cast<int>(parsed_fd));
++    }
++    XELOGE("CreateVfsDevice: invalid inherited disc fd '{}' for '{}'",
++           inherited_disc_fd, path_string);
++    return nullptr;
++  }
++
+   // Must check if the type has changed e.g. XamSwapDisc
+   switch (GetFileSignature(path)) {
+     case FileSignatureType::XEX1:
+@@ -481,10 +504,40 @@ static const char* FileSignatureTypeName(Emulator::FileSignatureType type) {
+ 
+ Emulator::FileSignatureType Emulator::GetFileSignature(
+     const std::filesystem::path& path) {
++  const auto path_string = xe::path_to_utf8(path);
++  const char* inherited_disc_path = std::getenv("X360_TITLE_SOURCE_PATH");
++  const char* inherited_disc_fd = std::getenv("X360_TITLE_SOURCE_FD");
++  if (inherited_disc_path && inherited_disc_fd &&
++      path_string == inherited_disc_path) {
++    errno = 0;
++    char* parse_end = nullptr;
++    const long parsed_fd = std::strtol(inherited_disc_fd, &parse_end, 10);
++    if (errno == 0 && parse_end != inherited_disc_fd && parse_end &&
++        *parse_end == '\0' && parsed_fd >= 0) {
++      XELOGI("GetFileSignature: probing inherited disc fd {} for '{}'",
++             parsed_fd, path_string);
++      std::unique_ptr<vfs::Device> device =
++          std::make_unique<vfs::DiscImageDevice>("", path,
++                                                 static_cast<int>(parsed_fd));
++      XELOGI("Checking for XISO");
++      if (device->Initialize()) {
++        return FileSignatureType::XISO;
++      }
++      XELOGE("GetFileSignature: inherited disc fd {} failed XISO probe for '{}'",
++             parsed_fd, path_string);
++      return FileSignatureType::Unknown;
++    }
++
++    XELOGE("GetFileSignature: invalid inherited disc fd '{}' for '{}'",
++           inherited_disc_fd, path_string);
++    return FileSignatureType::Unknown;
++  }
++
+   FILE* file = xe::filesystem::OpenFile(path, "rb");
+ 
+   if (!file) {
+-    XELOGE("GetFileSignature: unable to open '{}'", xe::path_to_utf8(path));
++    XELOGE("GetFileSignature: unable to open '{}' errno={} ({})",
++           path_string, errno, std::strerror(errno));
+     return FileSignatureType::Unknown;
+   }
+ 
+   const uint64_t file_size = std::filesystem::file_size(path);
+   constexpr int64_t header_size = 4;

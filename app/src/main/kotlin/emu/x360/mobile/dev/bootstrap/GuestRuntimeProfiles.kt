@@ -36,20 +36,26 @@ internal fun buildVulkanGuestEnvironment(
             "X360_DRIVER_MODE" to "lavapipe",
         )
         MesaRuntimeBranch.MESA25 -> buildDynamicGuestEnvironment() + mapOf(
-            "LD_LIBRARY_PATH" to "${directories.mesa25LibRoot.guestPath()}:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu",
-            "VK_DRIVER_FILES" to directories.mesa25TurnipIcd.guestPath(),
+            "LD_LIBRARY_PATH" to "${directories.mesa25LibRoot.toGuestPath(directories.rootfs)}:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu",
+            "VK_DRIVER_FILES" to directories.mesa25TurnipIcd.toGuestPath(directories.rootfs),
             "VK_LOADER_DEBUG" to "error,warn",
             "X360_DRIVER_MODE" to "turnip",
         )
         MesaRuntimeBranch.MESA26 -> buildDynamicGuestEnvironment() + mapOf(
-            "LD_LIBRARY_PATH" to "${directories.mesa26LibRoot.guestPath()}:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu",
-            "VK_DRIVER_FILES" to directories.mesa26TurnipIcd.guestPath(),
+            "LD_LIBRARY_PATH" to "${directories.mesa26LibRoot.toGuestPath(directories.rootfs)}:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu",
+            "VK_DRIVER_FILES" to directories.mesa26TurnipIcd.toGuestPath(directories.rootfs),
             "VK_LOADER_DEBUG" to "error,warn",
             "X360_DRIVER_MODE" to "turnip",
         )
     }
 }
 
-private fun java.nio.file.Path.guestPath(): String {
-    return "/" + toString().replace('\\', '/').substringAfter("/rootfs/")
+internal fun java.nio.file.Path.toGuestPath(rootfs: java.nio.file.Path): String {
+    val normalizedRoot = rootfs.toAbsolutePath().normalize().toString().replace('\\', '/').trimEnd('/')
+    val normalizedPath = toAbsolutePath().normalize().toString().replace('\\', '/')
+    return when {
+        normalizedPath == normalizedRoot -> "/"
+        normalizedPath.startsWith("$normalizedRoot/") -> "/" + normalizedPath.removePrefix("$normalizedRoot/")
+        else -> "/" + normalizedPath.trimStart('/')
+    }
 }

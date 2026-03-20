@@ -90,13 +90,25 @@ Use:
 ### Active bring-up baseline
 
 - `canary_experimental@c50b036178108f87cb0acaf3691a7c3caf07820f`
-- patch set: `phase4-headless-posix-v2`
+- patch set: `phase4-headless-steady-v1`
 
 Reason:
 
 - upstream Canary is active and materially newer than the forensic pin
 - the goal is a working Android/FEX/Linux bring-up, not archaeological replay at all costs
-- the current repo-owned patch queue captures the minimum POSIX/headless fixes needed for Phase 4A
+- the current repo-owned patch queue captures the minimum POSIX/headless fixes needed for stable title boot and non-fatal cache initialization
+
+### Local development loop
+
+- keep two Xenia build modes:
+  - full reproducible build
+  - persistent incremental local build
+
+Reason:
+
+- clean validation still needs a deterministic full build path
+- local debugging does not need to pay the full setup/build cost every iteration
+- the repo now keeps a persistent checkout and CMake/Ninja build directory keyed by revision, patch set, and build profile
 
 ### Comparative track
 

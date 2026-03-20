@@ -17,9 +17,23 @@ class XeniaBringupModelTest {
         assertThat(args).contains("--headless=true")
         assertThat(args).contains("--portable=true")
         assertThat(args).contains("--gpu=vulkan")
+        assertThat(args).contains("--mount_cache=false")
         assertThat(args).contains("--content_root=/opt/x360-v3/xenia/content")
-        assertThat(args).contains("--cache_root=/opt/x360-v3/xenia/bin/cache")
+        assertThat(args).contains("--cache_root=/opt/x360-v3/xenia/cache-host")
         assertThat(args).contains("--storage_root=/opt/x360-v3/xenia/bin")
+    }
+
+    @Test
+    fun `xenia title boot args append guest iso path`() {
+        val args = buildXeniaBringupArgs(
+            directories = directories,
+            launchMode = XeniaLaunchMode.TitleBoot(
+                entryId = "dante",
+                guestPath = "/mnt/library/dante.iso",
+            ),
+        )
+
+        assertThat(args.last()).isEqualTo("/mnt/library/dante.iso")
     }
 
     @Test
@@ -47,5 +61,49 @@ class XeniaBringupModelTest {
 
         assertThat(analysis.stage).isEqualTo(XeniaStartupStage.FAILED)
         assertThat(analysis.detail).contains("Failed to create a Vulkan instance")
+    }
+
+    @Test
+    fun `startup parser reports title metadata when disc boot progresses`() {
+        val analysis = XeniaStartupStageParser.analyze(
+            """
+            Vulkan device properties and enabled features:
+            Checking for XISO
+            Loading module game:\default.xex
+            Title name: Dante's Inferno
+            """.trimIndent(),
+        )
+
+        assertThat(analysis.stage).isEqualTo(XeniaStartupStage.TITLE_METADATA_AVAILABLE)
+        assertThat(analysis.titleName).isEqualTo("Dante's Inferno")
+    }
+
+    @Test
+    fun `startup parser reports steady headless state from launcher marker`() {
+        val analysis = XeniaStartupStageParser.analyze(
+            """
+            Checking for XISO
+            Loading module game:\default.xex
+            Title name: Dante's Inferno
+            X360_XENIA_STAGE=TITLE_RUNNING_HEADLESS observation_seconds=30
+            """.trimIndent(),
+        )
+
+        assertThat(analysis.stage).isEqualTo(XeniaStartupStage.TITLE_RUNNING_HEADLESS)
+        assertThat(analysis.titleName).isEqualTo("Dante's Inferno")
+    }
+
+    @Test
+    fun `startup parser treats filesystem exception as fatal failure`() {
+        val analysis = XeniaStartupStageParser.analyze(
+            """
+            Loading module game:\default.xex
+            terminate called after throwing an instance of 'std::filesystem::__cxx11::filesystem_error'
+            what(): filesystem error: cannot create directories
+            """.trimIndent(),
+        )
+
+        assertThat(analysis.stage).isEqualTo(XeniaStartupStage.FAILED)
+        assertThat(analysis.detail).contains("filesystem_error")
     }
 }

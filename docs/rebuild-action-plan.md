@@ -4,7 +4,7 @@
 
 This repo is no longer "docs only".
 
-Phase 0, Phase 1, Phase 2, Phase 3A, Phase 3B, and Phase 4A are now implemented to the point where the Android wrapper can:
+Phase 0, Phase 1, Phase 2, Phase 3A, Phase 3B, Phase 4A, Phase 4B, and Phase 4C are now implemented to the point where the Android wrapper can:
 
 - build a real FEX host baseline from vendored source
 - install a deterministic runtime under `filesDir`
@@ -18,8 +18,12 @@ Phase 0, Phase 1, Phase 2, Phase 3A, Phase 3B, and Phase 4A are now implemented 
 - build a pinned-source Linux `x86_64` `Xenia Canary` binary inside this repo
 - stage Xenia into the guest runtime with deterministic config, logs, and metadata
 - launch Xenia through FEX on both devices and reach `VULKAN_INITIALIZED` without requiring a game image
+- persist a no-copy ISO library under app-owned metadata
+- import and resolve filesystem-backed ISO paths into `rootfs/mnt/library`
+- launch `Dante's Inferno` from ISO and reach `TITLE_MODULE_LOADING`
+- keep `Dante's Inferno` alive headless for the fixed observation window without fatal aborts on both devices
 
-The immediate blocker is no longer "make Turnip exist at all" and no longer "make Xenia start at all". The next milestone is title-aware Xenia bring-up and then presentation recovery.
+The immediate blocker is no longer "make Turnip exist at all", no longer "make Xenia start at all", and no longer "make a title survive module load". The next milestone is presentation recovery.
 
 ## What is implemented
 
@@ -80,7 +84,7 @@ The immediate blocker is no longer "make Turnip exist at all" and no longer "mak
 - active pin:
   - `sourceRef = canary_experimental`
   - `sourceRevision = c50b036178108f87cb0acaf3691a7c3caf07820f`
-  - `patchSetId = phase4-headless-posix-v2`
+  - `patchSetId = phase4-headless-steady-v1`
 - repo-owned Xenia patch queue under `third_party/xenia-patches/phase4`
 - generated Xenia runtime tree:
   - `rootfs/opt/x360-v3/xenia/bin/xenia-canary`
@@ -88,7 +92,14 @@ The immediate blocker is no longer "make Turnip exist at all" and no longer "mak
   - `rootfs/opt/x360-v3/xenia/bin/portable.txt`
   - `rootfs/opt/x360-v3/xenia/bin/logs`
   - `rootfs/opt/x360-v3/xenia/bin/cache`
+  - `rootfs/opt/x360-v3/xenia/bin/cache0`
+  - `rootfs/opt/x360-v3/xenia/bin/cache1`
+  - `rootfs/opt/x360-v3/xenia/bin/scratch`
+  - `rootfs/opt/x360-v3/xenia/cache-host`
+  - `rootfs/opt/x360-v3/xenia/cache-host/modules`
+  - `rootfs/opt/x360-v3/xenia/cache-host/shaders/shareable`
   - `rootfs/opt/x360-v3/xenia/content`
+  - `rootfs/mnt/library`
 - generated metadata:
   - `payload/config/xenia-source-lock.json`
   - `payload/config/xenia-build-metadata.json`
@@ -96,6 +107,9 @@ The immediate blocker is no longer "make Turnip exist at all" and no longer "mak
   - GTK-independent headless app context
   - `memfd_create`-first POSIX memory mapping
   - null-safe headless path when no ImGui drawer exists
+  - non-fatal module cache initialization for headless title boot
+- persistent incremental build workspace for local Xenia development
+- JSON-backed no-copy ISO library with title-aware launch
 
 ### Archived outputs
 
@@ -251,26 +265,91 @@ Phase 4A is considered complete in this repo because all of the following are no
 - Xenia bring-up reaches `VULKAN_INITIALIZED`
 - guest log confirms `Adreno (TM) 830`
 
-## Next milestone: Phase 4B
+### Phase 4B: ISO-first title boot
+
+Status: complete
+
+Delivered:
+
+- JSON-backed game library under `filesDir/library/game-library.json`
+- no-copy ISO import and persistence
+- filesystem-backed resolver for `file://` and supported `content://` paths
+- guest content portal under `rootfs/mnt/library/<entry-id>.iso`
+- title-aware Xenia launch path
+- startup stages:
+  - `DISC_IMAGE_ACCEPTED`
+  - `TITLE_MODULE_LOADING`
+  - `TITLE_METADATA_AVAILABLE`
+- `Dante's Inferno` smoke path validated to title boot from ISO on both devices
+
+### Phase 4C: Steady-state headless title run
+
+Status: complete
+
+Delivered:
+
+- Xenia cache root moved to `rootfs/opt/x360-v3/xenia/cache-host`
+- guest-writable cache and scratch directories created deterministically before launch
+- repo-owned Xenia patch to make module cache initialization non-fatal
+- startup stage `TITLE_RUNNING_HEADLESS`
+- steady-state success policy for imported titles
+- diagnostic capture for:
+  - alive-after-module-load seconds
+  - cache backend status
+  - cache root path
+  - title metadata seen
+- persistent incremental Xenia build path for local debug rebuilds
+
+## Verified Phase 4C result
+
+Phase 4C is considered complete in this repo because all of the following are now true:
+
+- the Vulkan probe still passes with `lavapipe`
+- the Turnip hardware probe still passes on `AYN Odin2 Mini`
+- the Turnip hardware probe still passes on `Odin3`
+- Xenia is still built from pinned source inside this repo
+- imported ISO titles still pass through deterministic no-copy portalization
+- `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS` on both connected devices
+- the process survives the observation window without the previous `std::filesystem::filesystem_error` abort
+
+### Verified per-device outcome
+
+`AYN Odin2 Mini`:
+
+- AUTO branch resolves to `mesa25`
+- Turnip probe passes
+- Xenia bring-up reaches `VULKAN_INITIALIZED`
+- `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
+
+`Odin3`:
+
+- AUTO branch resolves to `mesa26`
+- Turnip probe passes
+- `KgslPropertiesInstrumentedTest` confirms `ubwc_mode = 5`
+- Xenia bring-up reaches `VULKAN_INITIALIZED`
+- `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
+
+## Next milestone: Phase 5
 
 ### Goal
 
-Move from no-title Xenia startup to first title-aware Xenia bring-up while keeping the validated FEX and Turnip baseline green on both devices.
+Move from headless stable title execution to visible frame/output recovery while keeping the validated FEX, Turnip, and title-boot baseline green on both devices.
 
 ### Scope
 
 - keep the current FEX and Turnip regression matrix intact
-- add the smallest deterministic content handoff needed to prove Xenia can launch a target path
-- keep the work non-presenting until title boot is stable
-- continue to defer Android surface handoff and `xenia_fb` recovery
+- keep the stable no-copy title launch path intact
+- recover the first observable frame/output path
+- continue to defer input and audio until output is diagnosable
 
 ### Pass criteria
 
 - the Vulkan probe still passes with `lavapipe`
 - the Turnip probe still passes on both devices
 - Xenia still reaches `VULKAN_INITIALIZED`
-- the first title-aware launch path is real and diagnosable
-- later failures, if any, are inside Xenia title boot or remaining graphics bridge work, not in FEX or Turnip
+- `Dante's Inferno` still reaches `TITLE_RUNNING_HEADLESS`
+- the first visible output path is real and diagnosable
+- later failures, if any, are inside presentation recovery rather than FEX, Turnip, or title boot
 
 ## Main risks from here
 

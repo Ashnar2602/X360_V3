@@ -12,7 +12,7 @@ class XeniaMetadataCodecTest {
               "sourceRef": "canary_experimental",
               "sourceRevision": "c50b036178108f87cb0acaf3691a7c3caf07820f",
               "buildProfile": "linux-x64-release",
-              "patchSetId": "phase4-headless-posix-v2"
+              "patchSetId": "phase4-headless-steady-v1"
             }
         """.trimIndent()
 
@@ -22,7 +22,7 @@ class XeniaMetadataCodecTest {
         assertThat(lock.sourceRef).isEqualTo("canary_experimental")
         assertThat(lock.sourceRevision).isEqualTo("c50b036178108f87cb0acaf3691a7c3caf07820f")
         assertThat(lock.buildProfile).isEqualTo("linux-x64-release")
-        assertThat(lock.patchSetId).isEqualTo("phase4-headless-posix-v2")
+        assertThat(lock.patchSetId).isEqualTo("phase4-headless-steady-v1")
     }
 
     @Test

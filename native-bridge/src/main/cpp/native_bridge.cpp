@@ -355,3 +355,42 @@ Java_emu_x360_mobile_dev_nativebridge_NativeBridge_inspectKgslProperties(JNIEnv*
   __android_log_print(ANDROID_LOG_INFO, kTag, "inspectKgslProperties=%s", report.c_str());
   return StringToJString(env, report);
 }
+
+extern "C" JNIEXPORT jint JNICALL
+Java_emu_x360_mobile_dev_nativebridge_NativeBridge_adoptFdForExec(JNIEnv* /* env */,
+                                                                  jobject /* this */,
+                                                                  jint raw_fd,
+                                                                  jint minimum_fd) {
+  const int duplicated_fd = fcntl(raw_fd, F_DUPFD, minimum_fd);
+  const int duplicate_errno = errno;
+  close(raw_fd);
+  if (duplicated_fd < 0) {
+    __android_log_print(ANDROID_LOG_ERROR, kTag,
+                        "adoptFdForExec(raw=%d, min=%d) failed: errno=%d",
+                        raw_fd, minimum_fd, duplicate_errno);
+    return -duplicate_errno;
+  }
+
+  const int flags = fcntl(duplicated_fd, F_GETFD);
+  if (flags >= 0) {
+    fcntl(duplicated_fd, F_SETFD, flags & ~FD_CLOEXEC);
+  }
+
+  __android_log_print(ANDROID_LOG_INFO, kTag,
+                      "adoptFdForExec(raw=%d, min=%d) -> %d",
+                      raw_fd, minimum_fd, duplicated_fd);
+  return duplicated_fd;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_emu_x360_mobile_dev_nativebridge_NativeBridge_closeFd(JNIEnv* /* env */,
+                                                           jobject /* this */,
+                                                           jint fd) {
+  const int result = close(fd);
+  if (result != 0) {
+    __android_log_print(ANDROID_LOG_WARN, kTag, "closeFd(%d) failed: errno=%d",
+                        fd, errno);
+    return JNI_FALSE;
+  }
+  return JNI_TRUE;
+}

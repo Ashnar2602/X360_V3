@@ -1,6 +1,7 @@
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
 import kotlin.io.path.readText
@@ -108,19 +109,25 @@ class XeniaRuntimeAssembler(
     fun buildAndStage(
         lock: XeniaSourceBuildLock,
         sourceCacheDir: Path,
-        workingRoot: Path,
+        workingRootBase: Path,
         outputRoot: Path,
         patchesRoot: Path,
+        buildMode: XeniaBuildMode,
     ): GeneratedXeniaBuildMetadata {
         deleteRecursively(outputRoot)
-        workingRoot.createDirectories()
         outputRoot.createDirectories()
 
-        val checkoutDir = workingRoot.resolve("checkout")
-        prepareSourceCheckout(lock, sourceCacheDir, checkoutDir)
         val patchFiles = resolvePatchFiles(lock, patchesRoot)
         val vulkanSdkOverride = ensureModernVulkanSdk(sourceCacheDir.parent.resolve("vulkan-sdk-cache"))
-        val executable = buildXenia(lock, checkoutDir, patchFiles, vulkanSdkOverride)
+        val workspaceKey = computeXeniaWorkspaceKey(lock, patchFiles, vulkanSdkOverride)
+        val workingRoot = when (buildMode) {
+            XeniaBuildMode.FULL -> workingRootBase.resolve("full-$workspaceKey-${System.nanoTime()}")
+            XeniaBuildMode.INCREMENTAL -> workingRootBase.resolve(workspaceKey)
+        }
+        workingRoot.createDirectories()
+        val checkoutDir = workingRoot.resolve("checkout")
+        prepareSourceCheckout(lock, sourceCacheDir, checkoutDir, patchFiles, buildMode, workspaceKey)
+        val executable = buildXenia(lock, checkoutDir, vulkanSdkOverride, buildMode)
         val dependencyResolution = resolveGuestDependencies(executable, workingRoot.resolve("downloads"))
 
         stageRuntimeTree(
@@ -170,8 +177,20 @@ class XeniaRuntimeAssembler(
         lock: XeniaSourceBuildLock,
         sourceCacheDir: Path,
         checkoutDir: Path,
+        patchFiles: List<Path>,
+        buildMode: XeniaBuildMode,
+        workspaceKey: String,
     ) {
+        val preparedStamp = checkoutDir.parent.resolve(".x360-v3-workspace-key")
         ensureSourceCache(lock, sourceCacheDir)
+        val checkoutReady = buildMode == XeniaBuildMode.INCREMENTAL &&
+            checkoutDir.resolve(".git").exists() &&
+            preparedStamp.exists() &&
+            preparedStamp.readText() == workspaceKey
+        if (checkoutReady) {
+            return
+        }
+
         deleteRecursively(checkoutDir)
         runProcess(
             command = listOf(
@@ -196,6 +215,20 @@ class XeniaRuntimeAssembler(
             ),
             workingDirectory = null,
         )
+        patchFiles.forEach { patchFile ->
+            runProcess(
+                command = listOf(
+                    "git",
+                    "-C",
+                    checkoutDir.toString(),
+                    "apply",
+                    "--whitespace=nowarn",
+                    patchFile.toString(),
+                ),
+                workingDirectory = null,
+            )
+        }
+        writeUtf8(preparedStamp, workspaceKey)
     }
 
     private fun ensureSourceCache(
@@ -289,13 +322,16 @@ class XeniaRuntimeAssembler(
     private fun buildXenia(
         lock: XeniaSourceBuildLock,
         checkoutDir: Path,
-        patchFiles: List<Path>,
         vulkanSdkOverride: String?,
+        buildMode: XeniaBuildMode,
     ): Path {
         val buildConfig = resolveBuildConfig(lock.buildProfile)
         val resultPath = checkoutDir.resolve("xenia-build-result.txt")
         val sourceDirWsl = toWslPath(checkoutDir)
         val resultPathWsl = toWslPath(resultPath)
+        val setupSignature = computeXeniaSetupSignature(lock, vulkanSdkOverride)
+        val setupSignatureFile = checkoutDir.resolve("build/.x360-v3-setup-signature")
+        val setupSignatureFileWsl = toWslPath(setupSignatureFile)
         val vulkanSdkExports = if (vulkanSdkOverride.isNullOrBlank()) {
             ""
         } else {
@@ -304,12 +340,10 @@ class XeniaRuntimeAssembler(
             export PATH="${'$'}VULKAN_SDK/bin:${'$'}PATH"
             """.trimIndent()
         }
-        val patchCommands = if (patchFiles.isEmpty()) {
-            "true"
-        } else {
-            patchFiles.joinToString("\n") { patchFile ->
-                "git -C ${shellQuote(sourceDirWsl)} apply --whitespace=nowarn ${shellQuote(toWslPath(patchFile))}"
-            }
+        val buildCommand = when (buildMode) {
+            XeniaBuildMode.FULL -> "python3 xenia-build.py build --cc clang --config ${buildConfig.cliName} --target xenia-app"
+            XeniaBuildMode.INCREMENTAL ->
+                "cmake --build build --config ${buildConfig.outputDirectoryName} --target xenia-app"
         }
         val script = """
             set -euo pipefail
@@ -317,12 +351,23 @@ class XeniaRuntimeAssembler(
             find . -type f \( -name "*.py" -o -name "*.sh" -o -name "*.lua" \) -exec sed -i 's/\r$//' {} +
             git config core.autocrlf false
             git config core.eol lf
-            $patchCommands
             export CC=clang
             export CXX=clang++
             $vulkanSdkExports
-            python3 xenia-build.py setup
-            python3 xenia-build.py build --cc clang --config ${buildConfig.cliName} --target xenia-app
+            SETUP_REQUIRED=1
+            if [ -f ${shellQuote(setupSignatureFileWsl)} ] && [ ${shellQuote(setupSignature)} = "${'$'}(cat ${shellQuote(setupSignatureFileWsl)})" ]; then
+              SETUP_REQUIRED=0
+            fi
+            if [ "${buildMode.name}" = "FULL" ]; then
+              SETUP_REQUIRED=1
+            fi
+            if [ "${'$'}SETUP_REQUIRED" = "1" ]; then
+              rm -rf build
+              python3 xenia-build.py setup
+              mkdir -p ${shellQuote(toWslPath(checkoutDir.resolve("build")))}
+              printf '%s\n' ${shellQuote(setupSignature)} > ${shellQuote(setupSignatureFileWsl)}
+            fi
+            $buildCommand
             BIN_PATH=${'$'}(find "${'$'}PWD/build/bin/Linux/${buildConfig.outputDirectoryName}" -maxdepth 1 -type f \( -name xenia_canary -o -name xenia-app \) -perm -111 | head -n 1)
             if [ -z "${'$'}BIN_PATH" ]; then
                 echo "Unable to locate built xenia_canary binary" >&2
@@ -464,14 +509,26 @@ class XeniaRuntimeAssembler(
         val rootfsOutput = outputRoot.resolve("rootfs")
         val xeniaBinDir = rootfsOutput.resolve("opt").resolve("x360-v3").resolve("xenia").resolve("bin")
         val xeniaContentDir = rootfsOutput.resolve("opt").resolve("x360-v3").resolve("xenia").resolve("content")
+        val xeniaCacheHostDir = rootfsOutput.resolve("opt").resolve("x360-v3").resolve("xenia").resolve("cache-host")
+        val xeniaCacheModulesDir = xeniaCacheHostDir.resolve("modules")
+        val xeniaCacheShadersShareableDir = xeniaCacheHostDir.resolve("shaders").resolve("shareable")
         val xeniaLogsDir = xeniaBinDir.resolve("logs")
         val xeniaCacheDir = xeniaBinDir.resolve("cache")
+        val xeniaCacheSlot0Dir = xeniaBinDir.resolve("cache0")
+        val xeniaCacheSlot1Dir = xeniaBinDir.resolve("cache1")
+        val xeniaScratchDir = xeniaBinDir.resolve("scratch")
         xeniaBinDir.createDirectories()
         xeniaContentDir.createDirectories()
+        xeniaCacheHostDir.createDirectories()
+        xeniaCacheModulesDir.createDirectories()
+        xeniaCacheShadersShareableDir.createDirectories()
         xeniaLogsDir.createDirectories()
         xeniaCacheDir.createDirectories()
+        xeniaCacheSlot0Dir.createDirectories()
+        xeniaCacheSlot1Dir.createDirectories()
+        xeniaScratchDir.createDirectories()
 
-        Files.copy(executable, xeniaBinDir.resolve("xenia-canary"))
+        Files.copy(executable, xeniaBinDir.resolve("xenia-canary"), StandardCopyOption.REPLACE_EXISTING)
         xeniaBinDir.resolve("xenia-canary").toFile().setExecutable(true, false)
         writeUtf8(xeniaBinDir.resolve("portable.txt"), "portable-mode\n")
         writeUtf8(
@@ -490,7 +547,7 @@ class XeniaRuntimeAssembler(
             val source = resolveExtractedLibrarySource(packageRoot, library)
             val destination = outputRoot.resolve(library.installPath).normalize()
             destination.parent?.createDirectories()
-            Files.copy(source, destination)
+            Files.copy(source, destination, StandardCopyOption.REPLACE_EXISTING)
             destination.toFile().setExecutable(true, false)
         }
 
@@ -519,11 +576,11 @@ class XeniaRuntimeAssembler(
             headless = true
             
             [Storage]
-            mount_cache = true
+            mount_cache = false
             mount_memory_unit = false
             mount_scratch = false
             content_root = "../content"
-            cache_root = "./cache"
+            cache_root = "../cache-host"
         """.trimIndent() + "\n"
     }
 
