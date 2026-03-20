@@ -1,0 +1,47 @@
+{
+  "archivedAt": "2026-03-20",
+  "scope": "Phase 4A pinned-source Xenia bring-up to Vulkan init",
+  "appDebugApk": {
+    "included": false,
+    "reason": "app-debug.apk exceeds GitHub 100 MB per-file limit",
+    "sizeBytes": 132622121,
+    "sha256": "3e81361b754c1516b74cf45c105e1d70702a4fe800a266924d26ad8064bf742c"
+  },
+  "files": [
+    {
+      "path": "xenia/xenia-canary",
+      "sizeBytes": 16319248,
+      "sha256": "e8ddf6702547483f45a0b508e944f66dbde490088e8021a1e1cfd04d16e563bf"
+    },
+    {
+      "path": "xenia/xenia-source-lock.json",
+      "sizeBytes": 255,
+      "sha256": "4ef5d9267001c2ef5aaf6d5c9ee14543c22efbe23ab33453b1ae92d212455e04"
+    },
+    {
+      "path": "xenia/xenia-build-metadata.json",
+      "sizeBytes": 40294,
+      "sha256": "959d923e3774020e6ffdd2f934f40d834c422f3e58c78cac70fe7081e25541fb"
+    },
+    {
+      "path": "fex/libFEXLoader.so",
+      "sizeBytes": 43637832,
+      "sha256": "d85bbfb2a6415b5e728f39d56075cfd7fd2709190f11d76f92380585d203decf"
+    },
+    {
+      "path": "fex/libFEXCore.so",
+      "sizeBytes": 29939224,
+      "sha256": "e1828fde9b0c51f7587ffa92769b722978030941c0d66b977c313813455e80a5"
+    },
+    {
+      "path": "fex/fex-build-metadata.json",
+      "sizeBytes": 522,
+      "sha256": "894e143bd6b311ef9bbe6610cf59c44a74c3b149bb845654f5687ffbc1a80477"
+    },
+    {
+      "path": "android/app-debug-androidTest.apk",
+      "sizeBytes": 5302148,
+      "sha256": "83f1b9031eca3320dd2cdf05b1648dfc82699b5e60f0c681ed7e9ede162c7f5d"
+    }
+  ]
+}

@@ -6,118 +6,114 @@ Use the most conservative setup possible to recover the previously working proto
 
 ## FEX strategy
 
-### Baseline
+### Active baseline
 
-- Start from `FEX 2601`
+- `FEX 2601`-family source pin:
+  - `49a37c7d6fec7d94923507e5ce10d55c2920e380`
 
 Reason:
 
-- it is the version remembered as definitely working in the original prototype
-- it reduces the number of moving parts during reconstruction
+- it is the version family remembered as definitely working in the original prototype
 - it gives us a stable reference point for later A/B testing
+- the repo already carries the Android-specific patch queue needed to build and run this baseline reproducibly
 
 ### Modernization track
 
-- Evaluate `FEX 2603` only after the `2601` baseline is reproducible
+- evaluate `FEX 2603+` only after the current baseline needs a justified upgrade
 
 Reason:
 
-- `2603` likely contains useful optimizations and fixes
-- it may also change JIT, code cache, thunk, or memory behavior in ways that alter runtime stability
-- introducing it before baseline recovery would make regression attribution much harder
+- newer FEX versions likely contain useful optimizations and fixes
+- they may also change JIT, memory, or thunk behavior in ways that complicate regression attribution
 
 ## Mesa strategy
 
-## Proposed approach
+### Active packaging model
 
 Bundle two separate `x86_64` Mesa/Turnip runtime trees:
 
-- `Mesa 25.x`
-- `Mesa 26.x`
-
-At launch time, select the Mesa tree based on GPU family and an override policy.
-
-## Why this is viable
-
-Vulkan loader behavior supports selecting driver manifests at runtime through driver manifest configuration such as `VK_DRIVER_FILES` or `VK_ICD_FILENAMES`, provided the corresponding libraries are discoverable by the runtime loader as well.
-
-This means the app can package more than one driver/runtime layout and choose which one a guest process should see.
-
-## Recommended policy
-
-### Initial automatic policy
-
-- default to `Mesa 25.x` for Adreno `6xx` and `7xx`
-- default to `Mesa 26.x` for Adreno `8xx`
-
-### Important constraint
-
-This should be treated as a starting heuristic, not as a permanent rule.
-
-The real policy should become:
-
-- series-based default
-- device-specific allowlist and denylist
-- manual override for testing and recovery
-
-## Why a pure series split may be too coarse
-
-- some `7xx` devices may behave better on `26.x`
-- some early `8xx` targets may still expose issues that make `25.x` worth testing if support exists there
-- game-specific regressions may cut across series boundaries
-
-## Packaging requirements
-
-To avoid collisions, each Mesa tree should be isolated as a self-contained runtime bundle, including at minimum:
-
-- Vulkan driver manifest JSON
-- Turnip shared libraries
-- required Mesa dependencies
-- any helper libraries needed by the selected userspace path
-
-The selected process environment should point only at one Mesa tree at a time.
-
-## Selection requirements
-
-At process launch, the app should determine:
-
-- GPU family
-- specific device override rules
-- whether the user has forced a preferred Mesa branch
-
-Then it should expose only the chosen stack to the translated `x86_64` guest process.
-
-## Recommended override controls
-
-- `auto`
 - `mesa25`
 - `mesa26`
 
-This is useful both for debugging and for field reports.
+At launch time, select the Mesa tree based on measured device policy and a manual override.
 
-## Risk tradeoffs
+### Actual measured policy in this repo
 
-### Benefits
+- `kalama` / `QCS8550` -> `mesa25`
+- `sun` / `CQ8725S` -> `mesa26`
+- unknown Qualcomm -> `mesa25`
+- non-Qualcomm -> `lavapipe`
 
-- wider device coverage without forcing one Mesa branch to fit every Adreno generation
-- easier bisecting of graphics regressions
-- controlled migration path toward newer GPUs
+Reason:
 
-### Costs
+- `AYN Odin2 Mini` is stable on `mesa25`
+- `Odin3` requires the `mesa26` path plus the repo-owned UBWC `5.0` / `6.0` fix
+- theoretical generation-only rules were useful to start, but measured device behavior now wins
 
-- larger app size
-- more packaging complexity
-- more QA combinations
-- need for careful library and manifest separation
+### Important constraint
+
+This should be treated as a live device policy, not a permanent law.
+
+The real policy remains:
+
+- measured defaults
+- device-specific allowlist and denylist
+- manual override for testing and recovery
+
+### Current Mesa pins
+
+- `mesa25`: `25.3` branch snapshot `7f1ccad77883be68e7750ab30b99b16df02e679d`
+- `mesa26`: `main` snapshot `44669146808b74024b9befeb59266db18ae5e165`
+
+### Current Mesa patching
+
+- `mesa26` carries patch set `ubwc5-a830-v1`
+
+Reason:
+
+- Odin3 reports `ubwc_mode = 5`
+- the fix belongs in Mesa/Freedreno guest-side, not in the Android wrapper
+- the patch makes the KGSL Turnip path accept UBWC `5.0` / `6.0` and defer the final config to Mesa's existing A8xx/A830 device database
+
+## Xenia strategy
+
+### Historical reference
+
+- `canary_experimental@d9747704bedc4e691ba243bf399647b836ce493e`
+
+Use:
+
+- historical forensics anchor
+- useful for understanding the previously working prototype
+- not the active bring-up target anymore
+
+### Active bring-up baseline
+
+- `canary_experimental@c50b036178108f87cb0acaf3691a7c3caf07820f`
+- patch set: `phase4-headless-posix-v2`
+
+Reason:
+
+- upstream Canary is active and materially newer than the forensic pin
+- the goal is a working Android/FEX/Linux bring-up, not archaeological replay at all costs
+- the current repo-owned patch queue captures the minimum POSIX/headless fixes needed for Phase 4A
+
+### Comparative track
+
+- study `Xenia Edge` as a Linux/Vulkan donor fork
+- keep `Canary` as the main base until a measured reason exists to pivot or cherry-pick
+
+Reason:
+
+- Edge is interesting for Linux/Vulkan ideas and newer fixes
+- changing emulator base too early would multiply variables while the stack is still being reconstructed
 
 ## Practical conclusion
 
-Yes, a unified app with dual Mesa bundles is a sensible plan.
+The current version strategy is now:
 
-For this project, the safest rollout is:
-
-1. recover the prototype with `FEX 2601`
-2. keep dual-Mesa support in the design from the start
-3. treat `Mesa 25.x` as the first baseline for Adreno `7xx`
-4. add `Mesa 26.x` as the modern branch for Adreno `8xx`
-5. keep an override path so the defaults can be corrected by real test data
+1. keep the reconstructed FEX `2601` baseline stable
+2. keep dual-Mesa support and measured device routing
+3. keep modern pinned `Canary` as the active Xenia baseline
+4. preserve the historical Xenia pin as a forensic reference, not as the default build target
+5. archive successful artifacts and exact hashes whenever a milestone becomes real

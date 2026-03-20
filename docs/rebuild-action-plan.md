@@ -4,21 +4,22 @@
 
 This repo is no longer "docs only".
 
-Phase 0, Phase 1, Phase 2, Phase 3A, and Phase 3B are now implemented to the point where the Android wrapper can:
+Phase 0, Phase 1, Phase 2, Phase 3A, Phase 3B, and Phase 4A are now implemented to the point where the Android wrapper can:
 
 - build a real FEX host baseline from vendored source
 - install a deterministic runtime under `filesDir`
 - launch a real Linux `x86_64` guest ELF on Android arm64
-- launch a dynamic Linux `x86_64` guest ELF with guest glibc/loader resolution
+- launch a dynamic Linux `x86_64` guest ELF with guest glibc and loader resolution
 - launch a guest Vulkan probe that links `libvulkan.so.1`, creates a Vulkan instance, and enumerates physical devices through `lavapipe`
 - build dual guest Mesa trees from pinned upstream source snapshots through repo-owned WSL tasks
 - launch the same guest Vulkan probe through a Turnip guest path with branch-aware ICD selection
-- write separated `app`, `fex`, and `guest` logs
-- repeat the launch successfully on the current baseline devices
 - surface a verified hardware Turnip pass on `AYN Odin2 Mini`
 - surface a verified hardware Turnip pass on `Odin3` after a real Mesa-side UBWC `5.0` / `6.0` fix in `mesa26`
+- build a pinned-source Linux `x86_64` `Xenia Canary` binary inside this repo
+- stage Xenia into the guest runtime with deterministic config, logs, and metadata
+- launch Xenia through FEX on both devices and reach `VULKAN_INITIALIZED` without requiring a game image
 
-The next milestone is no longer "make Turnip exist at all", and Odin3 Turnip stabilization is no longer the blocker. The immediate path is to start the first `Xenia Canary` bring-up while keeping the new dual-device Turnip probe matrix green.
+The immediate blocker is no longer "make Turnip exist at all" and no longer "make Xenia start at all". The next milestone is title-aware Xenia bring-up and then presentation recovery.
 
 ## What is implemented
 
@@ -31,8 +32,12 @@ The next milestone is no longer "make Turnip exist at all", and Odin3 Turnip sta
 - `fixtures/guest-tests`
 - `fixtures/guest-runtime`
 - `fixtures/mesa-runtime`
+- `fixtures/xenia-runtime`
 - `third_party/FEX`
 - `third_party/fex-patches/android`
+- `third_party/mesa-patches`
+- `third_party/xenia-patches/phase4`
+- `artifacts/phase4a-vulkan-init`
 
 ### FEX baseline
 
@@ -41,68 +46,77 @@ The next milestone is no longer "make Turnip exist at all", and Odin3 Turnip sta
 - built from source inside this repo
 - Android fixes kept as repo-owned patches, not ad-hoc edits in the submodule checkout
 
-### Runtime pipeline
+### Guest runtime and Vulkan baseline
 
 - generated runtime assets for guest-side files
 - generated `jniLibs` for FEX host artifacts
 - generated Turnip Mesa guest trees from pinned source snapshots
+- generated Xenia bring-up guest runtime from a pinned source build
 - deterministic overlay flow:
-  - repo mock payload
+  - repo payload
   - generated FEX guest assets
   - generated Vulkan-baseline guest assets
   - generated Turnip-baseline guest assets
+  - generated Xenia bring-up assets
   - optional `_local/runtime-drop/` for debug builds
 
-### Host artifacts
+### Mesa / Turnip baseline
 
-- `libFEXLoader.so`
-- `libFEXCore.so`
-
-These are packaged as APK native libs, not app assets. The app enables legacy JNI lib extraction so `applicationInfo.nativeLibraryDir` contains executable filesystem paths for the FEX loader contract.
-
-### Guest-side Phase 2 payload
-
-- micro-rootfs skeleton
-- static `hello_x86_64` ELF fixture
-- generated FEX build metadata JSON
-
-### Guest-side Phase 3A payload
-
-- Ubuntu 24.04 `amd64` guest-runtime lock manifest with pinned package URLs and `sha256`
-- generated guest rootfs slice assembled from the pinned `.deb` packages
-- guest glibc loader under `rootfs/lib64/ld-linux-x86-64.so.2`
-- guest runtime libraries under `rootfs/lib/x86_64-linux-gnu`
-- guest Vulkan loader under `rootfs/usr/lib/x86_64-linux-gnu/libvulkan.so.1`
-- guest `lavapipe` ICD under `rootfs/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so`
-- guest ICD JSON under `rootfs/usr/share/vulkan/icd.d/lvp_icd.json`
-- generated guest runtime metadata JSON
-- dynamic `dyn_hello_x86_64` guest probe
-- `vulkan_probe_x86_64` guest probe
-
-### Guest-side Phase 3B payload
-
-- repo-owned Mesa source lock manifest under `fixtures/mesa-runtime/mesa-turnip-source-lock.json`
-- WSL preflight for `meson`, `ninja`, `clang`, `python3`, `bison`, `flex`, `pkg-config`, `cmake`, `curl`, `glslangValidator`
-- generated `mesa25` guest tree from `25.3` branch snapshot `7f1ccad77883be68e7750ab30b99b16df02e679d`
-- generated `mesa26` guest tree from `main` snapshot `44669146808b74024b9befeb59266db18ae5e165`
+- `mesa25` guest tree from `25.3` branch snapshot `7f1ccad77883be68e7750ab30b99b16df02e679d`
+- `mesa26` guest tree from `main` snapshot `44669146808b74024b9befeb59266db18ae5e165`
 - repo-owned Mesa patch queue under `third_party/mesa-patches`
-- `mesa26` patch set `ubwc5-a830-v1`, applied during asset generation and carried into `mesa-runtime-metadata.json`
-- staged bundle roots:
-  - `rootfs/opt/x360-v3/mesa/mesa25/lib`
-  - `rootfs/opt/x360-v3/mesa/mesa25/icd/turnip_icd.json`
-  - `rootfs/opt/x360-v3/mesa/mesa26/lib`
-  - `rootfs/opt/x360-v3/mesa/mesa26/icd/turnip_icd.json`
-- generated Mesa runtime metadata JSON
-- AUTO/manual selection policy between `mesa25`, `mesa26`, and `lavapipe`
-- KGSL preflight before Turnip launch
+- `mesa26` patch set `ubwc5-a830-v1`
+- branch-aware Vulkan launch environment
+- KGSL preflight
+- measured AUTO/manual branch policy:
+  - `kalama` / `QCS8550` -> `mesa25`
+  - `sun` / `CQ8725S` -> `mesa26`
+  - unknown Qualcomm -> `mesa25`
+  - non-Qualcomm -> `lavapipe`
 
-### Runtime contract
+### Xenia bring-up baseline
+
+- Xenia source lock under `fixtures/xenia-runtime/xenia-source-lock.json`
+- active pin:
+  - `sourceRef = canary_experimental`
+  - `sourceRevision = c50b036178108f87cb0acaf3691a7c3caf07820f`
+  - `patchSetId = phase4-headless-posix-v2`
+- repo-owned Xenia patch queue under `third_party/xenia-patches/phase4`
+- generated Xenia runtime tree:
+  - `rootfs/opt/x360-v3/xenia/bin/xenia-canary`
+  - `rootfs/opt/x360-v3/xenia/bin/xenia-canary.config.toml`
+  - `rootfs/opt/x360-v3/xenia/bin/portable.txt`
+  - `rootfs/opt/x360-v3/xenia/bin/logs`
+  - `rootfs/opt/x360-v3/xenia/bin/cache`
+  - `rootfs/opt/x360-v3/xenia/content`
+- generated metadata:
+  - `payload/config/xenia-source-lock.json`
+  - `payload/config/xenia-build-metadata.json`
+- headless POSIX bring-up fixes delivered by the patch queue:
+  - GTK-independent headless app context
+  - `memfd_create`-first POSIX memory mapping
+  - null-safe headless path when no ImGui drawer exists
+
+### Archived outputs
+
+The current successful bring-up binaries are archived under `artifacts/phase4a-vulkan-init/`:
+
+- `xenia/xenia-canary`
+- `xenia/xenia-source-lock.json`
+- `xenia/xenia-build-metadata.json`
+- `fex/libFEXLoader.so`
+- `fex/libFEXCore.so`
+- `fex/fex-build-metadata.json`
+- `android/app-debug-androidTest.apk`
+- `artifact-manifest.json`
+
+The main `app-debug.apk` is not committed because it exceeds GitHub's `100 MB` per-file limit, but its exact `sha256` and size are captured in `artifact-manifest.json`.
+
+## Runtime contract
 
 Fixed runtime paths now include:
 
-- `<filesDir>/rootfs`
 - `<filesDir>/rootfs/lib64/ld-linux-x86-64.so.2`
-- `<filesDir>/rootfs/lib/x86_64-linux-gnu/...`
 - `<filesDir>/rootfs/usr/lib/x86_64-linux-gnu/libvulkan.so.1`
 - `<filesDir>/rootfs/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so`
 - `<filesDir>/rootfs/usr/share/vulkan/icd.d/lvp_icd.json`
@@ -110,180 +124,28 @@ Fixed runtime paths now include:
 - `<filesDir>/rootfs/opt/x360-v3/mesa/mesa25/icd/turnip_icd.json`
 - `<filesDir>/rootfs/opt/x360-v3/mesa/mesa26/lib/libvulkan_freedreno.so`
 - `<filesDir>/rootfs/opt/x360-v3/mesa/mesa26/icd/turnip_icd.json`
-- `<filesDir>/rootfs/tmp`
-- `<filesDir>/.fex-emu/Config.json`
-- `<filesDir>/payload/guest-tests/bin/hello_x86_64`
-- `<filesDir>/payload/guest-tests/bin/dyn_hello_x86_64`
-- `<filesDir>/payload/guest-tests/bin/vulkan_probe_x86_64`
+- `<filesDir>/rootfs/opt/x360-v3/xenia/bin/xenia-canary`
+- `<filesDir>/rootfs/opt/x360-v3/xenia/bin/xenia-canary.config.toml`
 - `<filesDir>/payload/config/fex-build-metadata.json`
 - `<filesDir>/payload/config/guest-runtime-metadata.json`
-- `<filesDir>/payload/config/ubuntu-24.04-amd64-lvp.lock.json`
 - `<filesDir>/payload/config/mesa-runtime-metadata.json`
 - `<filesDir>/payload/config/mesa-turnip-source-lock.json`
+- `<filesDir>/payload/config/xenia-source-lock.json`
+- `<filesDir>/payload/config/xenia-build-metadata.json`
 - `<filesDir>/logs/app`
 - `<filesDir>/logs/fex`
 - `<filesDir>/logs/guest`
-- `<filesDir>/rootfs/tmp/fex_hello_ok.json`
-- `<filesDir>/rootfs/tmp/fex_dyn_hello_ok.json`
-- `<filesDir>/rootfs/tmp/fex_vulkan_probe.json`
 
 Historical placeholders remain reserved:
 
 - `rootfs/tmp/anative_window.ptr`
 - `rootfs/tmp/xenia_fb`
 
-## Important implementation decisions
-
-### 1. Modern Android tooling, pinned historical FEX
-
-The repo uses current Android project tooling, not the old wrapper stack:
-
-- AGP `9.1.0`
-- Gradle `9.3.1`
-- `compileSdk` / `targetSdk` `35`
-- `minSdk` `33`
-
-The historical compatibility pin is applied to the FEX source baseline, not to the entire Android project.
-
-### 2. NDK `27.2.12479018`
-
-The earlier working notes pointed toward `r25b`, but the actual bring-up in this repo is stabilized on `27.2.12479018`.
-
-Reason:
-
-- the pinned FEX commit `49a37c7` needed Android-specific integration fixes anyway
-- the current modern NDK produced a reproducible local and device-successful build
-- the reconstruction should optimize for a reproducible real baseline, not for historical-tool nostalgia
-
-If a later milestone proves a specific reason to move back to `r25b`, that can be tested explicitly.
-
-### 3. FEX patch queue is first-class
-
-The Android baseline is not "submodule plus luck". It is:
-
-- pinned commit
-- copied working tree
-- repo-owned patch queue applied during build preparation
-
-This is important because the commit is historically meaningful, but Android buildability required an explicit compatibility layer.
-
-### 4. Sentinel path is launcher-controlled
-
-The guest fixtures keep their original `/tmp/...` default sentinel paths.
-
-The current launcher passes relative sentinel paths inside the rootfs so host verification is deterministic under:
-
-- `<filesDir>/rootfs/tmp/fex_hello_ok.json`
-- `<filesDir>/rootfs/tmp/fex_dyn_hello_ok.json`
-- `<filesDir>/rootfs/tmp/fex_vulkan_probe.json`
-
-This avoids depending on unresolved guest absolute-path semantics while keeping the fixture provenance intact.
-
-### 5. Ubuntu 24.04 lock manifest is the source of truth
-
-The guest runtime is not copied from an opaque rootfs blob.
-
-It is assembled from a repo-owned lock manifest that pins:
-
-- distro and release
-- package URLs
-- package versions
-- `sha256`
-- extracted file slice
-
-This keeps the Phase 3A guest runtime reproducible and reviewable.
-
-### 6. Lavapipe first, Turnip later
-
-The Vulkan baseline is intentionally software-first:
-
-- `lavapipe` was chosen to prove guest loader, glibc, ICD, and Vulkan control flow without coupling to missing Turnip packaging details
-- this milestone proves guest Vulkan initialization discipline, not GPU correctness
-
-### 7. Dual-Mesa early, but policy follows measured device behavior
-
-The repo now packages both Mesa branches immediately:
-
-- `mesa25` as the stable Adreno `7xx` baseline
-- `mesa26` as the modern branch already ready in runtime
-
-The AUTO policy is now based on measured bring-up results, not only on the earlier paper plan:
-
-- `kalama` / `QCS8550` -> `mesa25`
-- `sun` / `CQ8725S` -> `mesa26`
-- other Qualcomm devices -> `mesa25` fallback
-- non-Qualcomm devices -> `lavapipe`
-
-This change was made because real device tests showed:
-
-- `AYN Odin2 Mini` succeeds with Turnip on refreshed `mesa25`
-- `Odin3` requires `mesa26` because it reports `ubwc_mode = 5`
-- `Odin3` passes the Turnip hardware probe once the repo-owned `mesa26` patch set teaches the KGSL path to accept UBWC `5.0` / `6.0` and let `fd_dev_info` provide the final A8xx/A830 UBWC config
-
-## Verified Phase 3B result
-
-### Pass statement
-
-Phase 3B is considered complete in this repo because all of the following are now true:
-
-- FEX host loader builds from vendored source inside the repo
-- the app can install its Phase 3B runtime deterministically
-- `hello_x86_64` still launches through real FEX on Android arm64
-- `dyn_hello_x86_64` launches through real FEX and creates `rootfs/tmp/fex_dyn_hello_ok.json`
-- `vulkan_probe_x86_64` can launch through:
-  - `lavapipe`
-  - `mesa25` Turnip
-  - `mesa26` Turnip
-- the guest Turnip hardware marker `X360_VK_PROBE_OK` is verified on the baseline pass device
-- `app`, `fex`, and `guest` logs are separated by session
-- repeated launch remains stable
-- `run-as emu.x360.mobile.dev` confirms:
-  - `mesa25/icd/turnip_icd.json`
-  - `mesa26/icd/turnip_icd.json`
-  - `fex_vulkan_probe.json`
-
-### Verified devices
-
-- `AYN Odin2 Mini` / Android 13 / API 33
-- `Odin3` / Android 15 / API 35
-
-### Verified per-device outcome
-
-`AYN Odin2 Mini`:
-
-- AUTO branch resolves to `mesa25`
-- `vulkan_probe_x86_64` succeeds through Turnip
-- manual `run-as` sentinel confirms:
-  - `marker = X360_VK_PROBE_OK`
-  - `driver_mode = turnip`
-  - `instance_ok = true`
-  - `device_count = 1`
-  - `device_name = "Turnip Adreno (TM) 740"`
-
-`Odin3`:
-
-- AUTO branch resolves to `mesa26`
-- `KgslPropertiesInstrumentedTest` confirms `ubwc_mode = 5`
-- the `mesa26` patch set `ubwc5-a830-v1` is present in generated runtime metadata
-- `launchTurnipProbeUsesHardwarePathAndSupportsRepeatLaunch` passes in connected tests
-- the probe now reaches a real hardware Turnip device instead of dying in `vkEnumeratePhysicalDevices`
-
-That means:
-
-- `AYN Odin2 Mini` is the current Phase 3B pass baseline
-- `Odin3` is now also a verified hardware-pass device for the Turnip probe milestone
-
 ## Phase status
 
 ### Phase 0: Reconstruction contract
 
 Status: complete
-
-Locked outcomes:
-
-- Linux `x86_64` guest flow
-- FEX-first Android wrapper design
-- headless/offscreen-first recovery strategy
 
 ### Phase 1: Wrapper skeleton
 
@@ -325,7 +187,6 @@ Delivered:
 - dynamic hello probe
 - Vulkan probe
 - connected-device verification
-- `run-as` verification on the real app runtime
 
 ### Phase 3B: Turnip guest Vulkan baseline
 
@@ -339,65 +200,80 @@ Delivered:
 - KGSL preflight
 - AUTO/manual branch selection policy
 - hardware Turnip pass on `AYN Odin2 Mini`
-- repo-owned `mesa26` patch queue for UBWC `5.0` / `6.0`
+- repo-owned `mesa26` UBWC `5.0` / `6.0` fix
 - hardware Turnip pass on `Odin3`
 
-## Next milestone: Phase 4
+### Phase 4A: Pinned-source Xenia bring-up to Vulkan init
+
+Status: complete
+
+Delivered:
+
+- pinned-source Xenia build pipeline through WSL
+- repo-owned Xenia patch queue
+- generated Xenia runtime slice under `rootfs/opt/x360-v3/xenia`
+- Xenia config and metadata staging
+- headless POSIX bring-up path without GTK window creation
+- `memfd_create`-first POSIX memory reservation path
+- Xenia startup-stage parsing
+- connected-device verification that `Launch Xenia Bring-up` reaches `VULKAN_INITIALIZED`
+
+## Verified Phase 4A result
+
+Phase 4A is considered complete in this repo because all of the following are now true:
+
+- the Vulkan probe still passes with `lavapipe`
+- the Turnip hardware probe still passes on `AYN Odin2 Mini`
+- the Turnip hardware probe still passes on `Odin3`
+- Xenia is built from pinned source inside this repo
+- Xenia is staged into the runtime with deterministic config and metadata
+- Xenia reaches `VULKAN_INITIALIZED` through FEX on both connected devices
+
+### Verified devices
+
+- `AYN Odin2 Mini` / Android 13 / API 33
+- `Odin3` / Android 15 / API 35
+
+### Verified per-device outcome
+
+`AYN Odin2 Mini`:
+
+- AUTO branch resolves to `mesa25`
+- Turnip probe passes
+- Xenia bring-up reaches `VULKAN_INITIALIZED`
+- guest log confirms `Turnip Adreno (TM) 740`
+
+`Odin3`:
+
+- AUTO branch resolves to `mesa26`
+- Turnip probe passes
+- `KgslPropertiesInstrumentedTest` confirms `ubwc_mode = 5`
+- Xenia bring-up reaches `VULKAN_INITIALIZED`
+- guest log confirms `Adreno (TM) 830`
+
+## Next milestone: Phase 4B
 
 ### Goal
 
-Start the first `Xenia Canary` bring-up on top of the now-validated Turnip baseline, while keeping both verified probe devices in the regression matrix.
+Move from no-title Xenia startup to first title-aware Xenia bring-up while keeping the validated FEX and Turnip baseline green on both devices.
 
 ### Scope
 
-Add the smallest credible guest-side stack that supports:
-
-- launching Linux `x86_64` `Xenia Canary` inside the validated guest runtime
-- keeping Turnip selection fixed on the validated device policy:
-  - `mesa25` on `AYN Odin2 Mini`
-  - `mesa26` on `Odin3`
-- recovering the first non-presenting Xenia startup path before worrying about visible output
-- preserving the existing probe path so Turnip regressions stay easy to isolate
-
-### Deliverables
-
-- first `Xenia Canary` guest packaging slice
-- launcher contract for Xenia sessions
-- first Xenia startup validation on the baseline Turnip device
-- diagnostics that separate:
-  - FEX failure
-  - Turnip failure
-  - Xenia startup failure
-- keeping Odin3 in the Turnip regression matrix while Phase 4 grows
+- keep the current FEX and Turnip regression matrix intact
+- add the smallest deterministic content handoff needed to prove Xenia can launch a target path
+- keep the work non-presenting until title boot is stable
+- continue to defer Android surface handoff and `xenia_fb` recovery
 
 ### Pass criteria
 
 - the Vulkan probe still passes with `lavapipe`
-- the Turnip probe still passes on `AYN Odin2 Mini`
-- the Turnip probe still passes on `Odin3`
-- Xenia starts far enough to prove the guest binary handoff is real
-- later failures, if any, are inside Xenia or the remaining graphics bridge work, not in the FEX or Turnip baseline
-
-### Explicitly still out of scope in Phase 3B
-
-- frame presentation
-- gameplay validation
-- performance tuning
-- thunk optimization work beyond the minimum needed for first Xenia bring-up
+- the Turnip probe still passes on both devices
+- Xenia still reaches `VULKAN_INITIALIZED`
+- the first title-aware launch path is real and diagnosable
+- later failures, if any, are inside Xenia title boot or remaining graphics bridge work, not in FEX or Turnip
 
 ## Main risks from here
 
 - the historical repo mixed multiple graphics experiments at once, so later recovery work must stay single-threaded by subsystem
-- future Adreno `8xx` paths may still expose additional driver-side or loader-side differences even with dual Mesa packaged
-- even after guest Turnip works, Xenia can still surface separate rendering, timing, and presentation issues
-
-## Success definition for the full reconstruction
-
-This reconstruction is successful when all of the following are true:
-
-- the app can rebuild its runtime from documented steps
-- FEX launches guest `x86_64` processes reliably
-- guest Vulkan initializes with Turnip on Adreno
-- the baseline Adreno hardware path is reproducible on the target class of devices
-- Xenia renders visible frames again
-- the stack is stable enough to optimize instead of rediscovering missing pieces
+- even after guest Turnip works and Xenia initializes Vulkan, title boot and presentation can still expose separate rendering, timing, and resource issues
+- preserving exact artifact provenance matters now because the stack is finally crossing from synthetic probes into emulator startup

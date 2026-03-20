@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.google.common.truth.Truth.assertWithMessage
 import com.google.common.truth.Truth.assertThat
 import emu.x360.mobile.dev.bootstrap.AppRuntimeManager
 import emu.x360.mobile.dev.runtime.MesaRuntimeBranch
@@ -188,6 +189,35 @@ class RuntimeBootstrapInstrumentedTest {
             assertThat(probeSnapshot.fexDiagnostics.selectedMesaBranch).isEqualTo("mesa26")
             assertThat(sentinel.getString("driver_mode")).isEqualTo("turnip")
         }
+    }
+
+    @Test
+    fun launchXeniaBringupReachesVulkanInitialized() {
+        val manager = AppRuntimeManager(context)
+
+        val installSnapshot = manager.install()
+        manager.setMesaOverride(MesaRuntimeBranch.AUTO)
+        val launchSnapshot = manager.launchXeniaBringup()
+
+        assertThat(installSnapshot.installState).isInstanceOf(RuntimeInstallState.Installed::class.java)
+        assertThat(context.filesDir.toPath().resolve("rootfs/opt/x360-v3/xenia/bin/xenia-canary").exists()).isTrue()
+        assertThat(context.filesDir.toPath().resolve("payload/config/xenia-build-metadata.json").exists()).isTrue()
+        assertThat(launchSnapshot.xeniaDiagnostics.binaryInstalled).isTrue()
+        assertThat(launchSnapshot.xeniaDiagnostics.configPresent).isTrue()
+        assertWithMessage(
+            buildString {
+                appendLine("Expected Xenia bring-up to reach Vulkan initialization.")
+                appendLine("stage=${launchSnapshot.xeniaDiagnostics.lastStartupStage}")
+                appendLine("detail=${launchSnapshot.xeniaDiagnostics.lastStartupDetail}")
+                appendLine("lastAction=${launchSnapshot.lastAction}")
+                appendLine("guestLog:")
+                appendLine(launchSnapshot.latestLogs.guestLog)
+                appendLine("fexLog:")
+                appendLine(launchSnapshot.latestLogs.fexLog)
+                appendLine("appLog:")
+                appendLine(launchSnapshot.latestLogs.appLog)
+            },
+        ).that(launchSnapshot.xeniaDiagnostics.lastStartupStage).isEqualTo("vulkan_initialized")
     }
 
     private fun isTurnipHardwarePassDevice(): Boolean {

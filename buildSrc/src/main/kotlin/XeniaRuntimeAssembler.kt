@@ -127,6 +127,7 @@ class XeniaRuntimeAssembler(
             executable = executable,
             dependencyResolution = dependencyResolution,
             outputRoot = outputRoot,
+            extractionRoot = workingRoot.resolve("xenia-package-extraction"),
             lock = lock,
         )
 
@@ -372,27 +373,28 @@ class XeniaRuntimeAssembler(
                     queue.addLast(dependency.sourcePath)
                     return@forEach
                 }
-                val owner = resolveOwningPackage(dependency.sourcePath)
+                val packagedSourcePath = resolvePackagedSourcePath(dependency.sourcePath)
+                val owner = resolveOwningPackage(packagedSourcePath)
                 val downloadedPackage = packages.getOrPut(owner.packageName) {
                     val archivePath = downloadPackage(
                         packageName = owner.packageName,
-                        packageVersion = owner.packageVersion,
+                        preferredVersion = owner.packageVersion,
                         downloadsDir = downloadsDir,
                     )
                     XeniaResolvedPackage(
                         packageName = owner.packageName,
-                        packageVersion = owner.packageVersion,
+                        packageVersion = readArchivePackageVersion(archivePath),
                         archivePath = archivePath,
                     )
                 }
                 libraries[key] = XeniaResolvedLibrary(
                     soname = dependency.soname,
-                    sourcePath = dependency.sourcePath,
-                    installPath = toGuestInstallPath(dependency.installPath),
+                    sourcePath = packagedSourcePath,
+                    installPath = toGuestInstallPath(resolveGuestLibraryInstallPath(dependency)),
                     packageName = downloadedPackage.packageName,
                     packageVersion = downloadedPackage.packageVersion,
                 )
-                queue.addLast(dependency.sourcePath)
+                queue.addLast(packagedSourcePath)
             }
         }
 
@@ -456,6 +458,7 @@ class XeniaRuntimeAssembler(
         executable: Path,
         dependencyResolution: XeniaDependencyResolution,
         outputRoot: Path,
+        extractionRoot: Path,
         lock: XeniaSourceBuildLock,
     ) {
         val rootfsOutput = outputRoot.resolve("rootfs")
@@ -479,15 +482,12 @@ class XeniaRuntimeAssembler(
         val archives = dependencyResolution.packages.associate { pkg -> pkg.packageName to pkg.archivePath }
         val extractedPackages = guestPackageAssembler.extractPackages(
             archives = archives,
-            extractionDir = outputRoot.resolve("xenia-package-extraction"),
+            extractionDir = extractionRoot,
         )
         dependencyResolution.libraries.forEach { library ->
             val packageRoot = extractedPackages[library.packageName]
                 ?: error("Missing extracted package for ${library.packageName}")
-            val source = packageRoot.resolve(library.sourcePath.removePrefix("/")).normalize()
-            require(source.exists()) {
-                "Missing extracted Xenia runtime library ${library.sourcePath} from ${library.packageName}"
-            }
+            val source = resolveExtractedLibrarySource(packageRoot, library)
             val destination = outputRoot.resolve(library.installPath).normalize()
             destination.parent?.createDirectories()
             Files.copy(source, destination)
@@ -585,10 +585,11 @@ class XeniaRuntimeAssembler(
     private fun resolveOwningPackage(
         sourcePathWsl: String,
     ): PackageOwner {
-        val ownerRaw = runProcess(
-            command = listOf("wsl", "bash", "-lc", "dpkg-query -S ${shellQuote(sourcePathWsl)} | head -n 1"),
-            workingDirectory = null,
-        ).output.trim()
+        val ownerRaw = queryOwningPackage(sourcePathWsl)
+            .lineSequence()
+            .firstOrNull()
+            ?.trim()
+            .orEmpty()
         val ownerMatch = Regex("""^(.+?):\s+/""").find(ownerRaw)
             ?: error("Unable to resolve owning package for $sourcePathWsl: $ownerRaw")
         val packageName = ownerMatch.groupValues[1]
@@ -610,48 +611,180 @@ class XeniaRuntimeAssembler(
         )
     }
 
+    private fun resolvePackagedSourcePath(
+        sourcePathWsl: String,
+    ): String {
+        val candidates = linkedSetOf(sourcePathWsl)
+        if (sourcePathWsl.startsWith("/usr/lib/")) {
+            candidates += "/lib/${sourcePathWsl.removePrefix("/usr/lib/")}"
+        }
+        if (sourcePathWsl.startsWith("/usr/lib64/")) {
+            candidates += "/lib64/${sourcePathWsl.removePrefix("/usr/lib64/")}"
+        }
+        if (sourcePathWsl.startsWith("/usr/libexec/")) {
+            candidates += "/libexec/${sourcePathWsl.removePrefix("/usr/libexec/")}"
+        }
+        if (sourcePathWsl.startsWith("/lib/")) {
+            candidates += "/usr${sourcePathWsl}"
+        }
+        if (sourcePathWsl.startsWith("/lib64/")) {
+            candidates += "/usr${sourcePathWsl}"
+        }
+        return candidates.firstOrNull { queryOwningPackage(it, failOnError = false).isNotBlank() }
+            ?: sourcePathWsl
+    }
+
+    private fun queryOwningPackage(
+        sourcePathWsl: String,
+        failOnError: Boolean = true,
+    ): String {
+        val result = runProcess(
+            command = listOf("wsl", "bash", "-lc", "dpkg-query -S ${shellQuote(sourcePathWsl)} 2>/dev/null"),
+            workingDirectory = null,
+            failOnError = failOnError,
+        )
+        if (!failOnError && result.exitCode != 0) {
+            return ""
+        }
+        return result.output.trim()
+    }
+
     private fun downloadPackage(
         packageName: String,
-        packageVersion: String,
+        preferredVersion: String,
         downloadsDir: Path,
     ): Path {
-        val packageDownloadDir = downloadsDir.resolve(sanitizePackageDirectoryName(packageName, packageVersion))
-        deleteRecursively(packageDownloadDir)
-        packageDownloadDir.createDirectories()
-        val downloadsDirWsl = toWslPath(packageDownloadDir)
-        val downloadCommand =
-            "cd ${shellQuote(downloadsDirWsl)} && " +
-                "apt download ${shellQuote("$packageName=$packageVersion")} >/dev/null && " +
-                "find . -maxdepth 1 -type f -name '*.deb' -printf '%f\\n' | sort | sed '/^$/d'"
-        val downloadedFiles = runProcess(
-            command = listOf("wsl", "bash", "-lc", downloadCommand),
-            workingDirectory = null,
-        ).output.lineSequence()
-            .map { it.trim() }
-            .filter { it.endsWith(".deb") }
-            .toList()
-        require(downloadedFiles.size == 1) {
-            buildString {
-                append("Expected exactly one downloaded archive for $packageName=$packageVersion")
+        val packageDownloadDir = downloadsDir.resolve(sanitizePackageDirectoryName(packageName, preferredVersion))
+        val specs = listOf("$packageName=$preferredVersion", packageName).distinct()
+        var lastFailure: String? = null
+
+        for (spec in specs) {
+            deleteRecursively(packageDownloadDir)
+            packageDownloadDir.createDirectories()
+            val downloadsDirWsl = toWslPath(packageDownloadDir)
+            val downloadCommand =
+                "cd ${shellQuote(downloadsDirWsl)} && " +
+                    "apt download ${shellQuote(spec)} >/dev/null && " +
+                    "find . -maxdepth 1 -type f -name '*.deb' -printf '%f\\n' | sort | sed '/^$/d'"
+            val result = runProcess(
+                command = listOf("wsl", "bash", "-lc", downloadCommand),
+                workingDirectory = null,
+                failOnError = false,
+            )
+            val downloadedFiles = result.output.lineSequence()
+                .map { it.trim() }
+                .filter { it.endsWith(".deb") }
+                .toList()
+            if (result.exitCode == 0 && downloadedFiles.size == 1) {
+                val archivePath = packageDownloadDir.resolve(downloadedFiles.single())
+                require(archivePath.exists()) {
+                    "Expected downloaded package missing: $archivePath"
+                }
+                return archivePath
+            }
+            lastFailure = buildString {
+                append("spec=$spec exit=${result.exitCode}")
                 if (downloadedFiles.isNotEmpty()) {
-                    append(", found: ${downloadedFiles.joinToString()}")
+                    append(" files=${downloadedFiles.joinToString()}")
+                }
+                val trimmedOutput = result.output.trim()
+                if (trimmedOutput.isNotBlank()) {
+                    append(" output=$trimmedOutput")
                 }
             }
         }
-        val downloadedName = downloadedFiles.single()
-        val archivePath = packageDownloadDir.resolve(downloadedName)
-        require(archivePath.exists()) {
-            "Expected downloaded package missing: $archivePath"
+        error("Unable to download guest package $packageName. Last failure: $lastFailure")
+    }
+
+    private fun readArchivePackageVersion(
+        archivePath: Path,
+    ): String {
+        val packageVersion = runProcess(
+            command = listOf(
+                "wsl",
+                "bash",
+                "-lc",
+                "dpkg-deb -f ${shellQuote(toWslPath(archivePath))} Version",
+            ),
+            workingDirectory = null,
+        ).output.trim()
+        require(packageVersion.isNotBlank()) {
+            "Unable to read package version from ${archivePath.fileName}"
         }
-        return archivePath
+        return packageVersion
     }
 
     private fun sanitizePackageDirectoryName(
         packageName: String,
-        packageVersion: String,
+        packageVersion: String = "candidate",
     ): String {
         fun sanitize(value: String): String = value.replace(Regex("""[^A-Za-z0-9._-]"""), "_")
         return "${sanitize(packageName)}__${sanitize(packageVersion)}"
+    }
+
+    private fun resolveGuestLibraryInstallPath(
+        dependency: WslLibraryDependency,
+    ): String {
+        val directory = dependency.installPath.substringBeforeLast('/', "")
+        return if (directory.isBlank()) {
+            "/${dependency.soname}"
+        } else {
+            "$directory/${dependency.soname}"
+        }
+    }
+
+    private fun resolveExtractedLibrarySource(
+        packageRoot: Path,
+        library: XeniaResolvedLibrary,
+    ): Path {
+        val exactSource = packageRoot.resolve(library.sourcePath.removePrefix("/")).normalize()
+        if (exactSource.exists()) {
+            return exactSource
+        }
+
+        val sourceRelativePath = library.sourcePath.removePrefix("/")
+        val sourceDirectory = sourceRelativePath.substringBeforeLast('/', "")
+        val candidateDirectories = linkedSetOf(sourceDirectory).apply {
+            if (sourceDirectory.startsWith("lib/")) {
+                add("usr/$sourceDirectory")
+            }
+            if (sourceDirectory.startsWith("lib64/")) {
+                add("usr/$sourceDirectory")
+            }
+            if (sourceDirectory.startsWith("usr/lib/")) {
+                add(sourceDirectory.removePrefix("usr/"))
+            }
+            if (sourceDirectory.startsWith("usr/lib64/")) {
+                add(sourceDirectory.removePrefix("usr/"))
+            }
+        }
+        candidateDirectories.forEach { relativeDirectory ->
+            val candidateDirectory = if (relativeDirectory.isBlank()) {
+                packageRoot
+            } else {
+                packageRoot.resolve(relativeDirectory).normalize()
+            }
+            if (!candidateDirectory.exists()) {
+                return@forEach
+            }
+            val sonamePath = candidateDirectory.resolve(library.soname)
+            if (sonamePath.exists()) {
+                return sonamePath
+            }
+            val fallbackMatch = Files.list(candidateDirectory).use { stream ->
+                stream
+                    .filter { Files.isRegularFile(it) }
+                    .filter { it.fileName.toString().startsWith("${library.soname}.") }
+                    .sorted()
+                    .findFirst()
+                    .orElse(null)
+            }
+            if (fallbackMatch != null) {
+                return fallbackMatch
+            }
+        }
+
+        error("Missing extracted Xenia runtime library ${library.sourcePath} from ${library.packageName}")
     }
 
     private fun toGuestInstallPath(systemPath: String): String {

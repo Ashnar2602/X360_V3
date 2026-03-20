@@ -27,6 +27,7 @@ import emu.x360.mobile.dev.runtime.XeniaSourceLockCodec
 import emu.x360.mobile.dev.runtime.XeniaStartupStage
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.IOException
 import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
@@ -1052,10 +1053,15 @@ private class SessionLogStore(
     fun pump(input: InputStream, destination: Path): Thread {
         return thread(start = true, isDaemon = true) {
             destination.parent?.createDirectories()
-            input.use { source ->
-                destination.outputStream(StandardOpenOption.CREATE, StandardOpenOption.APPEND).use { sink ->
-                    source.copyTo(sink)
+            try {
+                input.use { source ->
+                    destination.outputStream(StandardOpenOption.CREATE, StandardOpenOption.APPEND).use { sink ->
+                        source.copyTo(sink)
+                    }
                 }
+            } catch (_: IOException) {
+                // Process teardown may close stdout/stderr while the pump is still reading.
+                // Logging is best-effort here, so treat stream closure as a normal shutdown path.
             }
         }
     }

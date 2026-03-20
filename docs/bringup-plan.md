@@ -4,68 +4,91 @@
 
 Reconstruct the previously working pipeline in a controlled order, so each stage proves one layer of the stack before the next layer is introduced.
 
-## Phase 1: Re-establish the architecture contract
+## Completed phases
 
-Outputs:
+### Phase 1: Re-establish the architecture contract
 
-- pin the target stack as Linux `x86_64` Xenia Canary under FEX 2601-like behavior
-- document whether the project will prefer exact historical recreation first or "closest working upstream equivalents"
-- write down all remembered startup assumptions and environment variables as they resurface
+Status: complete
 
-Pass criteria:
+Locked outcomes:
 
-- the repo captures one clear target architecture instead of multiple competing designs
+- Linux `x86_64` guest flow
+- FEX-first Android wrapper design
+- headless/offscreen-first recovery strategy
 
-## Phase 2: Rebuild the runtime skeleton without Xenia
+### Phase 2: Rebuild the runtime skeleton without Xenia
 
-Test objective:
+Status: complete
 
-- prove that a translated Linux `x86_64` ELF can start cleanly in the app-owned Android environment through FEX
+Pass outcome:
 
-Pass criteria:
+- translated Linux `x86_64` guest processes start deterministically through FEX
+- repeated runs stay stable
+- logging is split cleanly across app, FEX, and guest layers
 
-- deterministic process startup
-- stable repeated runs
-- logging that clearly separates app layer, FEX layer, and guest process layer
+### Phase 3: Rebuild the Vulkan userspace path
 
-## Phase 3: Rebuild the Vulkan userspace path
+Status: complete
 
-Test objective:
+Pass outcome:
 
-- prove that the packaged Vulkan loader/ICD path works in the translated `x86_64` environment
-
-Pass criteria:
-
+- guest glibc and loader resolution work
+- guest Vulkan loader path works
 - Vulkan instance creation succeeds
 - physical device enumeration succeeds
-- logical device and queue creation succeeds
-- repeated queue submit and synchronization succeed without a visible stall pattern
+- `lavapipe` remains available as a regression fallback
 
-## Phase 4: Rebuild headless/offscreen presentation
+### Phase 4: Rebuild the hardware Turnip path
+
+Status: complete
+
+Pass outcome:
+
+- guest Turnip packaging is reproducible from pinned Mesa source
+- `mesa25` and `mesa26` are both staged in runtime
+- branch-aware ICD selection works
+- hardware Turnip probe passes on:
+  - `AYN Odin2 Mini`
+  - `Odin3`
+
+### Phase 5: Introduce Xenia Canary
+
+Status: complete for bring-up to Vulkan init
+
+Pass outcome:
+
+- pinned-source Linux `x86_64` Xenia Canary is built in-repo
+- Xenia is staged into the guest runtime
+- headless bring-up through FEX is real
+- Xenia reaches `VULKAN_INITIALIZED` on both validated devices without requiring a game image
+
+## Next phases
+
+### Phase 6: Title-aware Xenia bring-up
 
 Test objective:
 
-- prove that the rendering path can produce images without X11 or Wayland
+- move from no-title Xenia startup to first deterministic target launch
 
 Pass criteria:
 
-- offscreen rendering completes across many frames
-- output can be copied or exposed to the Android display path
-- no KGSL saturation or freeze over a sustained run window
+- Xenia still reaches Vulkan init first
+- title handoff is real and logged
+- failures can be attributed to Xenia title boot rather than FEX or Turnip
 
-## Phase 5: Introduce Xenia Canary
+### Phase 7: Rebuild presentation
 
 Test objective:
 
-- bring up the Linux `x86_64` Vulkan path of Xenia Canary in the rebuilt runtime
+- recover a visible rendering/output path on Android
 
 Pass criteria:
 
-- emulator boot reaches guest startup
-- rendering path initializes
-- basic input plumbing reaches the emulator
+- frame production survives beyond startup
+- output can be surfaced to Android without breaking the validated guest Vulkan path
+- no regression in the now-working Xenia startup milestone
 
-## Phase 6: Revalidate historical game cases
+### Phase 8: Revalidate historical game cases
 
 Priority titles:
 
@@ -78,44 +101,41 @@ Pass criteria:
 - frame pacing is stable enough to compare against historical memory
 - any regression is recorded by layer: FEX, Mesa/Turnip, Xenia, or Android glue
 
-## Test matrix
+## Current test matrix
 
 ### Devices
 
-- Ayn Odin 2
 - Ayn Odin 2 Mini
+- Odin3
 
 ### Hardware profile
 
-- Snapdragon 8 Gen 2
-- Adreno 740
-- 12 GB RAM
+- `AYN Odin2 Mini`
+  - Snapdragon 8 Gen 2
+  - Adreno 740
+  - 12 GB RAM
+- `Odin3`
+  - Snapdragon 8 Elite class platform
+  - Adreno 830
 
 ### Stability checks
 
 - cold start
 - repeated relaunch
-- ten-minute idle or attract-mode style run
-- sustained gameplay window
-- recovery after suspend/resume if applicable
+- connected-test bring-up for probes and Xenia startup
+- recovery after app data clear
 
-### Rendering checks
+### Rendering and startup checks
 
-- first frame appears
-- frame count continues to advance
-- no freeze after initial burst of work
-- no evidence of unbounded queue or resource growth
+- Vulkan probe still passes
+- Turnip hardware path still passes
+- Xenia reaches `VULKAN_INITIALIZED`
+- no regression in the separated `app`, `fex`, and `guest` log contract
 
-## Reconstruction priorities
+## Reconstruction priorities from here
 
-1. Recover the display/presentation architecture.
-2. Recover Vulkan loader and Turnip packaging details.
-3. Recover FEX 2601 integration assumptions.
-4. Recover Xenia-specific patches or build toggles.
+1. Preserve the working Phase 4A baseline and its artifacts.
+2. Add title-aware Xenia bring-up without disturbing FEX or Turnip.
+3. Recover presentation only after title boot is diagnosable.
+4. Keep exact observations separate from guesses.
 5. Only then chase performance tuning.
-
-## Notes for future work
-
-- If exact historical binaries cannot be recovered, recreate the behavior envelope first, then narrow differences.
-- Keep exact observations separate from guesses to avoid building myths into the stack.
-- Every future test result should be tagged by component layer and device.

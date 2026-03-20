@@ -1,6 +1,6 @@
 # Sources
 
-These are the primary public sources used to anchor the reconstruction notes.
+These are the primary public sources used to anchor the reconstruction notes and the current implementation choices.
 
 ## Xenia Canary
 
@@ -8,6 +8,19 @@ These are the primary public sources used to anchor the reconstruction notes.
 - Build documentation: [docs/building.md](https://github.com/xenia-canary/xenia-canary/blob/canary_experimental/docs/building.md)
 - Quickstart wiki: [Quickstart](https://github.com/xenia-canary/xenia-canary/wiki/Quickstart)
 - FAQ wiki: [FAQ](https://github.com/xenia-canary/xenia-canary/wiki/FAQ)
+- Release channel: [xenia-canary-releases](https://github.com/xenia-canary/xenia-canary-releases/releases/canary_experimental)
+
+## Xenia Edge
+
+- Repository: [has207/xenia-edge](https://github.com/has207/xenia-edge)
+- Build documentation: [docs/building.md](https://github.com/has207/xenia-edge/blob/edge/docs/building.md)
+- Releases: [xenia-edge releases](https://github.com/has207/xenia-edge/releases)
+
+Use in this repo:
+
+- comparative Linux/Vulkan reference
+- candidate donor for future ideas or cherry-picks
+- not the active baseline today
 
 ## FEX
 
@@ -30,4 +43,12 @@ These are the primary public sources used to anchor the reconstruction notes.
 
 ## Context status
 
-These sources anchor the upstream architecture and current public positioning. The specific previously working prototype described in this repository remains based on remembered local experimentation and still needs to be reconstructed and verified.
+These sources anchor the upstream architecture and current public positioning.
+
+The historical prototype described in this repository remains based on remembered local experimentation and forensic reconstruction.
+
+The active implementation path in this repo now uses:
+
+- pinned-source FEX with repo-owned Android patches
+- pinned-source Mesa with repo-owned Turnip fixes
+- pinned-source Xenia Canary with repo-owned headless POSIX bring-up patches

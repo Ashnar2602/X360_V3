@@ -43,7 +43,7 @@ class UbuntuGuestRuntimeAssembler(
         deleteRecursively(extractionDir)
         extractionDir.createDirectories()
         return archives.mapValues { (name, archive) ->
-            val destination = extractionDir.resolve(name)
+            val destination = extractionDir.resolve(sanitizePackagePathSegment(name))
             extractDeb(archive, destination)
             destination
         }
@@ -152,6 +152,10 @@ class UbuntuGuestRuntimeAssembler(
 
         error("No data archive found in $archive")
     }
+
+    private fun sanitizePackagePathSegment(
+        value: String,
+    ): String = value.replace(Regex("""[^A-Za-z0-9._-]"""), "_")
 
     private fun extractDataArchive(
         archiveName: String,
