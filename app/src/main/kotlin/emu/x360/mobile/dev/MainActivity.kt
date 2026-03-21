@@ -2,24 +2,28 @@ package emu.x360.mobile.dev
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts.OpenDocument
+import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -27,12 +31,14 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -40,11 +46,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import android.os.Bundle
-import emu.x360.mobile.dev.runtime.MesaRuntimeBranch
 import emu.x360.mobile.dev.ui.theme.X360RebuildTheme
 
 class MainActivity : ComponentActivity() {
+    private val viewModel by viewModels<MainViewModel>()
     private var pendingImportUri by mutableStateOf<Uri?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -54,7 +59,6 @@ class MainActivity : ComponentActivity() {
         setContent {
             X360RebuildTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    val viewModel: MainViewModel = viewModel()
                     val state by viewModel.uiState.collectAsStateWithLifecycle()
                     val importFromIntent = pendingImportUri
                     val isoPicker = rememberLauncherForActivityResult(OpenDocument()) { uri ->
@@ -68,25 +72,25 @@ class MainActivity : ComponentActivity() {
                             pendingImportUri = null
                         }
                     }
-                    MainScreen(
+                    MainShell(
                         state = state,
                         onRefresh = viewModel::refresh,
-                        onRefreshLibrary = viewModel::refreshLibrary,
-                        onInstall = viewModel::installRuntime,
                         onImportIso = { isoPicker.launch(arrayOf("*/*")) },
-                        onLaunchImportedTitle = viewModel::launchImportedTitle,
+                        onRefreshLibrary = viewModel::refreshLibrary,
                         onRemoveLibraryEntry = viewModel::removeLibraryEntry,
-                        onLaunchXeniaBringup = viewModel::launchXeniaBringup,
-                        onLaunchTurnipProbe = viewModel::launchTurnipProbe,
-                        onLaunchLavapipeProbe = viewModel::launchLavapipeProbe,
-                        onLaunchDynamicHello = viewModel::launchDynamicHello,
-                        onLaunchFexHello = viewModel::launchFexHello,
-                        onLaunchStub = viewModel::launchStub,
-                        onSetOverride = viewModel::setMesaOverride,
+                        onSetShowFpsCounter = viewModel::setShowFpsCounter,
+                        onLaunchPlayer = { entryId ->
+                            startActivity(PlayerActivity.intent(this, entryId))
+                        },
                     )
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.refresh()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -106,302 +110,208 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private enum class MainDestination {
+    LIBRARY,
+    OPTIONS,
+    DEBUG,
+    GAME_OPTIONS,
+}
+
 @Composable
-private fun MainScreen(
+private fun MainShell(
     state: MainUiState,
     onRefresh: () -> Unit,
-    onRefreshLibrary: () -> Unit,
-    onInstall: () -> Unit,
     onImportIso: () -> Unit,
-    onLaunchImportedTitle: (String) -> Unit,
+    onRefreshLibrary: () -> Unit,
     onRemoveLibraryEntry: (String) -> Unit,
-    onLaunchXeniaBringup: () -> Unit,
-    onLaunchTurnipProbe: () -> Unit,
-    onLaunchLavapipeProbe: () -> Unit,
-    onLaunchDynamicHello: () -> Unit,
-    onLaunchFexHello: () -> Unit,
-    onLaunchStub: () -> Unit,
-    onSetOverride: (MesaRuntimeBranch) -> Unit,
+    onSetShowFpsCounter: (Boolean) -> Unit,
+    onLaunchPlayer: (String) -> Unit,
 ) {
+    var destination by rememberSaveable { mutableStateOf(MainDestination.LIBRARY) }
+    var selectedEntryId by rememberSaveable { mutableStateOf<String?>(null) }
+    val selectedEntry = state.libraryEntries.firstOrNull { it.id == selectedEntryId }
+    val selectedOptions = selectedEntryId?.let { state.optionsFor(it) }
+
+    if (destination == MainDestination.DEBUG) {
+        val debugViewModel: DebugViewModel = viewModel()
+        val debugState by debugViewModel.uiState.collectAsStateWithLifecycle()
+        val isoPicker = rememberLauncherForActivityResult(OpenDocument()) { uri ->
+            if (uri != null) {
+                debugViewModel.importIso(uri)
+            }
+        }
+        DebugScreen(
+            state = debugState,
+            onBack = { destination = MainDestination.OPTIONS },
+            onRefresh = debugViewModel::refresh,
+            onRefreshLibrary = debugViewModel::refreshLibrary,
+            onInstall = debugViewModel::installRuntime,
+            onImportIso = { isoPicker.launch(arrayOf("*/*")) },
+            onLaunchImportedTitle = debugViewModel::launchImportedTitle,
+            onRemoveLibraryEntry = debugViewModel::removeLibraryEntry,
+            onLaunchXeniaBringup = debugViewModel::launchXeniaBringup,
+            onLaunchTurnipProbe = debugViewModel::launchTurnipProbe,
+            onLaunchLavapipeProbe = debugViewModel::launchLavapipeProbe,
+            onLaunchDynamicHello = debugViewModel::launchDynamicHello,
+            onLaunchFexHello = debugViewModel::launchFexHello,
+            onLaunchStub = debugViewModel::launchStub,
+            onSetOverride = debugViewModel::setMesaOverride,
+        )
+        return
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(
                 brush = Brush.verticalGradient(
-                    colors = listOf(Color(0xFF07121C), Color(0xFF102433), Color(0xFF1E3645)),
+                    colors = listOf(Color(0xFF07131D), Color(0xFF0E2230), Color(0xFF163547)),
                 ),
             ),
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Text(
-                text = "X360 Rebuild Phase 4C",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFFF5F7FA),
-            )
-            Text(
-                text = "Steady-state headless title run: keep Dante alive after module load, harden Xenia cache paths and retain the ISO-first no-copy launch path on the validated FEX + Turnip runtime.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = Color(0xFFD6DEE7),
-            )
-
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = onInstall, enabled = !state.isBusy) {
-                    Text("Install / Extract")
-                }
-                Button(onClick = onLaunchXeniaBringup, enabled = !state.isBusy) {
-                    Text("Launch Xenia Bring-up")
-                }
-            }
-
-            LibraryCard(
-                entries = state.libraryEntries,
-                isBusy = state.isBusy,
+        when (destination) {
+            MainDestination.LIBRARY -> LibraryScreen(
+                state = state,
                 onImportIso = onImportIso,
                 onRefreshLibrary = onRefreshLibrary,
-                onLaunchEntry = onLaunchImportedTitle,
+                onOpenOptions = { destination = MainDestination.OPTIONS },
+                onPlay = onLaunchPlayer,
+                onOpenGameOptions = { entryId ->
+                    selectedEntryId = entryId
+                    destination = MainDestination.GAME_OPTIONS
+                },
                 onRemoveEntry = onRemoveLibraryEntry,
             )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = onLaunchTurnipProbe, enabled = !state.isBusy) {
-                    Text("Launch Turnip Probe")
-                }
-                OutlinedButton(onClick = onLaunchLavapipeProbe, enabled = !state.isBusy) {
-                    Text("Launch Lavapipe Probe")
-                }
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = onLaunchDynamicHello, enabled = !state.isBusy) {
-                    Text("Launch Dynamic Hello")
-                }
-                OutlinedButton(onClick = onLaunchFexHello, enabled = !state.isBusy) {
-                    Text("Launch FEX Hello")
-                }
-                OutlinedButton(onClick = onLaunchStub, enabled = !state.isBusy) {
-                    Text("Launch Stub")
-                }
-                OutlinedButton(onClick = onRefresh, enabled = !state.isBusy) {
-                    Text("Refresh")
-                }
-            }
-
-            StatusCard(
-                title = "Mesa Override",
-                lines = listOf(
-                    "Current override: ${state.overrideMode}",
-                    "Selected branch: ${state.selectedMesaBranch}",
-                    "Selection reason: ${state.selectionReason}",
-                ),
-                accent = Color(0xFF89B8FF),
+            MainDestination.OPTIONS -> OptionsScreen(
+                state = state,
+                onBack = { destination = MainDestination.LIBRARY },
+                onRefresh = onRefresh,
+                onSetShowFpsCounter = onSetShowFpsCounter,
+                onOpenDebug = { destination = MainDestination.DEBUG },
             )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = { onSetOverride(MesaRuntimeBranch.AUTO) }, enabled = !state.isBusy) {
-                    Text("Auto")
-                }
-                OutlinedButton(onClick = { onSetOverride(MesaRuntimeBranch.MESA25) }, enabled = !state.isBusy) {
-                    Text("Mesa25")
-                }
-                OutlinedButton(onClick = { onSetOverride(MesaRuntimeBranch.MESA26) }, enabled = !state.isBusy) {
-                    Text("Mesa26")
-                }
-                OutlinedButton(onClick = { onSetOverride(MesaRuntimeBranch.LAVAPIPE) }, enabled = !state.isBusy) {
-                    Text("LVP")
-                }
-            }
-
-            StatusCard(
-                title = "Runtime Status",
-                lines = listOf(
-                    "Profile: ${state.manifestProfile}",
-                    "Manifest version: ${state.manifestVersion}",
-                    "Install: ${state.installSummary}",
-                    "Installed phase: ${state.installedPhase.ifBlank { "none" }}",
-                    "Runtime root: ${state.runtimeRoot}",
-                    "Last action: ${state.lastAction}",
-                ),
+            MainDestination.GAME_OPTIONS -> GameOptionsScreen(
+                entry = selectedEntry,
+                options = selectedOptions,
+                onBack = { destination = MainDestination.LIBRARY },
+                onPlay = selectedEntry?.id?.let { id -> { onLaunchPlayer(id) } } ?: {},
             )
 
-            StatusCard(
-                title = "Xenia Diagnostics",
-                lines = listOf(
-                    "Commit: ${state.xeniaCommit}",
-                    "Patch set: ${state.xeniaPatchSet}",
-                    "Build profile: ${state.xeniaBuildProfile}",
-                    "Binary installed: ${state.xeniaBinaryInstalled}",
-                    "Config present: ${state.xeniaConfigPresent}",
-                    "Portable marker present: ${state.xeniaPortableMarkerPresent}",
-                    "Content mode: ${state.xeniaContentMode}",
-                    "Last startup stage: ${state.xeniaStartupStage}",
-                    "Startup detail: ${state.xeniaStartupDetail}",
-                    "Alive after module load (s): ${state.xeniaAliveAfterModuleLoadSeconds}",
-                    "Cache backend status: ${state.xeniaCacheBackendStatus}",
-                    "Cache root: ${state.xeniaCacheRootPath}",
-                    "Title metadata seen: ${state.xeniaTitleMetadataSeen}",
-                    "Last log path: ${state.xeniaLogPath}",
-                    "Executable: ${state.xeniaExecutablePath}",
-                ),
-                accent = Color(0xFFFF8B7B),
-            )
-
-            StatusCard(
-                title = "FEX Diagnostics",
-                lines = listOf(
-                    "Commit: ${state.fexCommit}",
-                    "Patch set: ${state.fexPatchSet}",
-                    "Host artifacts packaged: ${state.hostArtifactsPackaged}",
-                    "RootFS installed: ${state.rootfsInstalled}",
-                    "Guest runtime profile: ${state.guestRuntimeProfile}",
-                    "Guest provenance: ${state.guestRuntimeProvenance}",
-                    "Mesa runtime profile: ${state.mesaRuntimeProfile}",
-                    "Mesa patch set: ${state.mesaPatchSetId}",
-                    "Mesa applied patches: ${state.mesaAppliedPatches}",
-                    "glibc loader present: ${state.glibcLoaderPresent}",
-                    "Guest libvulkan present: ${state.guestVulkanLoaderPresent}",
-                    "Lavapipe driver present: ${state.guestLavapipeDriverPresent}",
-                    "Mesa25 installed: ${state.mesa25Installed}",
-                    "Mesa26 installed: ${state.mesa26Installed}",
-                    "Active ICD: ${state.activeIcd}",
-                    "ICD JSON present: ${state.lvpIcdPresent}",
-                    "KGSL accessible: ${state.kgslAccessible}",
-                    "KGSL detail: ${state.kgslDetail}",
-                    "Last probe driver mode: ${state.lastProbeDriverMode}",
-                    "Last probe device: ${state.lastProbeDeviceName}",
-                    "Hello fixture installed: ${state.helloFixtureInstalled}",
-                    "Dynamic hello installed: ${state.dynamicHelloInstalled}",
-                    "Vulkan probe installed: ${state.vulkanProbeInstalled}",
-                    "Config present: ${state.fexConfigPresent}",
-                    "Last launch backend: ${state.lastLaunchBackend}",
-                    "Last launch result: ${state.lastLaunchResult}",
-                    "Loader: ${state.loaderPath}",
-                    "Core: ${state.corePath}",
-                ),
-                accent = Color(0xFF7BE7C4),
-            )
-
-            StatusCard(
-                title = "Native Bridge",
-                lines = listOf(
-                    "Health: ${state.nativeHealth}",
-                    "Surface reservation: ${state.surfaceReservation}",
-                ),
-            )
-
-            StatusCard(
-                title = "Output Preview Placeholder",
-                lines = listOf(
-                    "Latest session: ${state.latestSessionId.ifBlank { "none" }}",
-                    state.outputPreview,
-                ),
-                accent = Color(0xFF47C0FF),
-            )
-
-            LogCard(title = "App Log", content = state.appLog)
-            LogCard(title = "FEX Log", content = state.fexLog)
-            LogCard(title = "Guest Log", content = state.guestLog)
-            Spacer(modifier = Modifier.height(12.dp))
+            MainDestination.DEBUG -> Unit
         }
     }
 }
 
 @Composable
-private fun LibraryCard(
-    entries: List<GameLibraryEntryUi>,
-    isBusy: Boolean,
+private fun LibraryScreen(
+    state: MainUiState,
     onImportIso: () -> Unit,
     onRefreshLibrary: () -> Unit,
-    onLaunchEntry: (String) -> Unit,
+    onOpenOptions: () -> Unit,
+    onPlay: (String) -> Unit,
+    onOpenGameOptions: (String) -> Unit,
     onRemoveEntry: (String) -> Unit,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xCC14202C)),
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 20.dp, vertical = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ProductHeader(
+            title = "X360 Mobile",
+            subtitle = "0.2.0 alpha",
+            onOpenOptions = onOpenOptions,
+        )
+
+        ProductCard(
+            title = "Library",
+            accent = Color(0xFF7DFFE5),
         ) {
             Text(
-                text = "Library",
-                style = MaterialTheme.typography.titleLarge,
-                color = Color(0xFF5FD9FF),
-                fontWeight = FontWeight.SemiBold,
+                text = state.runtimeSummary,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFD9E3EA),
             )
             Text(
-                text = "ISO-first, no-copy references. Entries stay in the library even when the original file goes missing.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color(0xFFE5EBF1),
+                text = state.lastAction,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFAFC0CF),
             )
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = onImportIso, enabled = !isBusy) {
+                Button(onClick = onImportIso, enabled = !state.isBusy) {
                     Text("Import ISO")
                 }
-                OutlinedButton(onClick = onRefreshLibrary, enabled = !isBusy) {
-                    Text("Refresh Library")
+                OutlinedButton(onClick = onRefreshLibrary, enabled = !state.isBusy) {
+                    Text("Refresh")
                 }
             }
-            if (entries.isEmpty()) {
+        }
+
+        if (state.libraryEntries.isEmpty()) {
+            ProductCard(
+                title = "No Games Yet",
+                accent = Color(0xFFFFC56A),
+            ) {
                 Text(
-                    text = "No imported titles yet.",
+                    text = "Import an Xbox 360 ISO to start building your library.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color(0xFFC7D2DC),
+                    color = Color(0xFFE6ECF2),
                 )
-            } else {
-                entries.forEach { entry ->
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                items(state.libraryEntries, key = { it.id }) { entry ->
                     Card(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xB3122230)),
+                        shape = RoundedCornerShape(24.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xCC122231)),
                     ) {
                         Column(
-                            modifier = Modifier.padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.padding(18.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
                             Text(
                                 text = entry.displayName,
-                                style = MaterialTheme.typography.titleMedium,
-                                color = Color(0xFFF0F4F8),
-                                fontWeight = FontWeight.Medium,
+                                style = MaterialTheme.typography.titleLarge,
+                                color = Color(0xFFF5F7FA),
+                                fontWeight = FontWeight.SemiBold,
                             )
                             Text(
-                                text = "Status: ${entry.status} | Source: ${entry.sourceKind} | ${entry.sizeSummary}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color(0xFFC7D2DC),
-                            )
-                            Text(
-                                text = "Guest path: ${entry.guestPath}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color(0xFFC7D2DC),
+                                text = "Status: ${entry.status} | ${entry.sizeSummary}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Color(0xFFCFD9E1),
                             )
                             Text(
                                 text = "Title: ${entry.titleName}",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color(0xFFC7D2DC),
+                                color = Color(0xFFAFC0CF),
                             )
                             Text(
                                 text = "Last launch: ${entry.lastLaunchSummary}",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color(0xFFC7D2DC),
+                                color = Color(0xFFAFC0CF),
                             )
                             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Button(
-                                    onClick = { onLaunchEntry(entry.id) },
-                                    enabled = !isBusy,
+                                    onClick = { onPlay(entry.id) },
+                                    enabled = !state.isBusy && state.runtimeReady && entry.status == "ready",
                                 ) {
-                                    Text("Launch Headless")
+                                    Text("Play")
+                                }
+                                OutlinedButton(
+                                    onClick = { onOpenGameOptions(entry.id) },
+                                    enabled = !state.isBusy,
+                                ) {
+                                    Text("Options")
                                 }
                                 OutlinedButton(
                                     onClick = { onRemoveEntry(entry.id) },
-                                    enabled = !isBusy,
+                                    enabled = !state.isBusy,
                                 ) {
                                     Text("Remove")
                                 }
@@ -415,64 +325,238 @@ private fun LibraryCard(
 }
 
 @Composable
-private fun StatusCard(
-    title: String,
-    lines: List<String>,
-    accent: Color = Color(0xFFF5B942),
+private fun OptionsScreen(
+    state: MainUiState,
+    onBack: () -> Unit,
+    onRefresh: () -> Unit,
+    onSetShowFpsCounter: (Boolean) -> Unit,
+    onOpenDebug: () -> Unit,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xCC0C1722)),
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(onClick = onBack) {
+                Text("Back")
+            }
+            Text(
+                text = "Options",
+                style = MaterialTheme.typography.headlineMedium,
+                color = Color(0xFFF5F7FA),
+                fontWeight = FontWeight.Bold,
+            )
+        }
+
+        ProductCard(
+            title = "Display",
+            accent = Color(0xFF47C0FF),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "FPS Counter",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color(0xFFF5F7FA),
+                    )
+                    Text(
+                        text = "Show the live framebuffer cadence in the top-left corner while playing.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFCFD9E1),
+                    )
+                }
+                Switch(
+                    checked = state.appSettings.showFpsCounter,
+                    onCheckedChange = onSetShowFpsCounter,
+                )
+            }
+        }
+
+        ProductCard(
+            title = "Render Scale",
+            accent = Color(0xFFFFC56A),
         ) {
             Text(
-                text = title,
-                style = MaterialTheme.typography.titleLarge,
-                color = accent,
-                fontWeight = FontWeight.SemiBold,
+                text = "True guest render scale is already part of the settings contract, but only 1.0x is active in this milestone.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFE6ECF2),
             )
-            lines.forEach { line ->
-                Text(
-                    text = line,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color(0xFFE5EBF1),
-                )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = {}, enabled = false) { Text("0.5x") }
+                Button(onClick = {}, enabled = true) { Text("1.0x") }
+                Button(onClick = {}, enabled = false) { Text("1.5x") }
+                Button(onClick = {}, enabled = false) { Text("2.0x") }
+            }
+        }
+
+        ProductCard(
+            title = "Runtime",
+            accent = Color(0xFF7DFFE5),
+        ) {
+            Text(
+                text = state.runtimeSummary,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFE6ECF2),
+            )
+            Text(
+                text = state.lastAction,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFAFC0CF),
+            )
+            OutlinedButton(onClick = onRefresh, enabled = !state.isBusy) {
+                Text("Refresh Status")
+            }
+        }
+
+        ProductCard(
+            title = "Debug",
+            accent = Color(0xFFFF8B7B),
+        ) {
+            Text(
+                text = "All bring-up tools, probes, logs and diagnostics stay available here without cluttering the main user shell.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFE6ECF2),
+            )
+            Button(onClick = onOpenDebug, enabled = !state.isBusy) {
+                Text("Open Debug Tools")
             }
         }
     }
 }
 
 @Composable
-private fun LogCard(
+private fun GameOptionsScreen(
+    entry: GameLibraryEntryUi?,
+    options: GameOptionsUi?,
+    onBack: () -> Unit,
+    onPlay: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(onClick = onBack) {
+                Text("Back")
+            }
+            Text(
+                text = "Game Options",
+                style = MaterialTheme.typography.headlineMedium,
+                color = Color(0xFFF5F7FA),
+                fontWeight = FontWeight.Bold,
+            )
+        }
+
+        if (entry == null || options == null) {
+            ProductCard(title = "Unavailable", accent = Color(0xFFFF8B7B)) {
+                Text(
+                    text = "This library entry is no longer available.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFE6ECF2),
+                )
+            }
+            return
+        }
+
+        ProductCard(title = entry.displayName, accent = Color(0xFF7DFFE5)) {
+            Text(
+                text = "Title: ${options.titleName}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFE6ECF2),
+            )
+            Text(
+                text = "Render scale override: ${options.renderScaleOverrideLabel}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFE6ECF2),
+            )
+            Text(
+                text = "FPS counter override: ${options.fpsCounterOverrideLabel}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFE6ECF2),
+            )
+            Text(
+                text = "Presentation backend override: ${options.presentationBackendOverrideLabel}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFE6ECF2),
+            )
+            Text(
+                text = options.note,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFAFC0CF),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = onPlay, enabled = entry.status == "ready") {
+                    Text("Play")
+                }
+                OutlinedButton(onClick = {}, enabled = false) {
+                    Text("Coming Soon")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProductHeader(
     title: String,
-    content: String,
+    subtitle: String,
+    onOpenOptions: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.headlineLarge,
+                color = Color(0xFFF5F7FA),
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.titleSmall,
+                color = Color(0xFFAFC0CF),
+            )
+        }
+        OutlinedButton(onClick = onOpenOptions) {
+            Text("Options")
+        }
+    }
+}
+
+@Composable
+private fun ProductCard(
+    title: String,
+    accent: Color,
+    content: @Composable ColumnScope.() -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xB3122230)),
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xCC11212E)),
     ) {
         Column(
             modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium,
-                color = Color(0xFFF0F4F8),
-                fontWeight = FontWeight.Medium,
-            )
-            SelectionContainer {
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            content = {
                 Text(
-                    text = content.ifBlank { "No session log yet." },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFFC7D2DC),
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = accent,
+                    fontWeight = FontWeight.SemiBold,
                 )
-            }
-        }
+                content()
+            },
+        )
     }
 }

@@ -14,6 +14,7 @@ import emu.x360.mobile.dev.runtime.GuestLaunchRequest
 import emu.x360.mobile.dev.runtime.GuestLaunchResult
 import emu.x360.mobile.dev.runtime.GuestLogDestinations
 import emu.x360.mobile.dev.runtime.MesaRuntimeBranch
+import emu.x360.mobile.dev.runtime.PresentationBackend
 import emu.x360.mobile.dev.runtime.MesaRuntimeMetadata
 import emu.x360.mobile.dev.runtime.MesaRuntimeMetadataCodec
 import emu.x360.mobile.dev.runtime.RuntimeAssetSource
@@ -23,6 +24,7 @@ import emu.x360.mobile.dev.runtime.RuntimeInstaller
 import emu.x360.mobile.dev.runtime.RuntimeManifest
 import emu.x360.mobile.dev.runtime.RuntimeManifestCodec
 import emu.x360.mobile.dev.runtime.RuntimePhase
+import emu.x360.mobile.dev.runtime.XeniaFramebufferCodec
 import emu.x360.mobile.dev.runtime.XeniaBuildMetadata
 import emu.x360.mobile.dev.runtime.XeniaBuildMetadataCodec
 import emu.x360.mobile.dev.runtime.XeniaSourceLock
@@ -70,6 +72,23 @@ class AppRuntimeManager(
     private val fexGuestLauncher = FexGuestLauncher(context, directories, logStore)
     private val xeniaGuestLauncher = XeniaGuestLauncher(context, directories, logStore)
 
+    fun shellSnapshot(
+        lastAction: String = "Ready",
+        autoPrepareRuntime: Boolean = true,
+    ): ShellSnapshot {
+        val manifest = manifestLoader.load()
+        val installState = if (autoPrepareRuntime) {
+            ensureRuntimeInstalled(manifest)
+        } else {
+            installer.inspect(manifest, targetPhase)
+        }
+        return ShellSnapshot(
+            installState = installState,
+            libraryEntries = refreshLibraryEntries(),
+            lastAction = lastAction,
+        )
+    }
+
     fun snapshot(
         lastAction: String = "Ready",
         installStateOverride: RuntimeInstallState? = null,
@@ -81,13 +100,18 @@ class AppRuntimeManager(
         val mesaRuntimeMetadata = mesaRuntimeMetadataLoader.load()
         val xeniaSourceLock = xeniaSourceLockLoader.load()
         val xeniaBuildMetadata = xeniaBuildMetadataLoader.load()
-        val latestLogs = logStore.latestLogs()
         val libraryEntries = refreshLibraryEntries()
         val hostArtifacts = HostArtifactsStatus.from(context)
         val deviceProperties = DeviceProperties.read()
         val overrideMode = mesaOverrideStore.read()
         val resolvedMesaRuntime = DeviceMesaRuntimePolicy.resolve(overrideMode, deviceProperties)
         val kgslAccess = KgslAccessInspector.inspect()
+        val latestLogs = logStore.latestLogs()
+        val xeniaStartupAnalysis = XeniaStartupStageParser.analyze(latestLogs.guestLog)
+        val outputPreview = OutputPreviewState.from(
+            framebufferPath = directories.rootfsTmp.resolve("xenia_fb"),
+            startupAnalysis = xeniaStartupAnalysis,
+        )
         return RuntimeSnapshot(
             manifest = manifest,
             installState = installState,
@@ -97,7 +121,7 @@ class AppRuntimeManager(
                 NativeBridge.describeSurfaceHookPlaceholder(directories.rootfsTmp.toString())
             }.getOrElse { "surface-hook:error:${it.message}" },
             latestLogs = latestLogs,
-            outputPreview = OutputPreviewState.from(directories.rootfsTmp.resolve("xenia_fb")),
+            outputPreview = outputPreview,
             fexDiagnostics = buildFexDiagnostics(
                 metadata = metadata,
                 guestRuntimeMetadata = guestRuntimeMetadata,
@@ -114,6 +138,8 @@ class AppRuntimeManager(
                 buildMetadata = xeniaBuildMetadata,
                 installState = installState,
                 latestLogs = latestLogs,
+                startupAnalysis = xeniaStartupAnalysis,
+                outputPreview = outputPreview,
             ),
             gameLibraryEntries = libraryEntries,
             lastAction = lastAction,
@@ -122,10 +148,9 @@ class AppRuntimeManager(
 
     fun install(): RuntimeSnapshot {
         val manifest = manifestLoader.load()
-        val installState = installer.install(manifest, assetSource, targetPhase)
+        val installState = installRuntime(manifest)
         val bootstrapNote = if (installState is RuntimeInstallState.Installed) {
-            runCatching { NativeBridge.bootstrapStub(baseDir.toString()) }
-                .getOrElse { "native-bootstrap:error:${it.message}" }
+            "native-bootstrap:ready"
         } else {
             "runtime-install:${installState::class.simpleName}"
         }
@@ -245,6 +270,16 @@ class AppRuntimeManager(
         if (installState !is RuntimeInstallState.Installed) {
             return snapshot(lastAction = "Launch blocked: Xenia bring-up runtime is not installed")
         }
+        resetXeniaFramebufferFile()
+        val launchMode = XeniaLaunchMode.NoTitleBringup
+        val presentationSettings = XeniaPresentationSettings.HeadlessBringup
+        val configPrepared = prepareXeniaLaunchConfig(
+            launchMode = launchMode,
+            presentationSettings = presentationSettings,
+        )
+        if (configPrepared != null) {
+            return snapshot(lastAction = configPrepared)
+        }
 
         val resolvedMesaRuntime = DeviceMesaRuntimePolicy.resolve(
             overrideMode = mesaOverrideStore.read(),
@@ -253,7 +288,11 @@ class AppRuntimeManager(
         val request = createRequest(
             sessionId = SessionIdFactory.create(),
             executable = directories.xeniaBinary.toString(),
-            args = buildXeniaBringupArgs(directories, XeniaLaunchMode.NoTitleBringup),
+            args = buildXeniaBringupArgs(
+                directories = directories,
+                launchMode = launchMode,
+                presentationSettings = presentationSettings,
+            ),
             environment = buildVulkanGuestEnvironment(resolvedMesaRuntime.branch, directories),
             workingDirectory = directories.rootfsXeniaBin.toString(),
         )
@@ -289,12 +328,141 @@ class AppRuntimeManager(
         return snapshot(lastAction = "Removed library entry $entryId")
     }
 
-    fun launchImportedTitle(entryId: String): RuntimeSnapshot {
+    internal fun startPlayerSession(
+        entryId: String,
+        presentationSettings: XeniaPresentationSettings = XeniaPresentationSettings.FramebufferPolling,
+    ): PlayerSessionStartResult {
+        val manifest = manifestLoader.load()
+        val installState = ensureRuntimeInstalled(manifest)
+        if (installState !is RuntimeInstallState.Installed) {
+            return PlayerSessionStartResult(
+                session = null,
+                detail = "Runtime is not installed",
+            )
+        }
+        resetXeniaFramebufferFile()
+
+        val currentEntry = refreshLibraryEntries().firstOrNull { it.id == entryId }
+            ?: return PlayerSessionStartResult(null, "Library entry $entryId was not found")
+        if (currentEntry.lastKnownStatus != GameLibraryEntryStatus.READY) {
+            return PlayerSessionStartResult(null, "Library entry ${currentEntry.displayName} is ${currentEntry.lastKnownStatus.name.lowercase()}")
+        }
+
+        val resolution = titleContentResolver.resolve(currentEntry)
+        if (resolution is ResolvedTitleSource.Unsupported || resolution is ResolvedTitleSource.ProxyPath) {
+            val detail = when (resolution) {
+                is ResolvedTitleSource.Unsupported -> resolution.reason
+                is ResolvedTitleSource.ProxyPath -> resolution.descriptor
+                else -> "Title source could not be resolved"
+            }
+            return PlayerSessionStartResult(null, detail)
+        }
+
+        val adoptedExecFd = when (resolution) {
+            is ResolvedTitleSource.FileDescriptorPath -> titleContentResolver.adoptDescriptorForExec(resolution)
+            else -> null
+        }
+        if (resolution is ResolvedTitleSource.FileDescriptorPath && adoptedExecFd == null) {
+            return PlayerSessionStartResult(null, "Could not inherit descriptor for ${currentEntry.displayName}")
+        }
+
+        val portalPath = runCatching {
+            when (resolution) {
+                is ResolvedTitleSource.HostPath -> guestContentPortalManager.materializeIsoPortal(currentEntry, resolution.hostPath)
+                is ResolvedTitleSource.FileDescriptorPath -> guestContentPortalManager.materializeFdBackedPortal(currentEntry.id)
+                else -> error("Unsupported title resolution: $resolution")
+            }
+        }.getOrElse { throwable ->
+            adoptedExecFd?.close()
+            return PlayerSessionStartResult(null, "Failed to portal ${currentEntry.displayName}: ${throwable.message}")
+        }
+
+        val launchMode = XeniaLaunchMode.TitleBoot(
+            entryId = currentEntry.id,
+            guestPath = portalPath.toGuestPath(directories.rootfs),
+        )
+        prepareXeniaLaunchConfig(
+            launchMode = launchMode,
+            presentationSettings = presentationSettings,
+        )?.let { detail ->
+            adoptedExecFd?.close()
+            return PlayerSessionStartResult(null, detail)
+        }
+        val resolvedMesaRuntime = DeviceMesaRuntimePolicy.resolve(
+            overrideMode = mesaOverrideStore.read(),
+            properties = DeviceProperties.read(),
+        )
+        val request = createRequest(
+            sessionId = SessionIdFactory.create(),
+            executable = directories.xeniaBinary.toString(),
+            args = buildXeniaBringupArgs(
+                directories = directories,
+                launchMode = launchMode,
+                presentationSettings = presentationSettings,
+            ),
+            environment = buildVulkanGuestEnvironment(resolvedMesaRuntime.branch, directories) +
+                buildMap {
+                    if (adoptedExecFd != null) {
+                        put("X360_TITLE_SOURCE_FD", "0")
+                        put("X360_TITLE_SOURCE_PATH", launchMode.guestPath)
+                    }
+                },
+            workingDirectory = directories.rootfsXeniaBin.toString(),
+            stdinRedirectPath = adoptedExecFd?.let { "/proc/self/fd/${it.fd}" },
+        )
+        val handle = xeniaGuestLauncher.startSession(
+            request = request,
+            entryId = currentEntry.id,
+            entryDisplayName = currentEntry.displayName,
+            adoptedExecFd = adoptedExecFd,
+            presentationSettings = presentationSettings,
+        ) ?: run {
+            adoptedExecFd?.close()
+            return PlayerSessionStartResult(null, "Failed to start ${currentEntry.displayName}")
+        }
+        updateLibraryEntry(
+            currentEntry.copy(
+                lastKnownStatus = GameLibraryEntryStatus.READY,
+                lastResolvedGuestPath = launchMode.guestPath,
+                lastLaunchSummary = "Player session starting",
+            ),
+        )
+        return PlayerSessionStartResult(
+            session = handle,
+            detail = "Player session started for ${currentEntry.displayName}",
+        )
+    }
+
+    internal fun recordPlayerSessionOutcome(
+        entryId: String,
+        detail: String,
+        stage: XeniaStartupStage,
+        titleName: String?,
+    ) {
+        val entry = gameLibraryStore.find(entryId) ?: return
+        updateLibraryEntry(
+            entry.copy(
+                lastKnownStatus = when (stage) {
+                    XeniaStartupStage.FAILED -> GameLibraryEntryStatus.ERROR
+                    else -> GameLibraryEntryStatus.READY
+                },
+                lastLaunchSummary = detail,
+                lastKnownTitleName = titleName ?: entry.lastKnownTitleName,
+            ),
+        )
+    }
+
+    internal fun launchImportedTitle(
+        entryId: String,
+        presentationSettings: XeniaPresentationSettings = XeniaPresentationSettings.FramebufferPolling,
+        requiredStage: XeniaStartupStage = XeniaStartupStage.FRAME_STREAM_ACTIVE,
+    ): RuntimeSnapshot {
         val manifest = manifestLoader.load()
         val installState = installer.inspect(manifest, targetPhase)
         if (installState !is RuntimeInstallState.Installed) {
             return snapshot(lastAction = "Launch blocked: Xenia bring-up runtime is not installed")
         }
+        resetXeniaFramebufferFile()
 
         val currentEntry = refreshLibraryEntries().firstOrNull { it.id == entryId }
             ?: return snapshot(lastAction = "Launch blocked: library entry $entryId was not found")
@@ -381,6 +549,13 @@ class AppRuntimeManager(
             entryId = currentEntry.id,
             guestPath = portalPath.toGuestPath(directories.rootfs),
         )
+        prepareXeniaLaunchConfig(
+            launchMode = launchMode,
+            presentationSettings = presentationSettings,
+        )?.let { detail ->
+            adoptedExecFd?.close()
+            return snapshot(lastAction = detail)
+        }
         val resolvedMesaRuntime = DeviceMesaRuntimePolicy.resolve(
             overrideMode = mesaOverrideStore.read(),
             properties = DeviceProperties.read(),
@@ -388,7 +563,11 @@ class AppRuntimeManager(
         val request = createRequest(
             sessionId = SessionIdFactory.create(),
             executable = directories.xeniaBinary.toString(),
-            args = buildXeniaBringupArgs(directories, launchMode),
+            args = buildXeniaBringupArgs(
+                directories = directories,
+                launchMode = launchMode,
+                presentationSettings = presentationSettings,
+            ),
             environment = buildVulkanGuestEnvironment(resolvedMesaRuntime.branch, directories) +
                 buildMap {
                     if (adoptedExecFd != null) {
@@ -399,11 +578,17 @@ class AppRuntimeManager(
             workingDirectory = directories.rootfsXeniaBin.toString(),
             stdinRedirectPath = adoptedExecFd?.let { "/proc/self/fd/${it.fd}" },
         )
-        val result = try {
-            xeniaGuestLauncher.launch(request, XeniaRunGoal.TitleSteadyState())
-        } finally {
-            adoptedExecFd?.close()
-        }
+            val result = try {
+                xeniaGuestLauncher.launch(
+                    request,
+                    XeniaRunGoal.TitleSteadyState(
+                        requiredStage = requiredStage,
+                        presentationBackend = presentationSettings.presentationBackend,
+                    ),
+                )
+            } finally {
+                adoptedExecFd?.close()
+            }
         val startupAnalysis = XeniaStartupStageParser.analyze(logStore.latestLogs().guestLog)
         updateLibraryEntry(
             currentEntry.copy(
@@ -463,6 +648,49 @@ class AppRuntimeManager(
 
     private fun updateLibraryEntry(entry: GameLibraryEntry) {
         gameLibraryStore.upsert(entry)
+    }
+
+    private fun prepareXeniaLaunchConfig(
+        launchMode: XeniaLaunchMode,
+        presentationSettings: XeniaPresentationSettings,
+    ): String? {
+        return try {
+            directories.xeniaConfigFile.parent.createDirectories()
+            directories.xeniaConfigFile.toFile().writeText(
+                buildXeniaConfigText(
+                    directories = directories,
+                    launchMode = launchMode,
+                ),
+            )
+            null
+        } catch (throwable: Throwable) {
+            "Launch blocked: failed to prepare Xenia config for ${presentationSettings.presentationBackend.name.lowercase()}: ${throwable.message}"
+        }
+    }
+
+    private fun ensureRuntimeInstalled(
+        manifest: RuntimeManifest,
+    ): RuntimeInstallState {
+        val currentState = installer.inspect(manifest, targetPhase)
+        return if (currentState is RuntimeInstallState.Installed) {
+            currentState
+        } else {
+            installRuntime(manifest)
+        }
+    }
+
+    private fun installRuntime(
+        manifest: RuntimeManifest,
+    ): RuntimeInstallState {
+        val installState = installer.install(manifest, assetSource, targetPhase)
+        if (installState is RuntimeInstallState.Installed) {
+            runCatching { NativeBridge.bootstrapStub(baseDir.toString()) }
+        }
+        return installState
+    }
+
+    private fun resetXeniaFramebufferFile() {
+        runCatching { Files.deleteIfExists(directories.rootfsTmp.resolve("xenia_fb")) }
     }
 
     private fun createRequest(
@@ -561,8 +789,9 @@ class AppRuntimeManager(
         buildMetadata: XeniaBuildMetadata?,
         installState: RuntimeInstallState,
         latestLogs: LatestSessionLogs,
+        startupAnalysis: XeniaStartupAnalysis,
+        outputPreview: OutputPreviewState,
     ): XeniaDiagnostics {
-        val startupAnalysis = XeniaStartupStageParser.analyze(latestLogs.guestLog)
         val appFields = parseKeyValueLines(latestLogs.appLog)
         val lastLogPath = latestLogs.sessionId
             ?.let { sessionId -> directories.guestLogs.resolve("session-$sessionId.guest.log").toString() }
@@ -579,9 +808,18 @@ class AppRuntimeManager(
             lastStartupDetail = startupAnalysis.detail,
             aliveAfterModuleLoadSeconds = appFields["xenia.aliveAfterModuleLoadSeconds"]?.toLongOrNull() ?: 0L,
             cacheBackendStatus = appFields["xenia.cacheBackendStatus"] ?: "unknown",
-            cacheRootPath = appFields["xenia.cacheRootPath"] ?: directories.xeniaCacheHostRoot.toString(),
+            cacheRootPath = appFields["xenia.cacheRootPath"] ?: directories.xeniaWritableCacheHostRoot.toString(),
             titleMetadataSeen = appFields["xenia.titleMetadataSeen"]?.toBooleanStrictOrNull()
                 ?: latestLogs.guestLog.contains("Title name: "),
+            presentationBackend = appFields["xenia.presentationBackend"] ?: PresentationBackend.HEADLESS_ONLY.name.lowercase(),
+            guestRenderScaleProfile = appFields["xenia.guestRenderScaleProfile"] ?: "one",
+            internalDisplayResolution = appFields["xenia.internalDisplayResolution"] ?: "1280x720",
+            framebufferPath = appFields["xenia.framebufferPath"] ?: outputPreview.framebufferPath,
+            frameStreamStatus = appFields["xenia.frameStreamStatus"] ?: outputPreview.status,
+            lastFrameWidth = outputPreview.width ?: 0,
+            lastFrameHeight = outputPreview.height ?: 0,
+            lastFrameIndex = outputPreview.frameIndex,
+            frameFreshnessSeconds = outputPreview.freshnessSeconds,
             lastLogPath = lastLogPath,
             executablePath = directories.xeniaBinary.toString(),
         )
@@ -600,6 +838,17 @@ data class RuntimeSnapshot(
     val xeniaDiagnostics: XeniaDiagnostics,
     val gameLibraryEntries: List<GameLibraryEntry>,
     val lastAction: String,
+)
+
+data class ShellSnapshot(
+    val installState: RuntimeInstallState,
+    val libraryEntries: List<GameLibraryEntry>,
+    val lastAction: String,
+)
+
+internal data class PlayerSessionStartResult(
+    val session: ActivePlayerSessionHandle?,
+    val detail: String,
 )
 
 data class LatestSessionLogs(
@@ -659,6 +908,15 @@ data class XeniaDiagnostics(
     val cacheBackendStatus: String,
     val cacheRootPath: String,
     val titleMetadataSeen: Boolean,
+    val presentationBackend: String,
+    val guestRenderScaleProfile: String,
+    val internalDisplayResolution: String,
+    val framebufferPath: String,
+    val frameStreamStatus: String,
+    val lastFrameWidth: Int,
+    val lastFrameHeight: Int,
+    val lastFrameIndex: Long,
+    val frameFreshnessSeconds: Long?,
     val lastLogPath: String,
     val executablePath: String,
 )
@@ -666,24 +924,178 @@ data class XeniaDiagnostics(
 data class OutputPreviewState(
     val framebufferPath: String,
     val exists: Boolean,
+    val status: String,
+    val width: Int?,
+    val height: Int?,
+    val stride: Int?,
+    val frameIndex: Long,
+    val freshnessSeconds: Long?,
     val summary: String,
 ) {
     companion object {
-        fun from(framebufferPath: Path): OutputPreviewState {
-            return if (framebufferPath.exists()) {
-                OutputPreviewState(
-                    framebufferPath = framebufferPath.toString(),
-                    exists = true,
-                    summary = "reserved file detected, size=${Files.size(framebufferPath)} bytes, modified=${framebufferPath.getLastModifiedTime()}",
-                )
-            } else {
-                OutputPreviewState(
+        internal fun from(
+            framebufferPath: Path,
+            startupAnalysis: XeniaStartupAnalysis,
+        ): OutputPreviewState {
+            if (!framebufferPath.exists()) {
+                return OutputPreviewState(
                     framebufferPath = framebufferPath.toString(),
                     exists = false,
-                    summary = "placeholder only, waiting for future /tmp/xenia_fb polling path",
+                    status = "idle",
+                    width = null,
+                    height = null,
+                    stride = null,
+                    frameIndex = -1L,
+                    freshnessSeconds = null,
+                    summary = "waiting for /tmp/xenia_fb",
                 )
             }
+
+            val modifiedAt = runCatching { framebufferPath.getLastModifiedTime().toInstant() }.getOrNull()
+            val freshnessSeconds = modifiedAt?.let { modified -> (Instant.now().epochSecond - modified.epochSecond).coerceAtLeast(0L) }
+            val header = runCatching { XeniaFramebufferCodec.readHeader(framebufferPath) }.getOrNull()
+            if (header == null) {
+                return OutputPreviewState(
+                    framebufferPath = framebufferPath.toString(),
+                    exists = true,
+                    status = "invalid",
+                    width = null,
+                    height = null,
+                    stride = null,
+                    frameIndex = -1L,
+                    freshnessSeconds = freshnessSeconds,
+                    summary = "xenia_fb present but invalid or incomplete",
+                )
+            }
+
+            val streamStatus = when (startupAnalysis.stage) {
+                XeniaStartupStage.FRAME_STREAM_ACTIVE -> "active"
+                XeniaStartupStage.FIRST_FRAME_CAPTURED -> "first-frame"
+                else -> "first-frame"
+            }
+            return OutputPreviewState(
+                framebufferPath = framebufferPath.toString(),
+                exists = true,
+                status = streamStatus,
+                width = header.width,
+                height = header.height,
+                stride = header.stride,
+                frameIndex = header.frameIndex,
+                freshnessSeconds = freshnessSeconds,
+                summary = "status=$streamStatus ${header.width}x${header.height} stride=${header.stride} frame=${header.frameIndex} freshness=${freshnessSeconds ?: -1}s",
+            )
         }
+    }
+}
+
+internal class ActivePlayerSessionHandle(
+    val sessionId: String,
+    val entryId: String,
+    val entryDisplayName: String,
+    val framebufferPath: Path,
+    val appLogPath: Path,
+    val fexLogPath: Path,
+    val guestLogPath: Path,
+    private val startedAt: Instant,
+    private val request: GuestLaunchRequest,
+    private val process: Process,
+    private val stdoutPump: Thread,
+    private val stderrPump: Thread,
+    private val adoptedExecFd: AdoptedExecFd?,
+    private val logStore: SessionLogStore,
+    private val backendName: String,
+) {
+    @Volatile
+    private var finalized = false
+
+    fun isAlive(): Boolean = process.isAlive
+
+    fun readGuestLog(): String = runCatching { guestLogPath.readText() }.getOrDefault("")
+
+    fun readStartupAnalysis(): XeniaStartupAnalysis = XeniaStartupStageParser.analyze(readGuestLog())
+
+    fun readOutputPreview(): OutputPreviewState = OutputPreviewState.from(framebufferPath, readStartupAnalysis())
+
+    fun stop(reason: String): GuestLaunchResult {
+        if (process.isAlive) {
+            process.destroy()
+            process.waitFor(3, TimeUnit.SECONDS)
+            if (process.isAlive) {
+                process.destroyForcibly()
+            }
+        }
+        return finalizeSession(
+            classificationOverride = ExitClassification.SUCCESS,
+            detailOverride = "Player session stopped by $reason",
+        )
+    }
+
+    fun finalizeIfExited(): GuestLaunchResult? {
+        if (process.isAlive) {
+            return null
+        }
+        return finalizeSession()
+    }
+
+    private fun finalizeSession(
+        classificationOverride: ExitClassification? = null,
+        detailOverride: String? = null,
+    ): GuestLaunchResult {
+        if (finalized) {
+            val analysis = readStartupAnalysis()
+            return GuestLaunchResult(
+                sessionId = sessionId,
+                exitClassification = classificationOverride ?: ExitClassification.SUCCESS,
+                exitCode = runCatching { process.exitValue() }.getOrNull(),
+                startedAt = Instant.now(),
+                finishedAt = Instant.now(),
+                detail = detailOverride ?: "Player session already finalized at ${analysis.stage.name.lowercase()}",
+            )
+        }
+        finalized = true
+        stdoutPump.join()
+        stderrPump.join()
+        adoptedExecFd?.close()
+
+        val startupAnalysis = readStartupAnalysis()
+        val outputPreview = readOutputPreview()
+        val exitCode = runCatching { process.exitValue() }.getOrNull()
+        val finishedAt = Instant.now()
+        val classification = classificationOverride ?: when {
+            startupAnalysis.stage == XeniaStartupStage.FAILED -> ExitClassification.PROCESS_ERROR
+            exitCode != null && exitCode != 0 -> ExitClassification.PROCESS_ERROR
+            else -> ExitClassification.SUCCESS
+        }
+        val detail = detailOverride ?: when {
+            classification == ExitClassification.SUCCESS -> "Player session ended at ${startupAnalysis.stage.name.lowercase()}"
+            else -> "Player session failed at ${startupAnalysis.stage.name.lowercase()}: ${startupAnalysis.detail}"
+        }
+        val result = GuestLaunchResult(
+            sessionId = sessionId,
+            exitClassification = classification,
+            exitCode = exitCode,
+            startedAt = startedAt,
+            finishedAt = finishedAt,
+            detail = detail,
+        )
+        logStore.writeLaunchResult(
+            request,
+            backendName,
+            result,
+            extras = mapOf(
+                "xenia.startupStage" to startupAnalysis.stage.name.lowercase(),
+                "xenia.cacheBackendStatus" to detectCacheBackendStatusFromLog(readGuestLog()),
+                "xenia.presentationBackend" to (request.args.firstOrNull { it.startsWith("--x360_presentation_backend=") }
+                    ?.substringAfter('=')
+                    ?: PresentationBackend.HEADLESS_ONLY.name.lowercase()),
+                "xenia.framebufferPath" to outputPreview.framebufferPath,
+                "xenia.frameStreamStatus" to outputPreview.status,
+                "xenia.lastFrameWidth" to (outputPreview.width ?: 0).toString(),
+                "xenia.lastFrameHeight" to (outputPreview.height ?: 0).toString(),
+                "xenia.lastFrameIndex" to outputPreview.frameIndex.toString(),
+            ),
+        )
+        return result
     }
 }
 
@@ -1011,6 +1423,110 @@ private class XeniaGuestLauncher(
         return launch(request, XeniaRunGoal.StopAtStage(XeniaStartupStage.VULKAN_INITIALIZED))
     }
 
+    fun startSession(
+        request: GuestLaunchRequest,
+        entryId: String,
+        entryDisplayName: String,
+        adoptedExecFd: AdoptedExecFd?,
+        presentationSettings: XeniaPresentationSettings,
+    ): ActivePlayerSessionHandle? {
+        val startedAt = Instant.now()
+        val nativeLibraryDir = File(context.applicationInfo.nativeLibraryDir).toPath()
+        val loaderPath = nativeLibraryDir.resolve("libFEXLoader.so")
+        val corePath = nativeLibraryDir.resolve("libFEXCore.so")
+        val guestExecutable = File(request.executable).toPath()
+
+        val missingArtifact = when {
+            !loaderPath.exists() -> loaderPath
+            !corePath.exists() -> corePath
+            !guestExecutable.exists() -> guestExecutable
+            !directories.xeniaConfigFile.exists() -> directories.xeniaConfigFile
+            else -> null
+        }
+        if (missingArtifact != null) {
+            val result = GuestLaunchResult(
+                sessionId = request.sessionId,
+                exitClassification = ExitClassification.VALIDATION_ERROR,
+                exitCode = null,
+                startedAt = startedAt,
+                finishedAt = Instant.now(),
+                detail = "Missing required artifact: $missingArtifact",
+            )
+            logStore.writeLaunchFailure(request, backendName, result)
+            return null
+        }
+
+        directories.fexEmuHome.createDirectories()
+        directories.fexConfigFile.parent?.createDirectories()
+        directories.rootfsTmp.createDirectories()
+        directories.fexConfigFile.toFile().writeText(buildFexConfig(directories))
+
+        logStore.writeFexPreamble(
+            request = request,
+            backend = backendName,
+            loaderPath = loaderPath,
+            configPath = directories.fexConfigFile,
+            homePath = directories.baseDir,
+        )
+        logStore.writeGuestPreamble(request, backendName)
+        logStore.writeLaunchRunning(
+            request = request,
+            backend = backendName,
+            extras = mapOf(
+                "xenia.presentationBackend" to presentationSettings.presentationBackend.name.lowercase(),
+                "xenia.guestRenderScaleProfile" to presentationSettings.guestRenderScaleProfile.name.lowercase(),
+                "xenia.internalDisplayResolution" to "${presentationSettings.internalDisplayResolution.width}x${presentationSettings.internalDisplayResolution.height}",
+            ),
+        )
+
+        val launchSpec = buildFexLaunchSpec(loaderPath, directories, request)
+        val processBuilder = ProcessBuilder(launchSpec.command)
+            .directory(File(request.workingDirectory))
+            .redirectInput(
+                request.stdinRedirectPath
+                    ?.let { path -> ProcessBuilder.Redirect.from(File(path)) }
+                    ?: ProcessBuilder.Redirect.PIPE,
+            )
+
+        val environment = processBuilder.environment()
+        launchSpec.environment.forEach { (key, value) -> environment[key] = value }
+
+        val process = try {
+            processBuilder.start()
+        } catch (throwable: Throwable) {
+            val result = GuestLaunchResult(
+                sessionId = request.sessionId,
+                exitClassification = ExitClassification.PROCESS_ERROR,
+                exitCode = null,
+                startedAt = startedAt,
+                finishedAt = Instant.now(),
+                detail = "Failed to start Xenia through FEX: ${throwable.message}",
+            )
+            logStore.writeLaunchFailure(request, backendName, result)
+            return null
+        }
+
+        val stdoutPump = logStore.pump(process.inputStream, request.logDestinations.guestLog)
+        val stderrPump = logStore.pump(process.errorStream, request.logDestinations.fexLog)
+        return ActivePlayerSessionHandle(
+            sessionId = request.sessionId,
+            entryId = entryId,
+            entryDisplayName = entryDisplayName,
+            framebufferPath = directories.rootfsTmp.resolve("xenia_fb"),
+            appLogPath = request.logDestinations.appLog,
+            fexLogPath = request.logDestinations.fexLog,
+            guestLogPath = request.logDestinations.guestLog,
+            startedAt = startedAt,
+            request = request,
+            process = process,
+            stdoutPump = stdoutPump,
+            stderrPump = stderrPump,
+            adoptedExecFd = adoptedExecFd,
+            logStore = logStore,
+            backendName = backendName,
+        )
+    }
+
     fun launch(
         request: GuestLaunchRequest,
         goal: XeniaRunGoal,
@@ -1130,17 +1646,23 @@ private class XeniaGuestLauncher(
                         val observedAt = moduleLoadObservedAt ?: System.nanoTime().also { moduleLoadObservedAt = it }
                         val aliveNanos = System.nanoTime() - observedAt
                         if (aliveNanos >= TimeUnit.SECONDS.toNanos(goal.observationWindowSeconds)) {
-                            steadyStateReached = true
-                            logStore.appendGuestLine(
-                                request.logDestinations.guestLog,
-                                "X360_XENIA_STAGE=TITLE_RUNNING_HEADLESS observation_seconds=${goal.observationWindowSeconds}",
-                            )
-                            process.destroy()
-                            process.waitFor(3, TimeUnit.SECONDS)
-                            if (process.isAlive) {
-                                process.destroyForcibly()
+                            if (!steadyStateReached) {
+                                steadyStateReached = true
+                                logStore.appendGuestLine(
+                                    request.logDestinations.guestLog,
+                                    "X360_XENIA_STAGE=TITLE_RUNNING_HEADLESS observation_seconds=${goal.observationWindowSeconds}",
+                                )
                             }
-                            break
+                            if (goal.requiredStage == XeniaStartupStage.TITLE_RUNNING_HEADLESS ||
+                                startupAnalysis.stage.reaches(goal.requiredStage)
+                            ) {
+                                process.destroy()
+                                process.waitFor(3, TimeUnit.SECONDS)
+                                if (process.isAlive) {
+                                    process.destroyForcibly()
+                                }
+                                break
+                            }
                         }
                     }
                 }
@@ -1163,16 +1685,47 @@ private class XeniaGuestLauncher(
         val finalGuestLog = runCatching { request.logDestinations.guestLog.readText() }.getOrDefault("")
         startupAnalysis = XeniaStartupStageParser.analyze(finalGuestLog)
         val exitCode = runCatching { process.exitValue() }.getOrNull()
+        val finishedAt = Instant.now()
+        val finishedAtNanos = System.nanoTime()
+        val outputPreview = OutputPreviewState.from(
+            framebufferPath = directories.rootfsTmp.resolve("xenia_fb"),
+            startupAnalysis = startupAnalysis,
+        )
         val aliveAfterModuleLoadSeconds = moduleLoadObservedAt?.let { observedAt ->
-            val finishedNanos = if (steadyStateReached) {
-                TimeUnit.SECONDS.toNanos((goal as XeniaRunGoal.TitleSteadyState).observationWindowSeconds)
+            val finishedNanos = if (goal is XeniaRunGoal.TitleSteadyState &&
+                steadyStateReached &&
+                goal.requiredStage == XeniaStartupStage.TITLE_RUNNING_HEADLESS
+            ) {
+                TimeUnit.SECONDS.toNanos(goal.observationWindowSeconds)
             } else {
-                (System.nanoTime() - observedAt).coerceAtLeast(0L)
+                (finishedAtNanos - observedAt).coerceAtLeast(0L)
             }
             TimeUnit.NANOSECONDS.toSeconds(finishedNanos)
         } ?: 0L
-        val cacheBackendStatus = detectCacheBackendStatus(finalGuestLog)
+        val cacheBackendStatus = detectCacheBackendStatusFromLog(finalGuestLog)
         val titleMetadataSeen = finalGuestLog.contains("Title name: ")
+        val presentationBackend = request.args
+            .firstOrNull { it.startsWith("--x360_presentation_backend=") }
+            ?.substringAfter('=')
+            ?: PresentationBackend.HEADLESS_ONLY.name.lowercase()
+        val guestRenderScaleProfile = request.args
+            .firstOrNull { it.startsWith("--draw_resolution_scale_x=") }
+            ?.substringAfter('=')
+            ?.let { scale -> if (scale == "1") "one" else "unsupported:$scale" }
+            ?: "one"
+        val internalDisplayResolution = buildString {
+            val width = request.args
+                .firstOrNull { it.startsWith("--internal_display_resolution_x=") }
+                ?.substringAfter('=')
+                ?: "1280"
+            val height = request.args
+                .firstOrNull { it.startsWith("--internal_display_resolution_y=") }
+                ?.substringAfter('=')
+                ?: "720"
+            append(width)
+            append('x')
+            append(height)
+        }
         val classification = when {
             goal.isSatisfiedBy(startupAnalysis.stage) -> ExitClassification.SUCCESS
             startupAnalysis.stage == XeniaStartupStage.FAILED -> ExitClassification.PROCESS_ERROR
@@ -1182,9 +1735,19 @@ private class XeniaGuestLauncher(
         }
         val detail = when {
             goal.isSatisfiedBy(startupAnalysis.stage) && goal is XeniaRunGoal.TitleSteadyState ->
-                "Xenia stayed alive for ${goal.observationWindowSeconds}s after title_module_loading"
+                buildString {
+                    append("Xenia stayed alive for ")
+                    append(aliveAfterModuleLoadSeconds)
+                    append("s after title_module_loading")
+                    if (goal.requiredStage != XeniaStartupStage.TITLE_RUNNING_HEADLESS) {
+                        append(" and reached ")
+                        append(goal.requiredStage.name.lowercase())
+                    }
+                }
             goal.isSatisfiedBy(startupAnalysis.stage) ->
                 "Xenia reached ${startupAnalysis.stage.name.lowercase()} via ${startupAnalysis.detail}"
+            timedOut && goal is XeniaRunGoal.TitleSteadyState && steadyStateReached ->
+                "Xenia reached title_running_headless but timed out before ${goal.requiredStage.name.lowercase()}"
             timedOut -> "Xenia bring-up timed out at ${startupAnalysis.stage.name.lowercase()}"
             else -> "Xenia stopped at ${startupAnalysis.stage.name.lowercase()}: ${startupAnalysis.detail}"
         }
@@ -1193,7 +1756,7 @@ private class XeniaGuestLauncher(
             exitClassification = classification,
             exitCode = exitCode,
             startedAt = startedAt,
-            finishedAt = Instant.now(),
+            finishedAt = finishedAt,
             detail = detail,
         )
         logStore.writeLaunchResult(
@@ -1204,31 +1767,21 @@ private class XeniaGuestLauncher(
                 "xenia.startupStage" to startupAnalysis.stage.name.lowercase(),
                 "xenia.aliveAfterModuleLoadSeconds" to aliveAfterModuleLoadSeconds.toString(),
                 "xenia.cacheBackendStatus" to cacheBackendStatus,
-                "xenia.cacheRootPath" to directories.xeniaCacheHostRoot.toString(),
+                "xenia.cacheRootPath" to directories.xeniaWritableCacheHostRoot.toString(),
                 "xenia.titleMetadataSeen" to titleMetadataSeen.toString(),
+                "xenia.presentationBackend" to presentationBackend,
+                "xenia.guestRenderScaleProfile" to guestRenderScaleProfile,
+                "xenia.internalDisplayResolution" to internalDisplayResolution,
+                "xenia.framebufferPath" to outputPreview.framebufferPath,
+                "xenia.frameStreamStatus" to outputPreview.status,
+                "xenia.lastFrameWidth" to (outputPreview.width ?: 0).toString(),
+                "xenia.lastFrameHeight" to (outputPreview.height ?: 0).toString(),
+                "xenia.lastFrameIndex" to outputPreview.frameIndex.toString(),
             ),
         )
         return result
     }
 
-    private fun detectCacheBackendStatus(guestLog: String): String {
-        val disabledBackends = buildList {
-            if (guestLog.contains("Module info cache disabled:")) {
-                add("module-info")
-            }
-            if (guestLog.contains("persistent shader storage will be disabled")) {
-                add("shader-storage")
-            }
-            if (guestLog.contains("VkPipelineCache disk backing disabled")) {
-                add("pipeline-cache")
-            }
-        }
-        return if (disabledBackends.isEmpty()) {
-            "ready"
-        } else {
-            "degraded:${disabledBackends.joinToString(",")}"
-        }
-    }
 }
 
 private sealed interface XeniaRunGoal {
@@ -1245,6 +1798,8 @@ private sealed interface XeniaRunGoal {
     data class TitleSteadyState(
         val observationWindowSeconds: Long = 30L,
         val startupTimeoutSeconds: Long = 150L,
+        val requiredStage: XeniaStartupStage = XeniaStartupStage.TITLE_RUNNING_HEADLESS,
+        val presentationBackend: PresentationBackend = PresentationBackend.HEADLESS_ONLY,
     ) : XeniaRunGoal {
         override val timeoutSeconds: Long = startupTimeoutSeconds + observationWindowSeconds
     }
@@ -1252,12 +1807,31 @@ private sealed interface XeniaRunGoal {
     fun isSatisfiedBy(stage: XeniaStartupStage): Boolean {
         return when (this) {
             is StopAtStage -> stage.reaches(this.stage)
-            is TitleSteadyState -> stage == XeniaStartupStage.TITLE_RUNNING_HEADLESS
+            is TitleSteadyState -> stage.reaches(this.requiredStage)
         }
     }
 }
 
-private class SessionLogStore(
+private fun detectCacheBackendStatusFromLog(guestLog: String): String {
+    val disabledBackends = buildList {
+        if (guestLog.contains("Module info cache disabled:")) {
+            add("module-info")
+        }
+        if (guestLog.contains("persistent shader storage will be disabled")) {
+            add("shader-storage")
+        }
+        if (guestLog.contains("VkPipelineCache disk backing disabled")) {
+            add("pipeline-cache")
+        }
+    }
+    return if (disabledBackends.isEmpty()) {
+        "ready"
+    } else {
+        "degraded:${disabledBackends.joinToString(",")}"
+    }
+}
+
+internal class SessionLogStore(
     private val directories: RuntimeDirectories,
 ) {
     fun createSession(sessionId: String): SessionLogs {
@@ -1380,6 +1954,26 @@ private class SessionLogStore(
         append(request.logDestinations.guestLog, "error=${result.detail}\n")
     }
 
+    fun writeLaunchRunning(
+        request: GuestLaunchRequest,
+        backend: String,
+        extras: Map<String, String> = emptyMap(),
+    ) {
+        overwrite(
+            request.logDestinations.appLog,
+            buildList {
+                add("session=${request.sessionId}")
+                add("layer=app")
+                add("backend=$backend")
+                add("workingDir=${request.workingDirectory}")
+                add("exitClassification=RUNNING")
+                add("exitCode=none")
+                add("detail=Player session running")
+                extras.forEach { (key, value) -> add("$key=$value") }
+            },
+        )
+    }
+
     fun appendGuestLine(path: Path, line: String) {
         append(path, "$line\n")
     }
@@ -1450,7 +2044,7 @@ private class SessionLogStore(
 
 }
 
-private data class SessionLogs(
+internal data class SessionLogs(
     val sessionId: String,
     val appLog: Path,
     val fexLog: Path,

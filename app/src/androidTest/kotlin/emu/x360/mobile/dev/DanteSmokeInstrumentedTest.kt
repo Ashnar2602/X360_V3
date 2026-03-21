@@ -9,7 +9,10 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.google.common.truth.Truth.assertWithMessage
 import com.google.common.truth.Truth.assertThat
 import emu.x360.mobile.dev.bootstrap.AppRuntimeManager
+import emu.x360.mobile.dev.bootstrap.XeniaPresentationSettings
 import emu.x360.mobile.dev.runtime.MesaRuntimeBranch
+import emu.x360.mobile.dev.runtime.XeniaFramebufferCodec
+import emu.x360.mobile.dev.runtime.XeniaStartupStage
 import java.io.File
 import java.nio.file.Path
 import org.junit.Assume.assumeTrue
@@ -38,26 +41,55 @@ class DanteSmokeInstrumentedTest {
 
         val manager = AppRuntimeManager(context)
         manager.install()
-        manager.setMesaOverride(MesaRuntimeBranch.AUTO)
+        val mesaOverride = arguments.getString("dante_mesa_override")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { raw -> MesaRuntimeBranch.valueOf(raw.uppercase()) }
+            ?: MesaRuntimeBranch.AUTO
+        manager.setMesaOverride(mesaOverride)
         val imported = withShellIdentity {
             manager.importIso(launchUri)
         }
         val entry = imported.gameLibraryEntries.firstOrNull { it.displayName.lowercase().contains("dante") }
             ?: imported.gameLibraryEntries.first()
 
+        val useHeadlessOnly = arguments.getString("dante_presentation_backend") == "headless_only"
+        val presentationSettings = if (useHeadlessOnly) {
+            XeniaPresentationSettings.HeadlessBringup
+        } else {
+            XeniaPresentationSettings.FramebufferPolling
+        }
+        val requiredStage = if (useHeadlessOnly) {
+            XeniaStartupStage.TITLE_RUNNING_HEADLESS
+        } else {
+            XeniaStartupStage.FRAME_STREAM_ACTIVE
+        }
         val launched = withShellIdentity {
-            manager.launchImportedTitle(entry.id)
+            manager.launchImportedTitle(
+                entryId = entry.id,
+                presentationSettings = presentationSettings,
+                requiredStage = requiredStage,
+            )
         }
         val stage = launched.xeniaDiagnostics.lastStartupStage
 
+        val framebufferPath = context.filesDir.toPath().resolve("rootfs/tmp/xenia_fb")
+
         assertWithMessage(
             buildString {
-                appendLine("Expected Dante's Inferno to reach steady-state headless execution.")
+                appendLine(
+                    if (useHeadlessOnly) {
+                        "Expected Dante's Inferno to stay alive headless after module load."
+                    } else {
+                        "Expected Dante's Inferno to reach an active visible framebuffer stream."
+                    },
+                )
                 appendLine("path=$resolvedIsoPath")
                 appendLine("stage=$stage")
                 appendLine("detail=${launched.xeniaDiagnostics.lastStartupDetail}")
                 appendLine("aliveAfterModuleLoadSeconds=${launched.xeniaDiagnostics.aliveAfterModuleLoadSeconds}")
                 appendLine("cacheBackendStatus=${launched.xeniaDiagnostics.cacheBackendStatus}")
+                appendLine("frameStreamStatus=${launched.xeniaDiagnostics.frameStreamStatus}")
+                appendLine("framebufferPath=$framebufferPath")
                 appendLine("lastAction=${launched.lastAction}")
                 appendLine("guestLog:")
                 appendLine(launched.latestLogs.guestLog)
@@ -66,7 +98,26 @@ class DanteSmokeInstrumentedTest {
                 appendLine("appLog:")
                 appendLine(launched.latestLogs.appLog)
             },
-        ).that(stage).isEqualTo("title_running_headless")
+        ).that(stage).isEqualTo(requiredStage.name.lowercase())
+
+        if (!useHeadlessOnly) {
+            assertThat(framebufferPath.toFile().exists()).isTrue()
+            val header = XeniaFramebufferCodec.readHeader(framebufferPath)
+            assertThat(header.width).isGreaterThan(0)
+            assertThat(header.height).isGreaterThan(0)
+            assertThat(header.frameIndex).isAtLeast(2L)
+            val frame = XeniaFramebufferCodec.readFrame(framebufferPath)
+            assertWithMessage(
+                buildString {
+                    appendLine("Expected visible Dante framebuffer content, but the exported frame was fully black.")
+                    appendLine("path=$resolvedIsoPath")
+                    appendLine("stage=$stage")
+                    appendLine("frameIndex=${header.frameIndex}")
+                    appendLine("size=${header.width}x${header.height}")
+                    appendLine("detail=${launched.xeniaDiagnostics.lastStartupDetail}")
+                },
+            ).that(countNonBlackPixels(frame.rgbaBytes)).isGreaterThan(0)
+        }
 
         if (launched.xeniaDiagnostics.titleMetadataSeen) {
             val refreshed = manager.refreshLibrary()
@@ -78,11 +129,20 @@ class DanteSmokeInstrumentedTest {
     private fun buildDocumentUri(path: Path): Uri? {
         val normalized = path.toAbsolutePath().normalize().toString().replace('\\', '/')
         val primaryPrefix = "/storage/emulated/0/"
-        if (!normalized.startsWith(primaryPrefix)) {
-            return null
+        val (volumeId, relative) = when {
+            normalized.startsWith(primaryPrefix) -> "primary" to normalized.removePrefix(primaryPrefix)
+            normalized.startsWith("/storage/") -> {
+                val withoutStorage = normalized.removePrefix("/storage/")
+                val volumeId = withoutStorage.substringBefore('/')
+                val relative = withoutStorage.substringAfter('/', missingDelimiterValue = "")
+                if (volumeId.isBlank() || volumeId == "emulated" || volumeId == "self") {
+                    return null
+                }
+                volumeId to relative
+            }
+            else -> return null
         }
-        val relative = normalized.removePrefix(primaryPrefix)
-        val documentId = "primary:$relative"
+        val documentId = "$volumeId:$relative"
         return DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", documentId)
     }
 
@@ -167,5 +227,20 @@ class DanteSmokeInstrumentedTest {
             }
         }
         return null
+    }
+
+    private fun countNonBlackPixels(rgbaBytes: ByteArray): Int {
+        var nonBlackPixels = 0
+        var index = 0
+        while (index + 3 < rgbaBytes.size) {
+            val red = rgbaBytes[index].toInt() and 0xFF
+            val green = rgbaBytes[index + 1].toInt() and 0xFF
+            val blue = rgbaBytes[index + 2].toInt() and 0xFF
+            if (red != 0 || green != 0 || blue != 0) {
+                nonBlackPixels += 1
+            }
+            index += 4
+        }
+        return nonBlackPixels
     }
 }

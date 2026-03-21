@@ -209,37 +209,57 @@ internal class TitleContentResolver(
     private fun resolveFileUri(uri: Uri): ResolvedTitleSource {
         val pathString = uri.path ?: return ResolvedTitleSource.Unsupported("Missing file path")
         val path = File(pathString).toPath().normalize()
-        if (canOpenHostPathDescriptor(path)) {
-            return ResolvedTitleSource.FileDescriptorPath(
-                hostPath = path.toAbsolutePath().normalize(),
-                origin = "file-fd",
-            )
-        }
-        return hostPathOrIssue(path, "file-uri")
+        return descriptorBackedHostPathOrIssue(
+            path = path,
+            descriptorOrigin = "file-fd",
+            hostOrigin = "file-uri",
+        )
     }
 
     private fun resolveContentUri(uri: Uri): ResolvedTitleSource {
-        if (canOpenContentUri(uri)) {
-            return ResolvedTitleSource.FileDescriptorPath(uri = uri, origin = "content-fd")
-        }
-
         val mappedDocumentPath = mapDocumentUriToPath(uri)
         if (mappedDocumentPath != null) {
-            val mappedResult = hostPathOrIssue(mappedDocumentPath, "document-uri")
-            if (mappedResult is ResolvedTitleSource.HostPath) {
+            val mappedResult = descriptorBackedHostPathOrIssue(
+                path = mappedDocumentPath,
+                descriptorOrigin = "document-path-fd",
+                hostOrigin = "document-uri",
+            )
+            if (mappedResult !is ResolvedTitleSource.Unsupported) {
                 return mappedResult
             }
         }
 
         val procFdTarget = resolveProcFdTarget(uri)
         if (procFdTarget != null) {
-            val procFdResult = hostPathOrIssue(procFdTarget, "proc-fd")
-            if (procFdResult is ResolvedTitleSource.HostPath) {
+            val procFdResult = descriptorBackedHostPathOrIssue(
+                path = procFdTarget,
+                descriptorOrigin = "proc-fd-path",
+                hostOrigin = "proc-fd",
+            )
+            if (procFdResult !is ResolvedTitleSource.Unsupported) {
                 return procFdResult
             }
         }
 
+        if (canOpenContentUri(uri)) {
+            return ResolvedTitleSource.FileDescriptorPath(uri = uri, origin = "content-fd")
+        }
+
         return ResolvedTitleSource.Unsupported("Content URI is not filesystem-backed on this device")
+    }
+
+    private fun descriptorBackedHostPathOrIssue(
+        path: Path,
+        descriptorOrigin: String,
+        hostOrigin: String,
+    ): ResolvedTitleSource {
+        if (canOpenHostPathDescriptor(path)) {
+            return ResolvedTitleSource.FileDescriptorPath(
+                hostPath = path.toAbsolutePath().normalize(),
+                origin = descriptorOrigin,
+            )
+        }
+        return hostPathOrIssue(path, hostOrigin)
     }
 
     private fun hostPathOrIssue(path: Path, origin: String): ResolvedTitleSource {

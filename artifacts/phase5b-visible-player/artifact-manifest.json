@@ -1,0 +1,47 @@
+{
+  "archivedAt": "2026-03-21",
+  "scope": "Phase 5B visible player shell and first visible Dante frames",
+  "appDebugApk": {
+    "included": false,
+    "reason": "app-debug.apk exceeds GitHub 100 MB per-file limit",
+    "sizeBytes": 127690647,
+    "sha256": "8ff82c99958dc7fc1f7ba272d26903e8715ea7c732a471f7b50790832b795e8d"
+  },
+  "files": [
+    {
+      "path": "xenia/xenia-canary",
+      "sizeBytes": 16353408,
+      "sha256": "b4f6a519b63db6c876bf8d6d50974dcd903593322f912c2ee909d5473f3a6706"
+    },
+    {
+      "path": "xenia/xenia-source-lock.json",
+      "sizeBytes": 262,
+      "sha256": "b5fc76e48b8cd5dcdf0d1317be6e7677d03619ffc332e4af8d71d8b694639b1f"
+    },
+    {
+      "path": "xenia/xenia-build-metadata.json",
+      "sizeBytes": 40301,
+      "sha256": "4ba164ea2390c91f275fce6c0a9ded85b43b8b1e582b5c0b2bc7be928840ec65"
+    },
+    {
+      "path": "fex/libFEXLoader.so",
+      "sizeBytes": 43637832,
+      "sha256": "03e4b3f2d28bb9106973c945a65840f988d00f61b9b5e91556676a783ee82f6f"
+    },
+    {
+      "path": "fex/libFEXCore.so",
+      "sizeBytes": 29939224,
+      "sha256": "e1828fde9b0c51f7587ffa92769b722978030941c0d66b977c313813455e80a5"
+    },
+    {
+      "path": "fex/fex-build-metadata.json",
+      "sizeBytes": 522,
+      "sha256": "940b4e2b989ba7d8775d7bd90243a231ee365423d51d80368149169255683b4a"
+    },
+    {
+      "path": "android/app-debug-androidTest.apk",
+      "sizeBytes": 5322528,
+      "sha256": "974be791e7a98288d1f0a4dded5bb99f0d3612438732f7e72695d3f3d1dba8c4"
+    }
+  ]
+}

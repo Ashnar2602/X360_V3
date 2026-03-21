@@ -119,6 +119,15 @@ data class RuntimeDirectories(
     val xeniaCacheSlot0: Path = rootfsXeniaBin.resolve("cache0")
     val xeniaCacheSlot1: Path = rootfsXeniaBin.resolve("cache1")
     val xeniaScratchRoot: Path = rootfsXeniaBin.resolve("scratch")
+    val rootfsTmpX360V3: Path = rootfsTmp.resolve("x360-v3")
+    val rootfsTmpXeniaRoot: Path = rootfsTmpX360V3.resolve("xenia")
+    val xeniaWritableContentRoot: Path = rootfsTmpXeniaRoot.resolve("content")
+    val xeniaWritableCacheHostRoot: Path = rootfsTmpXeniaRoot.resolve("cache-host")
+    val xeniaWritableModuleCacheRoot: Path = xeniaWritableCacheHostRoot.resolve("modules")
+    val xeniaWritableShaderCacheRoot: Path = xeniaWritableCacheHostRoot.resolve("shaders")
+    val xeniaWritableShaderCacheShareableRoot: Path = xeniaWritableShaderCacheRoot.resolve("shareable")
+    val xeniaWritableShaderCacheLocalRoot: Path = xeniaWritableShaderCacheRoot.resolve("local")
+    val xeniaWritableStorageRoot: Path = rootfsTmpXeniaRoot.resolve("storage")
     val mesa25Root: Path = rootfsMesaRoot.resolve("mesa25")
     val mesa25LibRoot: Path = mesa25Root.resolve("lib")
     val mesa25IcdRoot: Path = mesa25Root.resolve("icd")
@@ -168,6 +177,8 @@ data class RuntimeDirectories(
         rootfsMnt,
         rootfsMntLibrary,
         rootfsTmp,
+        rootfsTmpX360V3,
+        rootfsTmpXeniaRoot,
         rootfsProc,
         rootfsDev,
         rootfsEtc,
@@ -193,6 +204,13 @@ data class RuntimeDirectories(
         xeniaCacheSlot0,
         xeniaCacheSlot1,
         xeniaScratchRoot,
+        xeniaWritableContentRoot,
+        xeniaWritableCacheHostRoot,
+        xeniaWritableModuleCacheRoot,
+        xeniaWritableShaderCacheRoot,
+        xeniaWritableShaderCacheShareableRoot,
+        xeniaWritableShaderCacheLocalRoot,
+        xeniaWritableStorageRoot,
         rootfsMesaRoot,
         mesa25Root,
         mesa25LibRoot,
@@ -245,6 +263,33 @@ enum class ExitClassification {
 }
 
 @Serializable
+enum class PresentationBackend {
+    @SerialName("headless-only")
+    HEADLESS_ONLY,
+
+    @SerialName("framebuffer-polling")
+    FRAMEBUFFER_POLLING,
+
+    @SerialName("surface-bridge")
+    SURFACE_BRIDGE,
+}
+
+@Serializable
+enum class GuestRenderScaleProfile {
+    @SerialName("half")
+    HALF,
+
+    @SerialName("one")
+    ONE,
+
+    @SerialName("one-and-half")
+    ONE_AND_HALF,
+
+    @SerialName("two")
+    TWO,
+}
+
+@Serializable
 enum class XeniaStartupStage {
     @SerialName("process-started")
     PROCESS_STARTED,
@@ -270,6 +315,12 @@ enum class XeniaStartupStage {
     @SerialName("title-running-headless")
     TITLE_RUNNING_HEADLESS,
 
+    @SerialName("first-frame-captured")
+    FIRST_FRAME_CAPTURED,
+
+    @SerialName("frame-stream-active")
+    FRAME_STREAM_ACTIVE,
+
     @SerialName("failed")
     FAILED,
 
@@ -292,6 +343,8 @@ enum class XeniaStartupStage {
             TITLE_MODULE_LOADING -> 5
             TITLE_METADATA_AVAILABLE -> 6
             TITLE_RUNNING_HEADLESS -> 7
+            FIRST_FRAME_CAPTURED -> 8
+            FRAME_STREAM_ACTIVE -> 9
             FAILED -> -1
         }
     }

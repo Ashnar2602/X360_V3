@@ -5,6 +5,7 @@ This directory exists so successful milestone outputs do not live only inside `a
 Current archived milestone:
 
 - `phase4a-vulkan-init`
+- `phase5b-visible-player`
 
 Contents preserved there:
 
@@ -13,6 +14,12 @@ Contents preserved there:
 - exact source locks and build metadata for Xenia and FEX
 - `app-debug-androidTest.apk`
 - `artifact-manifest.json` with sizes and `sha256` values
+
+For `phase5b-visible-player`, the archive preserves the same class of artifacts for the first milestone where:
+
+- the product shell exists
+- the fullscreen player exists
+- Dante produces visible frames on both validated devices
 
 Important note:
 

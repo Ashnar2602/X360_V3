@@ -1,0 +1,131 @@
+diff --git a/src/xenia/ui/presenter.cc b/src/xenia/ui/presenter.cc
+index d53a0812..1387cdcf 100644
+--- a/src/xenia/ui/presenter.cc
++++ b/src/xenia/ui/presenter.cc
+@@ -7,6 +7,8 @@
+  ******************************************************************************
+  */
+ 
++#include <atomic>
++
+ #include "xenia/ui/presenter.h"
+ 
+ #include "xenia/base/assert.h"
+@@ -361,10 +363,22 @@ bool Presenter::RefreshGuestOutput(
+   writable_properties.display_aspect_ratio_y = display_aspect_ratio_y;
+   writable_properties.is_8bpc = false;
+   bool is_active = writable_properties.IsActive();
++  static std::atomic<uint32_t> refresh_request_log_count{0};
+   if (is_active) {
++    uint32_t refresh_request_count =
++        refresh_request_log_count.fetch_add(1, std::memory_order_relaxed) + 1;
++    if (refresh_request_count <= 3 || !(refresh_request_count % 120)) {
++      XELOGI(
++          "X360_FRAMEBUFFER_DEBUG refresh_request count={} size={}x{} aspect={}x{}",
++          refresh_request_count, frontbuffer_width, frontbuffer_height,
++          display_aspect_ratio_x, display_aspect_ratio_y);
++    }
+     if (!RefreshGuestOutputImpl(guest_output_mailbox_writable_,
+                                 frontbuffer_width, frontbuffer_height,
+                                 refresher, writable_properties.is_8bpc)) {
++      XELOGW("X360_FRAMEBUFFER_DEBUG refresh_impl_failed size={}x{} aspect={}x{}",
++             frontbuffer_width, frontbuffer_height, display_aspect_ratio_x,
++             display_aspect_ratio_y);
+       // If failed to refresh, don't send the currently writable image to the
+       // mailbox as it may be in an undefined state. Don't disable the guest
+       // output either though because the failure may be something transient.
+diff --git a/src/xenia/ui/vulkan/vulkan_presenter.cc b/src/xenia/ui/vulkan/vulkan_presenter.cc
+index 36f1b55b..9a3ecd95 100644
+--- a/src/xenia/ui/vulkan/vulkan_presenter.cc
++++ b/src/xenia/ui/vulkan/vulkan_presenter.cc
+@@ -9,6 +9,7 @@
+ 
+ #include "xenia/ui/vulkan/vulkan_presenter.h"
+ 
++#include <atomic>
+ #include <cstdint>
+ 
+ #include "xenia/base/assert.h"
+@@ -232,19 +233,42 @@ Surface::TypeFlags VulkanPresenter::GetSupportedSurfaceTypes() const {
+ bool VulkanPresenter::CaptureGuestOutput(RawImage& image_out) {
+   std::shared_ptr<GuestOutputImage> guest_output_image;
+   {
++    GuestOutputProperties guest_output_properties;
+     uint32_t guest_output_mailbox_index;
+     std::unique_lock<std::mutex> guest_output_consumer_lock(
+-        ConsumeGuestOutput(guest_output_mailbox_index, nullptr, nullptr));
++        ConsumeGuestOutput(guest_output_mailbox_index, &guest_output_properties,
++                           nullptr));
+     if (guest_output_mailbox_index != UINT32_MAX) {
+       assert_true(guest_output_images_[guest_output_mailbox_index]
+                       .ever_successfully_refreshed);
+       guest_output_image =
+           guest_output_images_[guest_output_mailbox_index].image;
++    } else {
++      static std::atomic<uint32_t> capture_inactive_log_count{0};
++      uint32_t inactive_log_count =
++          capture_inactive_log_count.fetch_add(1, std::memory_order_relaxed) +
++          1;
++      if (inactive_log_count <= 5 || !(inactive_log_count % 120)) {
++        XELOGW(
++            "X360_FRAMEBUFFER_DEBUG capture_inactive count={} frontbuffer={}x{} aspect={}x{}",
++            inactive_log_count, guest_output_properties.frontbuffer_width,
++            guest_output_properties.frontbuffer_height,
++            guest_output_properties.display_aspect_ratio_x,
++            guest_output_properties.display_aspect_ratio_y);
++      }
+     }
+     // Incremented the reference count of the guest output image - safe to leave
+     // the consumer critical section now.
+   }
+   if (!guest_output_image) {
++    static std::atomic<uint32_t> capture_missing_image_log_count{0};
++    uint32_t missing_image_log_count =
++        capture_missing_image_log_count.fetch_add(1, std::memory_order_relaxed) +
++        1;
++    if (missing_image_log_count <= 5 || !(missing_image_log_count % 120)) {
++      XELOGW("X360_FRAMEBUFFER_DEBUG capture_missing_image count={}",
++             missing_image_log_count);
++    }
+     return false;
+   }
+ 
+@@ -420,6 +444,13 @@ bool VulkanPresenter::CaptureGuestOutput(RawImage& image_out) {
+   // Unmapping will be done by freeing.
+   dfn.vkFreeMemory(device, buffer_memory, nullptr);
+ 
++  static std::atomic<uint32_t> capture_success_log_count{0};
++  uint32_t success_log_count =
++      capture_success_log_count.fetch_add(1, std::memory_order_relaxed) + 1;
++  if (success_log_count <= 3 || !(success_log_count % 120)) {
++    XELOGI("X360_FRAMEBUFFER_DEBUG capture_success count={} size={}x{} stride={}",
++           success_log_count, image_out.width, image_out.height, image_out.stride);
++  }
+   return true;
+ }
+ 
+@@ -882,9 +913,24 @@ bool VulkanPresenter::RefreshGuestOutputImpl(
+       is_8bpc_out_ref, image_instance.image->image(),
+       image_instance.image->view(), image_instance.version,
+       image_instance.ever_successfully_refreshed);
++  bool first_refresh = !image_instance.ever_successfully_refreshed;
+   bool refresher_succeeded = refresher(context);
+   if (refresher_succeeded) {
+     image_instance.ever_successfully_refreshed = true;
++    if (first_refresh) {
++      XELOGI(
++          "X360_FRAMEBUFFER_DEBUG refresh_success mailbox={} size={}x{} version={}",
++          mailbox_index, frontbuffer_width, frontbuffer_height,
++          image_instance.version);
++    }
++  } else {
++    static std::atomic<uint32_t> refresh_failure_log_count{0};
++    uint32_t failure_log_count =
++        refresh_failure_log_count.fetch_add(1, std::memory_order_relaxed) + 1;
++    if (failure_log_count <= 5 || !(failure_log_count % 120)) {
++      XELOGW("X360_FRAMEBUFFER_DEBUG refresh_failure count={} mailbox={} size={}x{}",
++             failure_log_count, mailbox_index, frontbuffer_width, frontbuffer_height);
++    }
+   }
+   // Even if the refresher has returned false, it still might have submitted
+   // some commands referencing the image. It's better to put an excessive

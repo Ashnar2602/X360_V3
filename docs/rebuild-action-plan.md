@@ -4,7 +4,7 @@
 
 This repo is no longer "docs only".
 
-Phase 0, Phase 1, Phase 2, Phase 3A, Phase 3B, Phase 4A, Phase 4B, and Phase 4C are now implemented to the point where the Android wrapper can:
+Phase 0, Phase 1, Phase 2, Phase 3A, Phase 3B, Phase 4A, Phase 4B, Phase 4C, Phase 5A, and Phase 5B are now implemented to the point where the Android wrapper can:
 
 - build a real FEX host baseline from vendored source
 - install a deterministic runtime under `filesDir`
@@ -22,8 +22,11 @@ Phase 0, Phase 1, Phase 2, Phase 3A, Phase 3B, Phase 4A, Phase 4B, and Phase 4C 
 - import and resolve filesystem-backed ISO paths into `rootfs/mnt/library`
 - launch `Dante's Inferno` from ISO and reach `TITLE_MODULE_LOADING`
 - keep `Dante's Inferno` alive headless for the fixed observation window without fatal aborts on both devices
+- export visible frames through `rootfs/tmp/xenia_fb`
+- display visible Dante frames in the Android app on both devices
+- run a product-facing shell with splash, library home, options, debug screen, and fullscreen player
 
-The immediate blocker is no longer "make Turnip exist at all", no longer "make Xenia start at all", and no longer "make a title survive module load". The next milestone is presentation recovery.
+The immediate blocker is no longer "make Turnip exist at all", no longer "make Xenia start at all", no longer "make a title survive module load", and no longer "make any visible frames appear". The next milestone is interaction and player hardening on top of the visible path.
 
 ## What is implemented
 
@@ -73,7 +76,7 @@ The immediate blocker is no longer "make Turnip exist at all", no longer "make X
 - branch-aware Vulkan launch environment
 - KGSL preflight
 - measured AUTO/manual branch policy:
-  - `kalama` / `QCS8550` -> `mesa25`
+  - `kalama` / `QCS8550` -> `mesa26`
   - `sun` / `CQ8725S` -> `mesa26`
   - unknown Qualcomm -> `mesa25`
   - non-Qualcomm -> `lavapipe`
@@ -84,7 +87,7 @@ The immediate blocker is no longer "make Turnip exist at all", no longer "make X
 - active pin:
   - `sourceRef = canary_experimental`
   - `sourceRevision = c50b036178108f87cb0acaf3691a7c3caf07820f`
-  - `patchSetId = phase4-headless-steady-v1`
+  - `patchSetId = phase5a-framebuffer-polling-v11`
 - repo-owned Xenia patch queue under `third_party/xenia-patches/phase4`
 - generated Xenia runtime tree:
   - `rootfs/opt/x360-v3/xenia/bin/xenia-canary`
@@ -108,21 +111,16 @@ The immediate blocker is no longer "make Turnip exist at all", no longer "make X
   - `memfd_create`-first POSIX memory mapping
   - null-safe headless path when no ImGui drawer exists
   - non-fatal module cache initialization for headless title boot
+  - framebuffer-polling export path for visible Android frames
 - persistent incremental build workspace for local Xenia development
 - JSON-backed no-copy ISO library with title-aware launch
 
 ### Archived outputs
 
-The current successful bring-up binaries are archived under `artifacts/phase4a-vulkan-init/`:
+The current successful bring-up binaries are archived under:
 
-- `xenia/xenia-canary`
-- `xenia/xenia-source-lock.json`
-- `xenia/xenia-build-metadata.json`
-- `fex/libFEXLoader.so`
-- `fex/libFEXCore.so`
-- `fex/fex-build-metadata.json`
-- `android/app-debug-androidTest.apk`
-- `artifact-manifest.json`
+- `artifacts/phase4a-vulkan-init/`
+- `artifacts/phase5b-visible-player/`
 
 The main `app-debug.apk` is not committed because it exceeds GitHub's `100 MB` per-file limit, but its exact `sha256` and size are captured in `artifact-manifest.json`.
 
@@ -150,9 +148,12 @@ Fixed runtime paths now include:
 - `<filesDir>/logs/fex`
 - `<filesDir>/logs/guest`
 
-Historical placeholders remain reserved:
+Reserved future placeholder:
 
 - `rootfs/tmp/anative_window.ptr`
+
+Active framebuffer export path:
+
 - `rootfs/tmp/xenia_fb`
 
 ## Phase status
@@ -252,7 +253,7 @@ Phase 4A is considered complete in this repo because all of the following are no
 
 `AYN Odin2 Mini`:
 
-- AUTO branch resolves to `mesa25`
+- AUTO branch resolves to `mesa26`
 - Turnip probe passes
 - Xenia bring-up reaches `VULKAN_INITIALIZED`
 - guest log confirms `Turnip Adreno (TM) 740`
@@ -316,7 +317,7 @@ Phase 4C is considered complete in this repo because all of the following are no
 
 `AYN Odin2 Mini`:
 
-- AUTO branch resolves to `mesa25`
+- AUTO branch resolves to `mesa26`
 - Turnip probe passes
 - Xenia bring-up reaches `VULKAN_INITIALIZED`
 - `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
@@ -329,18 +330,87 @@ Phase 4C is considered complete in this repo because all of the following are no
 - Xenia bring-up reaches `VULKAN_INITIALIZED`
 - `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
 
-## Next milestone: Phase 5
+### Phase 5A: First visible frames through framebuffer polling
+
+Status: complete
+
+Delivered:
+
+- repo-owned Xenia framebuffer-polling export path
+- versioned `xenia_fb` contract
+- Android-side framebuffer reader and preview pipeline
+- startup stages:
+  - `FIRST_FRAME_CAPTURED`
+  - `FRAME_STREAM_ACTIVE`
+- future-ready guest render-scale contract with:
+  - `HALF`
+  - `ONE`
+  - `ONE_AND_HALF`
+  - `TWO`
+
+### Phase 5B: Product UI restructure and fullscreen player shell
+
+Status: complete
+
+Delivered:
+
+- `SplashActivity` launcher flow
+- library-first `MainActivity`
+- `Options` path with preserved `Debug` screen
+- per-game `Play` and `Options` actions
+- dedicated fullscreen `PlayerActivity`
+- FPS overlay setting and player session controller
+- `X360 Mobile` `0.2.0 alpha` visible product shell
+
+## Verified Phase 5B result
+
+Phase 5B is considered complete in this repo because all of the following are now true:
+
+- the Vulkan probe still passes with `lavapipe`
+- the Turnip hardware probe still passes on `AYN Odin2 Mini`
+- the Turnip hardware probe still passes on `Odin3`
+- Xenia is still built from pinned source inside this repo
+- imported ISO titles still pass through deterministic no-copy portalization
+- `Dante's Inferno` still reaches `TITLE_RUNNING_HEADLESS` on both connected devices
+- visible Dante frames are confirmed on both connected devices through `xenia_fb`
+- the app launches into a product shell and plays titles in a dedicated fullscreen player
+
+### Verified per-device outcome
+
+`AYN Odin2 Mini`:
+
+- AUTO branch resolves to `mesa26`
+- Turnip probe passes
+- Xenia bring-up reaches `VULKAN_INITIALIZED`
+- `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
+- visible Dante frames confirmed in the fullscreen player
+
+`Odin3`:
+
+- AUTO branch resolves to `mesa26`
+- Turnip probe passes
+- `KgslPropertiesInstrumentedTest` confirms `ubwc_mode = 5`
+- Xenia bring-up reaches `VULKAN_INITIALIZED`
+- `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
+- visible Dante frames confirmed in the fullscreen player
+
+Note:
+
+- the visible-frame milestone is currently confirmed primarily by direct device observation in the player UI
+- the stricter black-frame automation used during Phase 5A can still report a false negative if it samples too early while the stream is warming up
+
+## Next milestone: Phase 6
 
 ### Goal
 
-Move from headless stable title execution to visible frame/output recovery while keeping the validated FEX, Turnip, and title-boot baseline green on both devices.
+Move from visible passive playback to usable interaction while keeping the validated FEX, Turnip, title-boot, and visible-frame baseline green on both devices.
 
 ### Scope
 
 - keep the current FEX and Turnip regression matrix intact
 - keep the stable no-copy title launch path intact
-- recover the first observable frame/output path
-- continue to defer input and audio until output is diagnosable
+- keep the visible framebuffer-polling player path intact
+- recover input and audio only after the visible path stays stable
 
 ### Pass criteria
 
@@ -348,11 +418,11 @@ Move from headless stable title execution to visible frame/output recovery while
 - the Turnip probe still passes on both devices
 - Xenia still reaches `VULKAN_INITIALIZED`
 - `Dante's Inferno` still reaches `TITLE_RUNNING_HEADLESS`
-- the first visible output path is real and diagnosable
-- later failures, if any, are inside presentation recovery rather than FEX, Turnip, or title boot
+- visible output remains real and diagnosable
+- later failures, if any, are inside interaction/audio recovery rather than FEX, Turnip, title boot, or first-frame presentation
 
 ## Main risks from here
 
 - the historical repo mixed multiple graphics experiments at once, so later recovery work must stay single-threaded by subsystem
-- even after guest Turnip works and Xenia initializes Vulkan, title boot and presentation can still expose separate rendering, timing, and resource issues
+- even after visible presentation works, input and audio can still expose separate timing, sync, and lifecycle issues
 - preserving exact artifact provenance matters now because the stack is finally crossing from synthetic probes into emulator startup

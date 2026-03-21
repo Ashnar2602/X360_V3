@@ -1,0 +1,887 @@
+{
+    "sourceUrl": "https://github.com/xenia-canary/xenia-canary.git",
+    "sourceRef": "canary_experimental",
+    "sourceRevision": "c50b036178108f87cb0acaf3691a7c3caf07820f",
+    "buildProfile": "linux-x64-release",
+    "patchSetId": "phase5a-framebuffer-polling-v11",
+    "executableName": "xenia-canary",
+    "executableSha256": "b4f6a519b63db6c876bf8d6d50974dcd903593322f912c2ee909d5473f3a6706",
+    "runtimeLibraries": [
+        {
+            "soname": "libFLAC.so.8",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libFLAC.so.8.3.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libFLAC.so.8",
+            "packageName": "libflac8:amd64",
+            "packageVersion": "1.3.3-2ubuntu0.2"
+        },
+        {
+            "soname": "libSDL2-2.0.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libSDL2-2.0.so.0.3000.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libSDL2-2.0.so.0",
+            "packageName": "libsdl2-2.0-0:amd64",
+            "packageVersion": "2.30.0+dfsg-1build3"
+        },
+        {
+            "soname": "libX11.so.6",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libX11.so.6.4.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libX11.so.6",
+            "packageName": "libx11-6:amd64",
+            "packageVersion": "2:1.8.7-1build1"
+        },
+        {
+            "soname": "libXcomposite.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libXcomposite.so.1.0.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libXcomposite.so.1",
+            "packageName": "libxcomposite1:amd64",
+            "packageVersion": "1:0.4.5-1build3"
+        },
+        {
+            "soname": "libXcursor.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libXcursor.so.1.0.2",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libXcursor.so.1",
+            "packageName": "libxcursor1:amd64",
+            "packageVersion": "1:1.2.0-2build4"
+        },
+        {
+            "soname": "libXdamage.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libXdamage.so.1.1.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libXdamage.so.1",
+            "packageName": "libxdamage1:amd64",
+            "packageVersion": "1:1.1.6-1build1"
+        },
+        {
+            "soname": "libXext.so.6",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libXext.so.6.4.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libXext.so.6",
+            "packageName": "libxext6:amd64",
+            "packageVersion": "2:1.3.4-1build1"
+        },
+        {
+            "soname": "libXfixes.so.3",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libXfixes.so.3.1.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libXfixes.so.3",
+            "packageName": "libxfixes3:amd64",
+            "packageVersion": "1:6.0.0-1"
+        },
+        {
+            "soname": "libXi.so.6",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libXi.so.6.1.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libXi.so.6",
+            "packageName": "libxi6:amd64",
+            "packageVersion": "2:1.8-1build1"
+        },
+        {
+            "soname": "libXinerama.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libXinerama.so.1.0.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libXinerama.so.1",
+            "packageName": "libxinerama1:amd64",
+            "packageVersion": "2:1.1.4-3"
+        },
+        {
+            "soname": "libXrandr.so.2",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libXrandr.so.2.2.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libXrandr.so.2",
+            "packageName": "libxrandr2:amd64",
+            "packageVersion": "2:1.5.2-1build1"
+        },
+        {
+            "soname": "libXrender.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libXrender.so.1.3.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libXrender.so.1",
+            "packageName": "libxrender1:amd64",
+            "packageVersion": "1:0.9.10-1build4"
+        },
+        {
+            "soname": "libXss.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libXss.so.1.0.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libXss.so.1",
+            "packageName": "libxss1:amd64",
+            "packageVersion": "1:1.2.3-1build2"
+        },
+        {
+            "soname": "libapparmor.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libapparmor.so.1.8.2",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libapparmor.so.1",
+            "packageName": "libapparmor1:amd64",
+            "packageVersion": "3.0.4-2ubuntu2.4"
+        },
+        {
+            "soname": "libasound.so.2",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libasound.so.2.0.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libasound.so.2",
+            "packageName": "libasound2t64:amd64",
+            "packageVersion": "1.2.11-1build2"
+        },
+        {
+            "soname": "libasyncns.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libasyncns.so.0.3.1",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libasyncns.so.0",
+            "packageName": "libasyncns0:amd64",
+            "packageVersion": "0.8-6build2"
+        },
+        {
+            "soname": "libatk-1.0.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libatk-1.0.so.0.25209.1",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libatk-1.0.so.0",
+            "packageName": "libatk1.0-0t64:amd64",
+            "packageVersion": "2.52.0-1build1"
+        },
+        {
+            "soname": "libatk-bridge-2.0.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libatk-bridge-2.0.so.0.0.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libatk-bridge-2.0.so.0",
+            "packageName": "libatk-bridge2.0-0t64:amd64",
+            "packageVersion": "2.52.0-1build1"
+        },
+        {
+            "soname": "libatspi.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libatspi.so.0.0.1",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libatspi.so.0",
+            "packageName": "libatspi2.0-0t64:amd64",
+            "packageVersion": "2.52.0-1build1"
+        },
+        {
+            "soname": "libblkid.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libblkid.so.1.1.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libblkid.so.1",
+            "packageName": "libblkid1:amd64",
+            "packageVersion": "2.39.3-9ubuntu6"
+        },
+        {
+            "soname": "libbrotlicommon.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libbrotlicommon.so.1.1.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libbrotlicommon.so.1",
+            "packageName": "libbrotli1:amd64",
+            "packageVersion": "1.1.0-2build2"
+        },
+        {
+            "soname": "libbrotlidec.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libbrotlidec.so.1.1.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libbrotlidec.so.1",
+            "packageName": "libbrotli1:amd64",
+            "packageVersion": "1.1.0-2build2"
+        },
+        {
+            "soname": "libbz2.so.1.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libbz2.so.1.0.4",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libbz2.so.1.0",
+            "packageName": "libbz2-1.0:amd64",
+            "packageVersion": "1.0.8-5.1"
+        },
+        {
+            "soname": "libcairo-gobject.so.2",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libcairo-gobject.so.2.11800.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libcairo-gobject.so.2",
+            "packageName": "libcairo-gobject2:amd64",
+            "packageVersion": "1.18.0-3build1"
+        },
+        {
+            "soname": "libcairo.so.2",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libcairo.so.2.11800.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libcairo.so.2",
+            "packageName": "libcairo2:amd64",
+            "packageVersion": "1.18.0-3build1"
+        },
+        {
+            "soname": "libcap.so.2",
+            "sourcePath": "/lib/x86_64-linux-gnu/libcap.so.2.44",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libcap.so.2",
+            "packageName": "libcap2:amd64",
+            "packageVersion": "1:2.66-5ubuntu2"
+        },
+        {
+            "soname": "libdatrie.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libdatrie.so.1.4.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libdatrie.so.1",
+            "packageName": "libdatrie1:amd64",
+            "packageVersion": "0.2.13-3build1"
+        },
+        {
+            "soname": "libdbus-1.so.3",
+            "sourcePath": "/lib/x86_64-linux-gnu/libdbus-1.so.3.19.13",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libdbus-1.so.3",
+            "packageName": "libdbus-1-3:amd64",
+            "packageVersion": "1.12.20-2ubuntu4.1"
+        },
+        {
+            "soname": "libdecor-0.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libdecor-0.so.0.200.2",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libdecor-0.so.0",
+            "packageName": "libdecor-0-0:amd64",
+            "packageVersion": "0.2.2-1build2"
+        },
+        {
+            "soname": "libepoxy.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libepoxy.so.0.0.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libepoxy.so.0",
+            "packageName": "libepoxy0:amd64",
+            "packageVersion": "1.5.10-1"
+        },
+        {
+            "soname": "libfontconfig.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libfontconfig.so.1.12.1",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libfontconfig.so.1",
+            "packageName": "libfontconfig1:amd64",
+            "packageVersion": "2.15.0-1.1ubuntu2"
+        },
+        {
+            "soname": "libfreetype.so.6",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libfreetype.so.6.20.1",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libfreetype.so.6",
+            "packageName": "libfreetype6:amd64",
+            "packageVersion": "2.13.2+dfsg-1build3"
+        },
+        {
+            "soname": "libfribidi.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libfribidi.so.0.4.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libfribidi.so.0",
+            "packageName": "libfribidi0:amd64",
+            "packageVersion": "1.0.13-3build1"
+        },
+        {
+            "soname": "libgbm.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libgbm.so.1.0.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libgbm.so.1",
+            "packageName": "libgbm1:amd64",
+            "packageVersion": "24.0.5-1ubuntu1"
+        },
+        {
+            "soname": "libgcrypt.so.20",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libgcrypt.so.20.4.3",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libgcrypt.so.20",
+            "packageName": "libgcrypt20:amd64",
+            "packageVersion": "1.10.3-2build1"
+        },
+        {
+            "soname": "libgdk-3.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libgdk-3.so.0.2409.32",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libgdk-3.so.0",
+            "packageName": "libgtk-3-0t64:amd64",
+            "packageVersion": "3.24.41-4ubuntu1"
+        },
+        {
+            "soname": "libgdk_pixbuf-2.0.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libgdk_pixbuf-2.0.so.0.4200.10",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libgdk_pixbuf-2.0.so.0",
+            "packageName": "libgdk-pixbuf-2.0-0:amd64",
+            "packageVersion": "2.42.10+dfsg-3ubuntu3"
+        },
+        {
+            "soname": "libgio-2.0.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libgio-2.0.so.0.8000.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libgio-2.0.so.0",
+            "packageName": "libglib2.0-0t64:amd64",
+            "packageVersion": "2.80.0-6ubuntu1"
+        },
+        {
+            "soname": "libglib-2.0.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.8000.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libglib-2.0.so.0",
+            "packageName": "libglib2.0-0t64:amd64",
+            "packageVersion": "2.80.0-6ubuntu1"
+        },
+        {
+            "soname": "libgmodule-2.0.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libgmodule-2.0.so.0.8000.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libgmodule-2.0.so.0",
+            "packageName": "libglib2.0-0t64:amd64",
+            "packageVersion": "2.80.0-6ubuntu1"
+        },
+        {
+            "soname": "libgobject-2.0.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.8000.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libgobject-2.0.so.0",
+            "packageName": "libglib2.0-0t64:amd64",
+            "packageVersion": "2.80.0-6ubuntu1"
+        },
+        {
+            "soname": "libgpg-error.so.0",
+            "sourcePath": "/lib/x86_64-linux-gnu/libgpg-error.so.0.32.1",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libgpg-error.so.0",
+            "packageName": "libgpg-error0:amd64",
+            "packageVersion": "1.43-3"
+        },
+        {
+            "soname": "libgraphite2.so.3",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libgraphite2.so.3.2.1",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libgraphite2.so.3",
+            "packageName": "libgraphite2-3:amd64",
+            "packageVersion": "1.3.14-2build1"
+        },
+        {
+            "soname": "libgtk-3.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libgtk-3.so.0.2409.32",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libgtk-3.so.0",
+            "packageName": "libgtk-3-0t64:amd64",
+            "packageVersion": "3.24.41-4ubuntu1"
+        },
+        {
+            "soname": "libharfbuzz.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libharfbuzz.so.0.60830.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libharfbuzz.so.0",
+            "packageName": "libharfbuzz0b:amd64",
+            "packageVersion": "8.3.0-2build2"
+        },
+        {
+            "soname": "libjpeg.so.8",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libjpeg.so.8.2.2",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libjpeg.so.8",
+            "packageName": "libjpeg-turbo8:amd64",
+            "packageVersion": "2.1.5-2ubuntu2"
+        },
+        {
+            "soname": "liblz4.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/liblz4.so.1.9.4",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/liblz4.so.1",
+            "packageName": "liblz4-1:amd64",
+            "packageVersion": "1.9.4-1build1"
+        },
+        {
+            "soname": "libmount.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libmount.so.1.1.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libmount.so.1",
+            "packageName": "libmount1:amd64",
+            "packageVersion": "2.39.3-9ubuntu6"
+        },
+        {
+            "soname": "libogg.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libogg.so.0.8.5",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libogg.so.0",
+            "packageName": "libogg0:amd64",
+            "packageVersion": "1.3.5-0ubuntu3"
+        },
+        {
+            "soname": "libopus.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libopus.so.0.8.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libopus.so.0",
+            "packageName": "libopus0:amd64",
+            "packageVersion": "1.3.1-0.1build2"
+        },
+        {
+            "soname": "libpango-1.0.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libpango-1.0.so.0.5200.1",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libpango-1.0.so.0",
+            "packageName": "libpango-1.0-0:amd64",
+            "packageVersion": "1.52.1+ds-1build1"
+        },
+        {
+            "soname": "libpangocairo-1.0.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libpangocairo-1.0.so.0.5200.1",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libpangocairo-1.0.so.0",
+            "packageName": "libpangocairo-1.0-0:amd64",
+            "packageVersion": "1.52.1+ds-1build1"
+        },
+        {
+            "soname": "libpangoft2-1.0.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libpangoft2-1.0.so.0.5200.1",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libpangoft2-1.0.so.0",
+            "packageName": "libpangoft2-1.0-0:amd64",
+            "packageVersion": "1.52.1+ds-1build1"
+        },
+        {
+            "soname": "libpcre2-8.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.10.4",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libpcre2-8.so.0",
+            "packageName": "libpcre2-8-0:amd64",
+            "packageVersion": "10.39-3ubuntu0.1"
+        },
+        {
+            "soname": "libpixman-1.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libpixman-1.so.0.42.2",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libpixman-1.so.0",
+            "packageName": "libpixman-1-0:amd64",
+            "packageVersion": "0.42.2-1build1"
+        },
+        {
+            "soname": "libpng16.so.16",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libpng16.so.16.43.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libpng16.so.16",
+            "packageName": "libpng16-16t64:amd64",
+            "packageVersion": "1.6.43-5build1"
+        },
+        {
+            "soname": "libpulse.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libpulse.so.0.24.1",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libpulse.so.0",
+            "packageName": "libpulse0:amd64",
+            "packageVersion": "1:15.99.1+dfsg1-1ubuntu2.2"
+        },
+        {
+            "soname": "libsamplerate.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libsamplerate.so.0.2.2",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libsamplerate.so.0",
+            "packageName": "libsamplerate0:amd64",
+            "packageVersion": "0.2.2-4build1"
+        },
+        {
+            "soname": "libselinux.so.1",
+            "sourcePath": "/lib/x86_64-linux-gnu/libselinux.so.1",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libselinux.so.1",
+            "packageName": "libselinux1:amd64",
+            "packageVersion": "3.3-1build2"
+        },
+        {
+            "soname": "libsndfile.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libsndfile.so.1.0.31",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libsndfile.so.1",
+            "packageName": "libsndfile1:amd64",
+            "packageVersion": "1.0.31-2ubuntu0.2"
+        },
+        {
+            "soname": "libsystemd.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libsystemd.so.0.32.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libsystemd.so.0",
+            "packageName": "libsystemd0:amd64",
+            "packageVersion": "249.11-0ubuntu3.17"
+        },
+        {
+            "soname": "libthai.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libthai.so.0.3.1",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libthai.so.0",
+            "packageName": "libthai0:amd64",
+            "packageVersion": "0.1.29-2build1"
+        },
+        {
+            "soname": "libvorbis.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libvorbis.so.0.4.9",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libvorbis.so.0",
+            "packageName": "libvorbis0a:amd64",
+            "packageVersion": "1.3.7-1build2"
+        },
+        {
+            "soname": "libvorbisenc.so.2",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libvorbisenc.so.2.0.12",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libvorbisenc.so.2",
+            "packageName": "libvorbisenc2:amd64",
+            "packageVersion": "1.3.7-1build2"
+        },
+        {
+            "soname": "libwayland-cursor.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libwayland-cursor.so.0.20.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libwayland-cursor.so.0",
+            "packageName": "libwayland-cursor0:amd64",
+            "packageVersion": "1.20.0-1ubuntu0.1"
+        },
+        {
+            "soname": "libwayland-egl.so.1",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libwayland-egl.so.1.20.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libwayland-egl.so.1",
+            "packageName": "libwayland-egl1:amd64",
+            "packageVersion": "1.20.0-1ubuntu0.1"
+        },
+        {
+            "soname": "libwayland-server.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libwayland-server.so.0.20.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libwayland-server.so.0",
+            "packageName": "libwayland-server0:amd64",
+            "packageVersion": "1.20.0-1ubuntu0.1"
+        },
+        {
+            "soname": "libxcb-render.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libxcb-render.so.0.0.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libxcb-render.so.0",
+            "packageName": "libxcb-render0:amd64",
+            "packageVersion": "1.15-1ubuntu2"
+        },
+        {
+            "soname": "libxkbcommon.so.0",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/libxkbcommon.so.0.0.0",
+            "installPath": "rootfs/lib/x86_64-linux-gnu/libxkbcommon.so.0",
+            "packageName": "libxkbcommon0:amd64",
+            "packageVersion": "1.4.0-1"
+        },
+        {
+            "soname": "libpulsecommon-15.99.so",
+            "sourcePath": "/usr/lib/x86_64-linux-gnu/pulseaudio/libpulsecommon-15.99.so",
+            "installPath": "rootfs/usr/lib/x86_64-linux-gnu/pulseaudio/libpulsecommon-15.99.so",
+            "packageName": "libpulse0:amd64",
+            "packageVersion": "1:15.99.1+dfsg1-1ubuntu2.2"
+        }
+    ],
+    "requiredPackages": [
+        {
+            "packageName": "libapparmor1:amd64",
+            "packageVersion": "3.0.4-2ubuntu2.4",
+            "archiveName": "libapparmor1_3.0.4-2ubuntu2.4_amd64.deb",
+            "archiveSha256": "56cc62bd6359ee97d8017c2894bf1fbc328543f9d1cc2274af0ed4623a6b8386"
+        },
+        {
+            "packageName": "libasound2t64:amd64",
+            "packageVersion": "1.2.11-1build2",
+            "archiveName": "libasound2t64_1.2.11-1build2_amd64.deb",
+            "archiveSha256": "c2f0caa30869876791ba349bef4907d5cfec47b8cfd1ae9889a05dce0feb7c39"
+        },
+        {
+            "packageName": "libasyncns0:amd64",
+            "packageVersion": "0.8-6build2",
+            "archiveName": "libasyncns0_0.8-6build2_amd64.deb",
+            "archiveSha256": "6d223a97b434026e50fb9fcb237d45ed26fd272bb139f0bd793315d55a79901a"
+        },
+        {
+            "packageName": "libatk-bridge2.0-0t64:amd64",
+            "packageVersion": "2.52.0-1build1",
+            "archiveName": "libatk-bridge2.0-0t64_2.52.0-1build1_amd64.deb",
+            "archiveSha256": "22b7d47e3c0f7953a78d3cfd309d1b20771085de9220fbe610c0989b9e808c9b"
+        },
+        {
+            "packageName": "libatk1.0-0t64:amd64",
+            "packageVersion": "2.52.0-1build1",
+            "archiveName": "libatk1.0-0t64_2.52.0-1build1_amd64.deb",
+            "archiveSha256": "42c5d4b00954f17c2c3c4b866844f691eb8b6d57bf08b59203e65f12dc84a4f9"
+        },
+        {
+            "packageName": "libatspi2.0-0t64:amd64",
+            "packageVersion": "2.52.0-1build1",
+            "archiveName": "libatspi2.0-0t64_2.52.0-1build1_amd64.deb",
+            "archiveSha256": "d686ace4080eca9c2d6ce8de69392a5ac56c846701894c0858922d4ce341a1d7"
+        },
+        {
+            "packageName": "libblkid1:amd64",
+            "packageVersion": "2.39.3-9ubuntu6",
+            "archiveName": "libblkid1_2.39.3-9ubuntu6_amd64.deb",
+            "archiveSha256": "47433bcaf43d1c6ed2e2acbc7dc70f6d6ed149e64f12d25b2ddb714a56c4e8dd"
+        },
+        {
+            "packageName": "libbrotli1:amd64",
+            "packageVersion": "1.1.0-2build2",
+            "archiveName": "libbrotli1_1.1.0-2build2_amd64.deb",
+            "archiveSha256": "74492419b8fda803774b8c9acef6afc5d2f9ff31782635aae212906adae7b277"
+        },
+        {
+            "packageName": "libbz2-1.0:amd64",
+            "packageVersion": "1.0.8-5.1",
+            "archiveName": "libbz2-1.0_1.0.8-5.1_amd64.deb",
+            "archiveSha256": "695132af8a40fe417f7d4e5ea742d64521c04e069442a4719c2bd0f10ab93d94"
+        },
+        {
+            "packageName": "libcairo-gobject2:amd64",
+            "packageVersion": "1.18.0-3build1",
+            "archiveName": "libcairo-gobject2_1.18.0-3build1_amd64.deb",
+            "archiveSha256": "f5483cbe43455fc9e9cba7f0e166bd0a731c02db2902ba562719848f72e8c403"
+        },
+        {
+            "packageName": "libcairo2:amd64",
+            "packageVersion": "1.18.0-3build1",
+            "archiveName": "libcairo2_1.18.0-3build1_amd64.deb",
+            "archiveSha256": "96950b306889ff6e4248bb937b0a3b56e72dacf643fe732214ce375f0f6bbb36"
+        },
+        {
+            "packageName": "libcap2:amd64",
+            "packageVersion": "1:2.66-5ubuntu2",
+            "archiveName": "libcap2_1%3a2.66-5ubuntu2_amd64.deb",
+            "archiveSha256": "a6cce0b5f149707a6359e4f03a05fb7417c5e1d3fde9e12c651e804b4c479bbb"
+        },
+        {
+            "packageName": "libdatrie1:amd64",
+            "packageVersion": "0.2.13-3build1",
+            "archiveName": "libdatrie1_0.2.13-3build1_amd64.deb",
+            "archiveSha256": "1ae164e40e413eac4fbd38ce1c6ef9591f7a03278ad9076d71fa29258727f447"
+        },
+        {
+            "packageName": "libdbus-1-3:amd64",
+            "packageVersion": "1.12.20-2ubuntu4.1",
+            "archiveName": "libdbus-1-3_1.12.20-2ubuntu4.1_amd64.deb",
+            "archiveSha256": "6a5171696c3b05aca273d637d9c0501c8033fda64a971e09fd545bc1ab72ca1e"
+        },
+        {
+            "packageName": "libdecor-0-0:amd64",
+            "packageVersion": "0.2.2-1build2",
+            "archiveName": "libdecor-0-0_0.2.2-1build2_amd64.deb",
+            "archiveSha256": "64bf085d16e504e9ed39b91d2a46748fb8881ad7f3603fbacef6c11c04aa7064"
+        },
+        {
+            "packageName": "libepoxy0:amd64",
+            "packageVersion": "1.5.10-1",
+            "archiveName": "libepoxy0_1.5.10-1_amd64.deb",
+            "archiveSha256": "b074cde6aa853be14ec11148794bfeb2f55db41a9abdc0c99f18db97bb99e47b"
+        },
+        {
+            "packageName": "libflac8:amd64",
+            "packageVersion": "1.3.3-2ubuntu0.2",
+            "archiveName": "libflac8_1.3.3-2ubuntu0.2_amd64.deb",
+            "archiveSha256": "46ae4ced3fc67e23e173f5b5d8196f8a9235646a337528f135e6a07d3b206b9e"
+        },
+        {
+            "packageName": "libfontconfig1:amd64",
+            "packageVersion": "2.15.0-1.1ubuntu2",
+            "archiveName": "libfontconfig1_2.15.0-1.1ubuntu2_amd64.deb",
+            "archiveSha256": "a2bc05cfef021fdb84285036f98eda5ebec3c4b7a378f5aa2bdba5c4d3d8d586"
+        },
+        {
+            "packageName": "libfreetype6:amd64",
+            "packageVersion": "2.13.2+dfsg-1build3",
+            "archiveName": "libfreetype6_2.13.2+dfsg-1build3_amd64.deb",
+            "archiveSha256": "321dda934f62fa8af08529a8c4c34b0ec040f172c0a945dce10b8be6f1014917"
+        },
+        {
+            "packageName": "libfribidi0:amd64",
+            "packageVersion": "1.0.13-3build1",
+            "archiveName": "libfribidi0_1.0.13-3build1_amd64.deb",
+            "archiveSha256": "6cd50259d39ce0dfafee2632c6268538e6a02590e77161a133e9683af346dd1d"
+        },
+        {
+            "packageName": "libgbm1:amd64",
+            "packageVersion": "24.0.5-1ubuntu1",
+            "archiveName": "libgbm1_24.0.5-1ubuntu1_amd64.deb",
+            "archiveSha256": "bffad21d2383429d6dbec8395ba8d8476a0ed69e7e0b1c3ef2f27da99211b200"
+        },
+        {
+            "packageName": "libgcrypt20:amd64",
+            "packageVersion": "1.10.3-2build1",
+            "archiveName": "libgcrypt20_1.10.3-2build1_amd64.deb",
+            "archiveSha256": "ff32bae487706ba6ca646b5b72d89b935e3b8b2811d02e4ad7360cb97d90e2d0"
+        },
+        {
+            "packageName": "libgdk-pixbuf-2.0-0:amd64",
+            "packageVersion": "2.42.10+dfsg-3ubuntu3",
+            "archiveName": "libgdk-pixbuf-2.0-0_2.42.10+dfsg-3ubuntu3_amd64.deb",
+            "archiveSha256": "d9779cdbb11e5fb6056b39868b689bd2e6a152f60d7fa54fcf7113942eedab24"
+        },
+        {
+            "packageName": "libglib2.0-0t64:amd64",
+            "packageVersion": "2.80.0-6ubuntu1",
+            "archiveName": "libglib2.0-0t64_2.80.0-6ubuntu1_amd64.deb",
+            "archiveSha256": "629359e915f4466cf9cb0fa6c38270d9af1e03e28fab557ce31977d5ab34f13d"
+        },
+        {
+            "packageName": "libgpg-error0:amd64",
+            "packageVersion": "1.43-3",
+            "archiveName": "libgpg-error0_1.43-3_amd64.deb",
+            "archiveSha256": "1fbacdf9bd1e431cee874a697b339f6f925182bc79bba5a112b53669b33265c5"
+        },
+        {
+            "packageName": "libgraphite2-3:amd64",
+            "packageVersion": "1.3.14-2build1",
+            "archiveName": "libgraphite2-3_1.3.14-2build1_amd64.deb",
+            "archiveSha256": "e2a91c59a2b26649ed0b331bedab0c92e56cc2021cce27df1080089edaad7aba"
+        },
+        {
+            "packageName": "libgtk-3-0t64:amd64",
+            "packageVersion": "3.24.41-4ubuntu1",
+            "archiveName": "libgtk-3-0t64_3.24.41-4ubuntu1_amd64.deb",
+            "archiveSha256": "011d0688aeb8e40fb146b6d6cd3d892e2a81b1e181320bcf2bf7e2d7206ae156"
+        },
+        {
+            "packageName": "libharfbuzz0b:amd64",
+            "packageVersion": "8.3.0-2build2",
+            "archiveName": "libharfbuzz0b_8.3.0-2build2_amd64.deb",
+            "archiveSha256": "d6f7eea2244f98aa0463a056680d4629476bf624767ede301560e24add686b5c"
+        },
+        {
+            "packageName": "libjpeg-turbo8:amd64",
+            "packageVersion": "2.1.5-2ubuntu2",
+            "archiveName": "libjpeg-turbo8_2.1.5-2ubuntu2_amd64.deb",
+            "archiveSha256": "f68b5b23bc8a1688fb787d2aed7e2cdf895a73022f6a5025e183162dac4500b2"
+        },
+        {
+            "packageName": "liblz4-1:amd64",
+            "packageVersion": "1.9.4-1build1",
+            "archiveName": "liblz4-1_1.9.4-1build1_amd64.deb",
+            "archiveSha256": "b9b69dedb126755f063396a6d3a3361066f9661f1c21cf5635cdd5ff6605796a"
+        },
+        {
+            "packageName": "libmount1:amd64",
+            "packageVersion": "2.39.3-9ubuntu6",
+            "archiveName": "libmount1_2.39.3-9ubuntu6_amd64.deb",
+            "archiveSha256": "ccf07f3dfdda05311e66882d420140e32aeceaaa17725a0956214d81f5944995"
+        },
+        {
+            "packageName": "libogg0:amd64",
+            "packageVersion": "1.3.5-0ubuntu3",
+            "archiveName": "libogg0_1.3.5-0ubuntu3_amd64.deb",
+            "archiveSha256": "116a95c2ef71057d86f1e20c378247d34a0c8cfa257aecd0f4f36f75fc338de2"
+        },
+        {
+            "packageName": "libopus0:amd64",
+            "packageVersion": "1.3.1-0.1build2",
+            "archiveName": "libopus0_1.3.1-0.1build2_amd64.deb",
+            "archiveSha256": "73225bff2be1b5ef888d00d680f44741e67a096932bd0854db8da7d5488603b5"
+        },
+        {
+            "packageName": "libpango-1.0-0:amd64",
+            "packageVersion": "1.52.1+ds-1build1",
+            "archiveName": "libpango-1.0-0_1.52.1+ds-1build1_amd64.deb",
+            "archiveSha256": "09dfa5c881ab273ec6bc1830adcefdc407fcd619316e68fb26ca3a23d0fc9f54"
+        },
+        {
+            "packageName": "libpangocairo-1.0-0:amd64",
+            "packageVersion": "1.52.1+ds-1build1",
+            "archiveName": "libpangocairo-1.0-0_1.52.1+ds-1build1_amd64.deb",
+            "archiveSha256": "98cf5fc9076c2911fe20dfc1e41cd8f686a2bb5d539b1105fab18105b0db1376"
+        },
+        {
+            "packageName": "libpangoft2-1.0-0:amd64",
+            "packageVersion": "1.52.1+ds-1build1",
+            "archiveName": "libpangoft2-1.0-0_1.52.1+ds-1build1_amd64.deb",
+            "archiveSha256": "cc6bc9d86ef5f329edacaa4895232d8a9b8f95c5cbc77c3c460a3f64cecc213d"
+        },
+        {
+            "packageName": "libpcre2-8-0:amd64",
+            "packageVersion": "10.39-3ubuntu0.1",
+            "archiveName": "libpcre2-8-0_10.39-3ubuntu0.1_amd64.deb",
+            "archiveSha256": "01a5a74f3d305cad32fffffdc200c2a92fd8e5a01bff97de76ac598fb444d53e"
+        },
+        {
+            "packageName": "libpixman-1-0:amd64",
+            "packageVersion": "0.42.2-1build1",
+            "archiveName": "libpixman-1-0_0.42.2-1build1_amd64.deb",
+            "archiveSha256": "d9c2931c4c424615eeab9dd5ae08bfc608b84e803c1d3ccddf319270db213421"
+        },
+        {
+            "packageName": "libpng16-16t64:amd64",
+            "packageVersion": "1.6.43-5build1",
+            "archiveName": "libpng16-16t64_1.6.43-5build1_amd64.deb",
+            "archiveSha256": "128d505038cc19dfc218658562ca5917ec242b79e6e2bbfb65ee27f297a53924"
+        },
+        {
+            "packageName": "libpulse0:amd64",
+            "packageVersion": "1:15.99.1+dfsg1-1ubuntu2.2",
+            "archiveName": "libpulse0_1%3a15.99.1+dfsg1-1ubuntu2.2_amd64.deb",
+            "archiveSha256": "3d8558023cb427e6e1d0b52e604c831261716ba102a0169679652051948fef76"
+        },
+        {
+            "packageName": "libsamplerate0:amd64",
+            "packageVersion": "0.2.2-4build1",
+            "archiveName": "libsamplerate0_0.2.2-4build1_amd64.deb",
+            "archiveSha256": "8a389d1cae81860c9fb7cd9641c3f9d38815e80c0379b3181b4317489126f738"
+        },
+        {
+            "packageName": "libsdl2-2.0-0:amd64",
+            "packageVersion": "2.30.0+dfsg-1build3",
+            "archiveName": "libsdl2-2.0-0_2.30.0+dfsg-1build3_amd64.deb",
+            "archiveSha256": "843864d304b9084b059c8385a2d11dd769534488b6f0091304f362e3b812d7d7"
+        },
+        {
+            "packageName": "libselinux1:amd64",
+            "packageVersion": "3.3-1build2",
+            "archiveName": "libselinux1_3.3-1build2_amd64.deb",
+            "archiveSha256": "b96c6b40ee2388bd51341cb11c0f1d5bcca29b9180b6e3a77a06b881f2913f7e"
+        },
+        {
+            "packageName": "libsndfile1:amd64",
+            "packageVersion": "1.0.31-2ubuntu0.2",
+            "archiveName": "libsndfile1_1.0.31-2ubuntu0.2_amd64.deb",
+            "archiveSha256": "169b8d8c8c7790586e4a107beda8bf4a5dc397e236744749f11c92f1c0fcd59b"
+        },
+        {
+            "packageName": "libsystemd0:amd64",
+            "packageVersion": "249.11-0ubuntu3.17",
+            "archiveName": "libsystemd0_249.11-0ubuntu3.17_amd64.deb",
+            "archiveSha256": "a15b759ea9172fe91658d2ab2c8b2a584ceae45795d04bd6444a34549cec74dd"
+        },
+        {
+            "packageName": "libthai0:amd64",
+            "packageVersion": "0.1.29-2build1",
+            "archiveName": "libthai0_0.1.29-2build1_amd64.deb",
+            "archiveSha256": "5ada7045c5f84a4b774e6449151800aa6470e8d01dc9d6124ef4a44ae6af5508"
+        },
+        {
+            "packageName": "libvorbis0a:amd64",
+            "packageVersion": "1.3.7-1build2",
+            "archiveName": "libvorbis0a_1.3.7-1build2_amd64.deb",
+            "archiveSha256": "1c4195ccfe75a82c0989300762124b2371d34d8e1f99a968032fde64395a23ec"
+        },
+        {
+            "packageName": "libvorbisenc2:amd64",
+            "packageVersion": "1.3.7-1build2",
+            "archiveName": "libvorbisenc2_1.3.7-1build2_amd64.deb",
+            "archiveSha256": "3b5c496121c3c06bbda1b01386107c296992ad9b8cc53f5c3b1756382275d40f"
+        },
+        {
+            "packageName": "libwayland-cursor0:amd64",
+            "packageVersion": "1.20.0-1ubuntu0.1",
+            "archiveName": "libwayland-cursor0_1.20.0-1ubuntu0.1_amd64.deb",
+            "archiveSha256": "23a4253600cd8f75161747d3c4dcfc37c92a0074455b3883c46caef7aade34da"
+        },
+        {
+            "packageName": "libwayland-egl1:amd64",
+            "packageVersion": "1.20.0-1ubuntu0.1",
+            "archiveName": "libwayland-egl1_1.20.0-1ubuntu0.1_amd64.deb",
+            "archiveSha256": "1b95b4ed225a6ab3c6a5e35e76eefa6896625e9d6cf139f0ea594ececb8348d0"
+        },
+        {
+            "packageName": "libwayland-server0:amd64",
+            "packageVersion": "1.20.0-1ubuntu0.1",
+            "archiveName": "libwayland-server0_1.20.0-1ubuntu0.1_amd64.deb",
+            "archiveSha256": "b5d514dc17edac6b93ba2476d90806337ca4afcc914952a7e78af2e5cd0c4a7b"
+        },
+        {
+            "packageName": "libx11-6:amd64",
+            "packageVersion": "2:1.8.7-1build1",
+            "archiveName": "libx11-6_2%3a1.8.7-1build1_amd64.deb",
+            "archiveSha256": "397f84347476a3c5786b39f3ff6f0f82866eb3d8be6d2ad3efeadf019efe5b80"
+        },
+        {
+            "packageName": "libxcb-render0:amd64",
+            "packageVersion": "1.15-1ubuntu2",
+            "archiveName": "libxcb-render0_1.15-1ubuntu2_amd64.deb",
+            "archiveSha256": "7d83a0668b1a693b5ea2e496206e8371fb6beda4c54a2b4b3902005915c272c5"
+        },
+        {
+            "packageName": "libxcomposite1:amd64",
+            "packageVersion": "1:0.4.5-1build3",
+            "archiveName": "libxcomposite1_1%3a0.4.5-1build3_amd64.deb",
+            "archiveSha256": "a12d5d9ae70b798cbbf284080eae32b87367561fc9c24492f641b8860ac0f308"
+        },
+        {
+            "packageName": "libxcursor1:amd64",
+            "packageVersion": "1:1.2.0-2build4",
+            "archiveName": "libxcursor1_1%3a1.2.0-2build4_amd64.deb",
+            "archiveSha256": "4ea5fa73bc989f5b8cbeecfdb650e142920859837279d0a64891cb80aff9dfc8"
+        },
+        {
+            "packageName": "libxdamage1:amd64",
+            "packageVersion": "1:1.1.6-1build1",
+            "archiveName": "libxdamage1_1%3a1.1.6-1build1_amd64.deb",
+            "archiveSha256": "6891faf325e996ebd28ef53ebb9c043dc96f67327500490affc3e89d366d35ed"
+        },
+        {
+            "packageName": "libxext6:amd64",
+            "packageVersion": "2:1.3.4-1build1",
+            "archiveName": "libxext6_2%3a1.3.4-1build1_amd64.deb",
+            "archiveSha256": "875ec849749511dff61c8cc5a775f6f93427b9c3f392fdcec6925f14428e89cd"
+        },
+        {
+            "packageName": "libxfixes3:amd64",
+            "packageVersion": "1:6.0.0-1",
+            "archiveName": "libxfixes3_1%3a6.0.0-1_amd64.deb",
+            "archiveSha256": "f627555440060edf19801d77d369c99547cf47123fe4e30c5bdb8b664f0b4467"
+        },
+        {
+            "packageName": "libxi6:amd64",
+            "packageVersion": "2:1.8-1build1",
+            "archiveName": "libxi6_2%3a1.8-1build1_amd64.deb",
+            "archiveSha256": "47662736cca4be456fd42a5f0a9d3bed8a5cfad4ee08b809a95dde6004daf275"
+        },
+        {
+            "packageName": "libxinerama1:amd64",
+            "packageVersion": "2:1.1.4-3",
+            "archiveName": "libxinerama1_2%3a1.1.4-3_amd64.deb",
+            "archiveSha256": "be0caa6259a6c8d5ff75d2bd410a4cf6126b1d4dcb6a04b9c33f388d639f7b07"
+        },
+        {
+            "packageName": "libxkbcommon0:amd64",
+            "packageVersion": "1.4.0-1",
+            "archiveName": "libxkbcommon0_1.4.0-1_amd64.deb",
+            "archiveSha256": "a0470edb237d52b71ad41f755c043164abed01423585ed5ea19525b3baaf84f7"
+        },
+        {
+            "packageName": "libxrandr2:amd64",
+            "packageVersion": "2:1.5.2-1build1",
+            "archiveName": "libxrandr2_2%3a1.5.2-1build1_amd64.deb",
+            "archiveSha256": "5fbce1f1ec150c715fd83eeef5626363580218db09cedc8ac888b172476b0c82"
+        },
+        {
+            "packageName": "libxrender1:amd64",
+            "packageVersion": "1:0.9.10-1build4",
+            "archiveName": "libxrender1_1%3a0.9.10-1build4_amd64.deb",
+            "archiveSha256": "a68f6db4320b5963dd499b83b6cc8c7b5cd39b05e84862d5945da9244e4c96d6"
+        },
+        {
+            "packageName": "libxss1:amd64",
+            "packageVersion": "1:1.2.3-1build2",
+            "archiveName": "libxss1_1%3a1.2.3-1build2_amd64.deb",
+            "archiveSha256": "9c7de4bbe5ebbae7e351ac31683e56320066e569f18f77b2d7a4a5a5454e7c8f"
+        }
+    ]
+}

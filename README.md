@@ -3,15 +3,15 @@
 This repository now contains both:
 
 - the reconstruction notes for the historical stack
-- a working Android wrapper project that has completed Phase 4C headless title validation
+- a working Android wrapper project that has completed Phase 5B visible-frame bring-up and product-shell restructuring
 
 Current implemented bring-up:
 
-`Android app shell -> FEX host on Android arm64 -> Ubuntu 24.04 amd64 guest slice -> dynamic Linux x86_64 probes -> guest Vulkan loader -> dual Mesa guest trees -> lavapipe fallback + Turnip hardware probe -> pinned-source Xenia Canary -> no-copy ISO library -> verified title boot -> steady-state headless title run`
+`Android app shell -> FEX host on Android arm64 -> Ubuntu 24.04 amd64 guest slice -> dynamic Linux x86_64 probes -> guest Vulkan loader -> dual Mesa guest trees -> lavapipe fallback + Turnip hardware probe -> pinned-source Xenia Canary -> no-copy ISO library -> verified title boot -> steady-state headless title run -> framebuffer polling export -> visible Android frames -> fullscreen player shell`
 
 Target end-state remains:
 
-`Android app shell -> FEX -> Linux x86_64 guest userspace -> Xenia Canary -> Vulkan -> Turnip -> KGSL -> Adreno -> visible Android presentation`
+`Android app shell -> FEX -> Linux x86_64 guest userspace -> Xenia Canary -> Vulkan -> Turnip -> KGSL -> Adreno -> stable visible presentation -> input/audio -> usable player UX`
 
 The goal is still not to port Xenia natively to Android/ARM64 first. The goal is to rebuild the Linux `x86_64` guest flow on Android and recover the stack step by step.
 
@@ -48,7 +48,7 @@ Implemented in this repo today:
   - `cache/`
 - no-copy ISO game library persisted under `filesDir/library`
 - verified title-aware launch path for imported ISOs through `rootfs/mnt/library/<entry-id>.iso`
-- current Xenia patch set `phase4-headless-steady-v1`
+- current Xenia patch set `phase5a-framebuffer-polling-v11`
 - `RuntimePhase.XENIA_BRINGUP` as the current default target
 - passing unit tests plus connected Android tests on:
   - `AYN Odin2 Mini` / Android 13 / API 33
@@ -56,12 +56,19 @@ Implemented in this repo today:
 - verified hardware Turnip probe on both devices
 - verified `Xenia Canary` bring-up to Vulkan initialization on both devices without requiring a game image
 - verified `Dante's Inferno` title boot from ISO to `TITLE_RUNNING_HEADLESS` on both devices
+- visible Dante frame output confirmed on both devices through `rootfs/tmp/xenia_fb`
+- product-facing app shell with:
+  - branded splash
+  - library-first home
+  - options flow
+  - debug screen behind options
+  - fullscreen `PlayerActivity`
+  - optional FPS overlay
 
 Still deferred to later milestones:
 
-- visible frame presentation
 - input, audio, and gameplay validation
-- framebuffer bridge recovery (`xenia_fb`, `ANativeWindow`, `xcb/android_surface`)
+- direct surface bridge recovery (`ANativeWindow`, `xcb/android_surface`)
 - thunk optimization beyond the minimum runtime already proven
 
 ## Tooling direction
@@ -97,7 +104,7 @@ Why NDK `27` and not the old historical pin:
   - Odin3 fix patch set: `ubwc5-a830-v1`
 - Active Xenia bring-up pin:
   - `canary_experimental@c50b036178108f87cb0acaf3691a7c3caf07820f`
-  - patch set: `phase4-headless-steady-v1`
+- patch set: `phase5a-framebuffer-polling-v11`
 - Historical Xenia forensic reference:
   - `canary_experimental@d9747704bedc4e691ba243bf399647b836ce493e`
   - kept as a historical anchor, not as the current build target
@@ -171,9 +178,12 @@ The current wrapper fixes these paths under `filesDir`:
 - `logs/fex/`
 - `logs/guest/`
 
-Historical placeholders still remain reserved:
+Reserved future placeholder:
 
 - `rootfs/tmp/anative_window.ptr`
+
+Active framebuffer export path:
+
 - `rootfs/tmp/xenia_fb`
 
 Current sentinel paths on host:
@@ -184,13 +194,18 @@ Current sentinel paths on host:
 
 ## Preserved artifacts
 
-The current successful Phase 4A binary outputs are archived in Git under:
+The current successful milestone binary outputs are archived in Git under:
 
 - `artifacts/phase4a-vulkan-init/xenia/xenia-canary`
 - `artifacts/phase4a-vulkan-init/fex/libFEXLoader.so`
 - `artifacts/phase4a-vulkan-init/fex/libFEXCore.so`
 - `artifacts/phase4a-vulkan-init/android/app-debug-androidTest.apk`
 - `artifacts/phase4a-vulkan-init/artifact-manifest.json`
+- `artifacts/phase5b-visible-player/xenia/xenia-canary`
+- `artifacts/phase5b-visible-player/fex/libFEXLoader.so`
+- `artifacts/phase5b-visible-player/fex/libFEXCore.so`
+- `artifacts/phase5b-visible-player/android/app-debug-androidTest.apk`
+- `artifacts/phase5b-visible-player/artifact-manifest.json`
 
 Notes:
 
@@ -262,9 +277,9 @@ adb shell run-as emu.x360.mobile.dev ls files/rootfs/opt/x360-v3/xenia/bin/xenia
 adb shell run-as emu.x360.mobile.dev cat files/payload/config/xenia-build-metadata.json
 ```
 
-## Verified Phase 4C result
+## Verified Phase 5B result
 
-Phase 4C is now real in this repo:
+Phase 5B is now real in this repo:
 
 - FEX host artifacts are built from vendored source inside this repo
 - the Android app installs and extracts its runtime deterministically
@@ -273,31 +288,40 @@ Phase 4C is now real in this repo:
 - `vulkan_probe_x86_64` passes through `lavapipe`, `mesa25`, and `mesa26`
 - the repo-owned `mesa26` UBWC fix makes Odin3 pass the same Turnip hardware milestone as Odin2 Mini
 - pinned-source `Xenia Canary` is built inside this repo from `c50b036178108f87cb0acaf3691a7c3caf07820f`
-- the repo-owned Xenia patch queue removes the GTK hard dependency, switches POSIX shared memory to `memfd_create`, and makes headless bring-up null-safe without an ImGui window
+- the repo-owned Xenia patch queue removes the GTK hard dependency, switches POSIX shared memory to `memfd_create`, makes headless bring-up null-safe without an ImGui window, and adds the framebuffer-polling export path used by the Android player
 - `Launch Xenia Bring-up` reaches `VULKAN_INITIALIZED` on both connected devices without requiring a game image
 - imported ISO titles launch through the no-copy library path and reach deterministic title-aware stages
 - `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS` on both connected devices and stays alive for the observation window without crashing
+- `Dante's Inferno` also produces visible frames on both connected devices through `xenia_fb`
+- the app now launches through `SplashActivity`, lands on a library-first shell, and plays titles in a dedicated fullscreen `PlayerActivity`
 
 Verified per-device bring-up:
 
 - `AYN Odin2 Mini`
-  - Mesa branch: `mesa25`
+  - Mesa branch: `mesa26`
   - device: `Turnip Adreno (TM) 740`
   - Xenia reaches `VULKAN_INITIALIZED`
   - `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
+  - visible Dante frames confirmed in the fullscreen player
 - `Odin3`
   - Mesa branch: `mesa26`
   - device: `Adreno (TM) 830`
   - Xenia reaches `VULKAN_INITIALIZED`
   - `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
+  - visible Dante frames confirmed in the fullscreen player
 
-What Phase 4C does not prove yet:
+What Phase 5B does not prove yet:
 
-- visible frame presentation
 - input
 - audio
 - gameplay correctness
 - Android surface handoff
+
+Important note:
+
+- connected automation still proves the lower-level launch and framebuffer-stream milestones
+- the visible-frame milestone is currently confirmed primarily by direct device observation in the fullscreen player
+- the stricter black-frame smoke used during Phase 5A can still report a false negative if it samples too early while the visible stream is still warming up
 
 ## Historical context
 

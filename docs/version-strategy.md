@@ -39,16 +39,16 @@ At launch time, select the Mesa tree based on measured device policy and a manua
 
 ### Actual measured policy in this repo
 
-- `kalama` / `QCS8550` -> `mesa25`
+- `kalama` / `QCS8550` -> `mesa26`
 - `sun` / `CQ8725S` -> `mesa26`
 - unknown Qualcomm -> `mesa25`
 - non-Qualcomm -> `lavapipe`
 
 Reason:
 
-- `AYN Odin2 Mini` is stable on `mesa25`
 - `Odin3` requires the `mesa26` path plus the repo-owned UBWC `5.0` / `6.0` fix
-- theoretical generation-only rules were useful to start, but measured device behavior now wins
+- the current visible-frame/player milestone is also validated on `AYN Odin2 Mini` with `mesa26`
+- theoretical generation-only rules were useful to start, but the current measured device path now wins
 
 ### Important constraint
 
@@ -90,13 +90,13 @@ Use:
 ### Active bring-up baseline
 
 - `canary_experimental@c50b036178108f87cb0acaf3691a7c3caf07820f`
-- patch set: `phase4-headless-steady-v1`
+- patch set: `phase5a-framebuffer-polling-v11`
 
 Reason:
 
 - upstream Canary is active and materially newer than the forensic pin
 - the goal is a working Android/FEX/Linux bring-up, not archaeological replay at all costs
-- the current repo-owned patch queue captures the minimum POSIX/headless fixes needed for stable title boot and non-fatal cache initialization
+- the current repo-owned patch queue captures the POSIX/headless fixes, non-fatal cache handling, and framebuffer-polling presentation path needed for the visible-player milestone
 
 ### Local development loop
 

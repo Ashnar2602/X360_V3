@@ -6,7 +6,7 @@ import org.junit.Test
 
 class MesaRuntimeSelectionTest {
     @Test
-    fun `auto selects mesa25 for known adreno7xx boards`() {
+    fun `auto selects mesa26 for supported odin2 devices`() {
         val resolved = DeviceMesaRuntimePolicy.resolve(
             overrideMode = MesaRuntimeBranch.AUTO,
             properties = DeviceProperties(
@@ -16,8 +16,8 @@ class MesaRuntimeSelectionTest {
             ),
         )
 
-        assertThat(resolved.branch).isEqualTo(MesaRuntimeBranch.MESA25)
-        assertThat(resolved.reason).isEqualTo("auto-adreno7xx-allowlist")
+        assertThat(resolved.branch).isEqualTo(MesaRuntimeBranch.MESA26)
+        assertThat(resolved.reason).isEqualTo("auto-supported-device-allowlist")
     }
 
     @Test
@@ -36,7 +36,7 @@ class MesaRuntimeSelectionTest {
     }
 
     @Test
-    fun `auto selects mesa26 for modern qualcomm allowlist`() {
+    fun `auto selects mesa26 for supported odin3 devices`() {
         val resolved = DeviceMesaRuntimePolicy.resolve(
             overrideMode = MesaRuntimeBranch.AUTO,
             properties = DeviceProperties(
@@ -47,7 +47,7 @@ class MesaRuntimeSelectionTest {
         )
 
         assertThat(resolved.branch).isEqualTo(MesaRuntimeBranch.MESA26)
-        assertThat(resolved.reason).isEqualTo("auto-modern-qualcomm-allowlist")
+        assertThat(resolved.reason).isEqualTo("auto-supported-device-allowlist")
     }
 
     @Test

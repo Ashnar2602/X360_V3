@@ -74,32 +74,45 @@ Pass outcome:
 - `Dante's Inferno` survives a fixed observation window without fatal aborts
 - final launch stage reaches `TITLE_RUNNING_HEADLESS` on both validated devices
 
+### Phase 7: Recover visible presentation
+
+Status: complete for the framebuffer-polling path
+
+Pass outcome:
+
+- Xenia exports frames through `xenia_fb`
+- the Android app consumes the framebuffer stream
+- `Dante's Inferno` shows visible frames on:
+  - `AYN Odin2 Mini`
+  - `Odin3`
+- final visible stream stage reaches `FRAME_STREAM_ACTIVE`
+
+### Phase 8: Product shell and fullscreen player
+
+Status: complete
+
+Pass outcome:
+
+- branded splash routes into a library-first shell
+- debug tooling survives behind `Options -> Debug`
+- titles launch into a dedicated fullscreen `PlayerActivity`
+- FPS overlay support exists and is user-configurable
+- the visible framebuffer path is usable from the product shell, not only from the debug harness
+
 ## Next phases
 
-### Phase 7: Rebuild presentation
+### Phase 9: Rebuild interaction layers
 
 Test objective:
 
-- recover a visible rendering/output path on Android while keeping the new headless steady-state title run green
-
-Pass criteria:
-
-- frame production survives beyond startup
-- output can be surfaced to Android without breaking the validated guest Vulkan path
-- no regression in the now-working Xenia startup and steady-state title milestones
-
-### Phase 8: Rebuild interaction layers
-
-Test objective:
-
-- recover input and audio only after presentation is visible and diagnosable
+- recover input and audio only after visible playback is stable and diagnosable
 
 Pass criteria:
 
 - input and audio attach without destabilizing the running title
 - regressions can still be attributed cleanly by subsystem
 
-### Phase 9: Revalidate historical game cases
+### Phase 10: Revalidate historical game cases
 
 Priority titles:
 
@@ -136,6 +149,7 @@ Pass criteria:
 - connected-test bring-up for probes and Xenia startup
 - opt-in Dante steady-state title smoke
 - recovery after app data clear
+- fullscreen player smoke on real devices
 
 ### Rendering and startup checks
 
@@ -143,12 +157,14 @@ Pass criteria:
 - Turnip hardware path still passes
 - Xenia reaches `VULKAN_INITIALIZED`
 - `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
+- `Dante's Inferno` reaches `FRAME_STREAM_ACTIVE`
+- visible Dante frames are confirmed in the player on both devices
 - no regression in the separated `app`, `fex`, and `guest` log contract
 
 ## Reconstruction priorities from here
 
-1. Preserve the working Phase 4C baseline and its artifacts.
-2. Recover presentation without disturbing FEX, Turnip, or title steady-state.
+1. Preserve the working Phase 5B baseline and its artifacts.
+2. Keep the visible framebuffer-polling player path stable on both devices.
 3. Add interaction layers only after visible output is diagnosable.
 4. Keep exact observations separate from guesses.
 5. Only then chase performance tuning.

@@ -1,0 +1,51 @@
+diff --git a/src/xenia/gpu/vulkan/vulkan_command_processor.cc b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
+index 1ada2557..8a08059e 100644
+--- a/src/xenia/gpu/vulkan/vulkan_command_processor.cc
++++ b/src/xenia/gpu/vulkan/vulkan_command_processor.cc
+@@ -9,6 +9,7 @@
+ 
+ #include "xenia/gpu/vulkan/vulkan_command_processor.h"
+ 
++#include <atomic>
+ #include <cstdint>
+ #include <cstring>
+ 
+@@ -1317,6 +1318,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+                                        uint32_t frontbuffer_width,
+                                        uint32_t frontbuffer_height) {
+   SCOPE_profile_cpu_f("gpu");
++  static std::atomic<uint32_t> issue_swap_log_count{0};
+ 
+   // Reset vertex buffer cache at frame boundaries to pick up any memory
+   // changes. This still provides significant savings by avoiding redundant
+@@ -1346,8 +1348,17 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+   }
+ 
+   auto aspect = graphics_system_->GetScaledAspectRatio();
++  uint32_t issue_swap_count =
++      issue_swap_log_count.fetch_add(1, std::memory_order_relaxed) + 1;
++  if (issue_swap_count <= 5 || !(issue_swap_count % 120)) {
++    XELOGI(
++        "X360_FRAMEBUFFER_DEBUG issue_swap count={} frontbuffer_ptr=0x{:08X} guest_size={}x{} scaled_size={}x{} aspect={}x{}",
++        issue_swap_count, frontbuffer_ptr, frontbuffer_width,
++        frontbuffer_height, frontbuffer_width_scaled, frontbuffer_height_scaled,
++        aspect.first, aspect.second);
++  }
+ 
+-  presenter->RefreshGuestOutput(
++  bool refresh_succeeded = presenter->RefreshGuestOutput(
+       frontbuffer_width_scaled, frontbuffer_height_scaled, aspect.first,
+       aspect.second,
+       [this, frontbuffer_width_scaled, frontbuffer_height_scaled,
+@@ -1659,6 +1670,11 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
+         EndSubmission(true);
+         return true;
+       });
++  if (!refresh_succeeded) {
++    XELOGW(
++        "X360_FRAMEBUFFER_DEBUG issue_swap_refresh_failed count={} scaled_size={}x{}",
++        issue_swap_count, frontbuffer_width_scaled, frontbuffer_height_scaled);
++  }
+ 
+   // End the frame even if did not present for any reason (the image refresher
+   // was not called), to prevent leaking per-frame resources.

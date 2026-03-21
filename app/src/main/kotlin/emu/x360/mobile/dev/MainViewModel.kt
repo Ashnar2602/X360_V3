@@ -5,9 +5,9 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import emu.x360.mobile.dev.bootstrap.AppRuntimeManager
-import emu.x360.mobile.dev.bootstrap.RuntimeSnapshot
+import emu.x360.mobile.dev.bootstrap.ShellSnapshot
+import emu.x360.mobile.dev.runtime.AppSettings
 import emu.x360.mobile.dev.runtime.GameLibraryEntry
-import emu.x360.mobile.dev.runtime.MesaRuntimeBranch
 import emu.x360.mobile.dev.runtime.RuntimeInstallState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,7 +19,10 @@ import kotlinx.coroutines.launch
 class MainViewModel(
     application: Application,
 ) : AndroidViewModel(application) {
+    private val baseDir = application.applicationContext.filesDir.toPath()
     private val manager = AppRuntimeManager(application.applicationContext)
+    private val appSettingsStore = AppSettingsStore(baseDir)
+    private val gameOptionsStore = GameOptionsStore(baseDir)
     private val mutableState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = mutableState.asStateFlow()
 
@@ -28,228 +31,104 @@ class MainViewModel(
     }
 
     fun refresh() {
-        runAction { manager.snapshot(lastAction = "Runtime snapshot refreshed") }
-    }
-
-    fun installRuntime() {
-        runAction { manager.install() }
-    }
-
-    fun launchTurnipProbe() {
-        runAction { manager.launchTurnipProbe() }
-    }
-
-    fun launchXeniaBringup() {
-        runAction { manager.launchXeniaBringup() }
+        loadShell { manager.shellSnapshot(lastAction = "Library refreshed", autoPrepareRuntime = true) }
     }
 
     fun importIso(uri: Uri) {
-        runAction { manager.importIso(uri) }
+        runShellMutation {
+            manager.importIso(uri).lastAction
+        }
     }
 
     fun refreshLibrary() {
-        runAction { manager.refreshLibrary() }
+        runShellMutation {
+            manager.refreshLibrary().lastAction
+        }
     }
 
     fun removeLibraryEntry(entryId: String) {
-        runAction { manager.removeLibraryEntry(entryId) }
+        runShellMutation {
+            manager.removeLibraryEntry(entryId).lastAction
+        }
     }
 
-    fun launchImportedTitle(entryId: String) {
-        runAction { manager.launchImportedTitle(entryId) }
-    }
-
-    fun launchLavapipeProbe() {
-        runAction { manager.launchLavapipeProbe() }
-    }
-
-    fun launchDynamicHello() {
-        runAction { manager.launchDynamicHello() }
-    }
-
-    fun launchFexHello() {
-        runAction { manager.launchFexHello() }
-    }
-
-    fun launchStub() {
-        runAction { manager.launchStub() }
-    }
-
-    fun setMesaOverride(overrideMode: MesaRuntimeBranch) {
-        runAction { manager.setMesaOverride(overrideMode) }
-    }
-
-    private fun runAction(action: () -> RuntimeSnapshot) {
+    fun setShowFpsCounter(enabled: Boolean) {
         mutableState.update { it.copy(isBusy = true) }
         viewModelScope.launch(Dispatchers.IO) {
-            val snapshot = runCatching(action).getOrElse { throwable ->
-                manager.snapshot(lastAction = "Action failed: ${throwable.message}")
+            appSettingsStore.update { current -> current.copy(showFpsCounter = enabled) }
+            mutableState.value = MainUiState.from(
+                shell = manager.shellSnapshot(lastAction = "FPS counter ${if (enabled) "enabled" else "disabled"}"),
+                appSettings = appSettingsStore.load(),
+                gameOptions = currentGameOptions(manager.shellSnapshot(autoPrepareRuntime = false)),
+            )
+        }
+    }
+
+    private fun loadShell(snapshotProvider: () -> ShellSnapshot) {
+        mutableState.update { it.copy(isBusy = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val shell = runCatching(snapshotProvider).getOrElse { throwable ->
+                manager.shellSnapshot(lastAction = "Shell load failed: ${throwable.message}", autoPrepareRuntime = false)
             }
-            mutableState.value = MainUiState.from(snapshot)
+            mutableState.value = MainUiState.from(
+                shell = shell,
+                appSettings = appSettingsStore.load(),
+                gameOptions = currentGameOptions(shell),
+            )
+        }
+    }
+
+    private fun runShellMutation(action: () -> String) {
+        mutableState.update { it.copy(isBusy = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val lastAction = runCatching(action).getOrElse { throwable ->
+                "Action failed: ${throwable.message}"
+            }
+            val shell = manager.shellSnapshot(lastAction = lastAction, autoPrepareRuntime = true)
+            mutableState.value = MainUiState.from(
+                shell = shell,
+                appSettings = appSettingsStore.load(),
+                gameOptions = currentGameOptions(shell),
+            )
+        }
+    }
+
+    private fun currentGameOptions(shell: ShellSnapshot): Map<String, GameOptionsUi> {
+        return shell.libraryEntries.associate { entry ->
+            entry.id to GameOptionsUi.from(entry, gameOptionsStore.optionsFor(entry.id))
         }
     }
 }
 
 data class MainUiState(
     val isBusy: Boolean = true,
-    val manifestProfile: String = "",
-    val manifestVersion: Int = 0,
-    val installState: RuntimeInstallState = RuntimeInstallState.NotInstalled,
-    val installSummary: String = "Bootstrapping runtime status...",
-    val nativeHealth: String = "",
-    val surfaceReservation: String = "",
-    val runtimeRoot: String = "",
-    val outputPreview: String = "",
-    val latestSessionId: String = "",
-    val installedPhase: String = "",
-    val fexCommit: String = "",
-    val fexPatchSet: String = "",
-    val hostArtifactsPackaged: String = "",
-    val loaderPath: String = "",
-    val corePath: String = "",
-    val rootfsInstalled: String = "",
-    val helloFixtureInstalled: String = "",
-    val dynamicHelloInstalled: String = "",
-    val vulkanProbeInstalled: String = "",
-    val fexConfigPresent: String = "",
-    val guestRuntimeProfile: String = "",
-    val guestRuntimeProvenance: String = "",
-    val mesaRuntimeProfile: String = "",
-    val mesaPatchSetId: String = "",
-    val mesaAppliedPatches: String = "",
-    val glibcLoaderPresent: String = "",
-    val guestVulkanLoaderPresent: String = "",
-    val guestLavapipeDriverPresent: String = "",
-    val activeIcd: String = "",
-    val lvpIcdPresent: String = "",
-    val mesa25Installed: String = "",
-    val mesa26Installed: String = "",
-    val kgslAccessible: String = "",
-    val kgslDetail: String = "",
-    val selectedMesaBranch: String = "",
-    val overrideMode: String = "",
-    val selectionReason: String = "",
-    val lastProbeDeviceName: String = "",
-    val lastProbeDriverMode: String = "",
-    val xeniaCommit: String = "",
-    val xeniaPatchSet: String = "",
-    val xeniaBuildProfile: String = "",
-    val xeniaBinaryInstalled: String = "",
-    val xeniaConfigPresent: String = "",
-    val xeniaPortableMarkerPresent: String = "",
-    val xeniaContentMode: String = "",
-    val xeniaStartupStage: String = "",
-    val xeniaStartupDetail: String = "",
-    val xeniaAliveAfterModuleLoadSeconds: String = "",
-    val xeniaCacheBackendStatus: String = "",
-    val xeniaCacheRootPath: String = "",
-    val xeniaTitleMetadataSeen: String = "",
-    val xeniaLogPath: String = "",
-    val xeniaExecutablePath: String = "",
+    val runtimeReady: Boolean = false,
+    val runtimeSummary: String = "Preparing runtime...",
+    val lastAction: String = "Preparing runtime...",
     val libraryEntries: List<GameLibraryEntryUi> = emptyList(),
-    val lastLaunchBackend: String = "",
-    val lastLaunchResult: String = "",
-    val appLog: String = "",
-    val fexLog: String = "",
-    val guestLog: String = "",
-    val lastAction: String = "",
+    val appSettings: AppSettings = AppSettings(),
+    val gameOptions: Map<String, GameOptionsUi> = emptyMap(),
 ) {
+    fun optionsFor(entryId: String): GameOptionsUi? = gameOptions[entryId]
+
     companion object {
-        fun from(snapshot: RuntimeSnapshot): MainUiState {
-            val installSummary = when (val state = snapshot.installState) {
-                RuntimeInstallState.NotInstalled -> "Not installed"
-                is RuntimeInstallState.Installed -> "Installed at ${state.installedAt}"
-                is RuntimeInstallState.Invalid -> "Invalid: ${state.issue}"
-            }
+        fun from(
+            shell: ShellSnapshot,
+            appSettings: AppSettings,
+            gameOptions: Map<String, GameOptionsUi>,
+        ): MainUiState {
             return MainUiState(
                 isBusy = false,
-                manifestProfile = snapshot.manifest.profile,
-                manifestVersion = snapshot.manifest.version,
-                installState = snapshot.installState,
-                installSummary = installSummary,
-                nativeHealth = snapshot.nativeHealth,
-                surfaceReservation = snapshot.surfaceHookReservation,
-                runtimeRoot = snapshot.directories.baseDir.toString(),
-                outputPreview = snapshot.outputPreview.summary,
-                latestSessionId = snapshot.latestLogs.sessionId.orEmpty(),
-                installedPhase = (snapshot.installState as? RuntimeInstallState.Installed)?.installedPhase?.name?.lowercase().orEmpty(),
-                fexCommit = snapshot.fexDiagnostics.commit,
-                fexPatchSet = snapshot.fexDiagnostics.patchSetId,
-                hostArtifactsPackaged = snapshot.fexDiagnostics.hostArtifactsPackaged.toString(),
-                loaderPath = snapshot.fexDiagnostics.loaderPath,
-                corePath = snapshot.fexDiagnostics.corePath,
-                rootfsInstalled = snapshot.fexDiagnostics.rootfsInstalled.toString(),
-                helloFixtureInstalled = snapshot.fexDiagnostics.helloFixtureInstalled.toString(),
-                dynamicHelloInstalled = snapshot.fexDiagnostics.dynamicHelloInstalled.toString(),
-                vulkanProbeInstalled = snapshot.fexDiagnostics.vulkanProbeInstalled.toString(),
-                fexConfigPresent = snapshot.fexDiagnostics.configPresent.toString(),
-                guestRuntimeProfile = snapshot.fexDiagnostics.guestRuntimeProfile,
-                guestRuntimeProvenance = snapshot.fexDiagnostics.guestRuntimeProvenance,
-                mesaRuntimeProfile = snapshot.fexDiagnostics.mesaRuntimeProfile,
-                mesaPatchSetId = snapshot.fexDiagnostics.mesaPatchSetId,
-                mesaAppliedPatches = snapshot.fexDiagnostics.mesaAppliedPatches,
-                glibcLoaderPresent = snapshot.fexDiagnostics.glibcLoaderPresent.toString(),
-                guestVulkanLoaderPresent = snapshot.fexDiagnostics.guestVulkanLoaderPresent.toString(),
-                guestLavapipeDriverPresent = snapshot.fexDiagnostics.guestLavapipeDriverPresent.toString(),
-                activeIcd = snapshot.fexDiagnostics.activeIcd,
-                lvpIcdPresent = snapshot.fexDiagnostics.lvpIcdPresent.toString(),
-                mesa25Installed = snapshot.fexDiagnostics.mesa25Installed.toString(),
-                mesa26Installed = snapshot.fexDiagnostics.mesa26Installed.toString(),
-                kgslAccessible = snapshot.fexDiagnostics.kgslAccessible.toString(),
-                kgslDetail = snapshot.fexDiagnostics.kgslDetail,
-                selectedMesaBranch = snapshot.fexDiagnostics.selectedMesaBranch,
-                overrideMode = snapshot.fexDiagnostics.overrideMode,
-                selectionReason = snapshot.fexDiagnostics.selectionReason,
-                lastProbeDeviceName = snapshot.fexDiagnostics.lastProbeDeviceName,
-                lastProbeDriverMode = snapshot.fexDiagnostics.lastProbeDriverMode,
-                xeniaCommit = snapshot.xeniaDiagnostics.commit,
-                xeniaPatchSet = snapshot.xeniaDiagnostics.patchSetId,
-                xeniaBuildProfile = snapshot.xeniaDiagnostics.buildProfile,
-                xeniaBinaryInstalled = snapshot.xeniaDiagnostics.binaryInstalled.toString(),
-                xeniaConfigPresent = snapshot.xeniaDiagnostics.configPresent.toString(),
-                xeniaPortableMarkerPresent = snapshot.xeniaDiagnostics.portableMarkerPresent.toString(),
-                xeniaContentMode = snapshot.xeniaDiagnostics.contentMode,
-                xeniaStartupStage = snapshot.xeniaDiagnostics.lastStartupStage,
-                xeniaStartupDetail = snapshot.xeniaDiagnostics.lastStartupDetail,
-                xeniaAliveAfterModuleLoadSeconds = snapshot.xeniaDiagnostics.aliveAfterModuleLoadSeconds.toString(),
-                xeniaCacheBackendStatus = snapshot.xeniaDiagnostics.cacheBackendStatus,
-                xeniaCacheRootPath = snapshot.xeniaDiagnostics.cacheRootPath,
-                xeniaTitleMetadataSeen = snapshot.xeniaDiagnostics.titleMetadataSeen.toString(),
-                xeniaLogPath = snapshot.xeniaDiagnostics.lastLogPath,
-                xeniaExecutablePath = snapshot.xeniaDiagnostics.executablePath,
-                libraryEntries = snapshot.gameLibraryEntries.map(GameLibraryEntryUi::from),
-                lastLaunchBackend = snapshot.fexDiagnostics.lastLaunchBackend,
-                lastLaunchResult = snapshot.fexDiagnostics.lastLaunchResult,
-                appLog = snapshot.latestLogs.appLog,
-                fexLog = snapshot.latestLogs.fexLog,
-                guestLog = snapshot.latestLogs.guestLog,
-                lastAction = snapshot.lastAction,
-            )
-        }
-    }
-}
-
-data class GameLibraryEntryUi(
-    val id: String,
-    val displayName: String,
-    val status: String,
-    val sourceKind: String,
-    val guestPath: String,
-    val titleName: String,
-    val lastLaunchSummary: String,
-    val sizeSummary: String,
-) {
-    companion object {
-        fun from(entry: GameLibraryEntry): GameLibraryEntryUi {
-            return GameLibraryEntryUi(
-                id = entry.id,
-                displayName = entry.displayName,
-                status = entry.lastKnownStatus.name.lowercase(),
-                sourceKind = entry.sourceKind.name.lowercase(),
-                guestPath = entry.lastResolvedGuestPath ?: "none",
-                titleName = entry.lastKnownTitleName ?: "unknown",
-                lastLaunchSummary = entry.lastLaunchSummary ?: "none",
-                sizeSummary = if (entry.sizeBytes > 0L) "${entry.sizeBytes} bytes" else "size unavailable",
+                runtimeReady = shell.installState is RuntimeInstallState.Installed,
+                runtimeSummary = when (val installState = shell.installState) {
+                    RuntimeInstallState.NotInstalled -> "Runtime not installed"
+                    is RuntimeInstallState.Installed -> "Runtime ready"
+                    is RuntimeInstallState.Invalid -> "Runtime invalid: ${installState.issue}"
+                },
+                lastAction = shell.lastAction,
+                libraryEntries = shell.libraryEntries.map(GameLibraryEntryUi::from),
+                appSettings = appSettings,
+                gameOptions = gameOptions,
             )
         }
     }

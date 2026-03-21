@@ -8,7 +8,16 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.X360V3">
         <activity
+            android:name=".PlayerActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.X360V3" />
+        <activity
             android:name=".MainActivity"
+            android:exported="false"
+            android:theme="@style/Theme.X360V3" />
+        <activity
+            android:name=".SplashActivity"
             android:exported="true"
             android:theme="@style/Theme.X360V3">
             <intent-filter>

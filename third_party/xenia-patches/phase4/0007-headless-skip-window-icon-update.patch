@@ -1,4 +1,5 @@
 diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
+index 410bac6..0898820 100644
 --- a/src/xenia/emulator.cc
 +++ b/src/xenia/emulator.cc
 @@ -38,6 +38,7 @@
@@ -9,7 +10,7 @@ diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
  #include "xenia/gpu/graphics_system.h"
  #include "xenia/hid/input_driver.h"
  #include "xenia/hid/input_system.h"
-@@ -1588,9 +1589,12 @@
+@@ -1588,9 +1589,12 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
    title_id_ = std::nullopt;
    title_name_ = "";
    title_version_ = "";
@@ -25,3 +26,43 @@ diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
    // Allow xam to request module loads.
    auto xam = kernel_state()->GetKernelModule<kernel::xam::XamModule>("xam.xex");
    XELOGI("CompleteLaunch: xam module ready");
+@@ -1782,10 +1786,21 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
+       XELOGI("\n-------------------- PRESENCE MODES --------------------\n{}",
+              table.str());
+ 
+-      auto icon_block = game_info_database_->GetIcon();
+-      if (!icon_block.empty()) {
+-        display_window_->SetIcon(icon_block.data(), icon_block.size());
++      XELOGI("CompleteLaunch: before title icon handling");
++      if (cvars::headless || !display_window_) {
++        XELOGI(
++            "CompleteLaunch: headless mode active, skipping title icon fetch/update after metadata load");
++      } else {
++        XELOGI("CompleteLaunch: fetching title icon block");
++        auto icon_block = game_info_database_->GetIcon();
++        XELOGI("CompleteLaunch: fetched title icon block size={}",
++               icon_block.size());
++        if (!icon_block.empty()) {
++          display_window_->SetIcon(icon_block.data(), icon_block.size());
++          XELOGI("CompleteLaunch: title icon updated after metadata load");
++        }
+       }
++      XELOGI("CompleteLaunch: after title icon handling");
+     }
+   }
+ 
+@@ -1795,12 +1810,14 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
+   // skipped until pipelines are ready, so this is safe. By the time actual
+   // gameplay starts, most cached pipelines should be compiled.
+   if (graphics_system_) {
++    XELOGI("CompleteLaunch: initializing shader storage");
+     on_shader_storage_initialization(true);
+     graphics_system_->InitializeShaderStorage(
+         cache_root_, title_id_.value(), false,
+         [this]() { on_shader_storage_initialization(false); });
+   }
+ 
++  XELOGI("CompleteLaunch: launching main module thread");
+   auto main_thread = kernel_state_->LaunchModule(module);
+   if (!main_thread) {
+     return X_STATUS_UNSUCCESSFUL;

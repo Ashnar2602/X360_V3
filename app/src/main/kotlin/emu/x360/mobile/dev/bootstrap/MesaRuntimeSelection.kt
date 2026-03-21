@@ -30,10 +30,8 @@ internal data class ResolvedMesaRuntime(
 )
 
 internal object DeviceMesaRuntimePolicy {
-    private val mesa25Boards = setOf("kalama")
-    private val mesa25SocModels = setOf("qcs8550")
-    private val mesa26Boards = setOf("sun")
-    private val mesa26SocModels = setOf("cq8725s")
+    private val mesa26Boards = setOf("kalama", "sun")
+    private val mesa26SocModels = setOf("qcs8550", "cq8725s")
 
     fun resolve(
         overrideMode: MesaRuntimeBranch,
@@ -51,9 +49,7 @@ internal object DeviceMesaRuntimePolicy {
         val socModel = properties.socModel.lowercase()
         return when {
             board in mesa26Boards || socModel in mesa26SocModels ->
-                ResolvedMesaRuntime(MesaRuntimeBranch.MESA26, "auto-modern-qualcomm-allowlist")
-            board in mesa25Boards || socModel in mesa25SocModels ->
-                ResolvedMesaRuntime(MesaRuntimeBranch.MESA25, "auto-adreno7xx-allowlist")
+                ResolvedMesaRuntime(MesaRuntimeBranch.MESA26, "auto-supported-device-allowlist")
             hardware.contains("qcom") ->
                 ResolvedMesaRuntime(MesaRuntimeBranch.MESA25, "auto-qualcomm-fallback")
             else ->

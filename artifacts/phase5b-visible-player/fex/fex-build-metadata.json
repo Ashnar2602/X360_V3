@@ -1,0 +1,17 @@
+{
+  "fexCommit": "49a37c7d6fec7d94923507e5ce10d55c2920e380",
+  "patchSetId": "android-baseline-v1",
+  "abi": "arm64-v8a",
+  "artifacts": [
+    {
+      "name": "libFEXLoader.so",
+      "sha256": "03e4b3f2d28bb9106973c945a65840f988d00f61b9b5e91556676a783ee82f6f",
+      "neededLibraries": ["libdl.so", "libm.so", "libc.so"]
+    },
+    {
+      "name": "libFEXCore.so",
+      "sha256": "e1828fde9b0c51f7587ffa92769b722978030941c0d66b977c313813455e80a5",
+      "neededLibraries": ["libdl.so", "libm.so", "libc.so"]
+    }
+  ]
+}

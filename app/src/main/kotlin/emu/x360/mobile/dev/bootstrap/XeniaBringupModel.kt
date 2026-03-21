@@ -1,5 +1,7 @@
 package emu.x360.mobile.dev.bootstrap
 
+import emu.x360.mobile.dev.runtime.GuestRenderScaleProfile
+import emu.x360.mobile.dev.runtime.PresentationBackend
 import emu.x360.mobile.dev.runtime.RuntimeDirectories
 import emu.x360.mobile.dev.runtime.XeniaStartupStage
 import kotlin.io.path.exists
@@ -18,6 +20,38 @@ internal sealed interface XeniaLaunchMode {
         val entryId: String,
         val guestPath: String,
     ) : XeniaLaunchMode
+}
+
+internal data class InternalDisplayResolution(
+    val width: Int,
+    val height: Int,
+)
+
+internal data class XeniaPresentationSettings(
+    val presentationBackend: PresentationBackend,
+    val guestRenderScaleProfile: GuestRenderScaleProfile,
+    val internalDisplayResolution: InternalDisplayResolution,
+) {
+    companion object {
+        val HeadlessBringup = XeniaPresentationSettings(
+            presentationBackend = PresentationBackend.HEADLESS_ONLY,
+            guestRenderScaleProfile = GuestRenderScaleProfile.ONE,
+            internalDisplayResolution = InternalDisplayResolution(1280, 720),
+        )
+
+        val FramebufferPolling = XeniaPresentationSettings(
+            presentationBackend = PresentationBackend.FRAMEBUFFER_POLLING,
+            guestRenderScaleProfile = GuestRenderScaleProfile.ONE,
+            internalDisplayResolution = InternalDisplayResolution(1280, 720),
+        )
+    }
+}
+
+private enum class XeniaApuBackend(
+    val cliValue: String,
+) {
+    NOP("nop"),
+    SDL("sdl"),
 }
 
 internal object XeniaStartupStageParser {
@@ -39,6 +73,30 @@ internal object XeniaStartupStageParser {
             return XeniaStartupAnalysis(
                 stage = XeniaStartupStage.FAILED,
                 detail = failureLine.trim(),
+            )
+        }
+
+        val frameStreamActiveLine = lines.firstOrNull { it.contains("X360_XENIA_STAGE=FRAME_STREAM_ACTIVE") }
+        if (frameStreamActiveLine != null) {
+            return XeniaStartupAnalysis(
+                stage = XeniaStartupStage.FRAME_STREAM_ACTIVE,
+                detail = frameStreamActiveLine.trim(),
+                titleName = lines.firstOrNull { it.contains("Title name: ") }
+                    ?.substringAfter("Title name: ")
+                    ?.trim()
+                    ?.ifBlank { null },
+            )
+        }
+
+        val firstFrameLine = lines.firstOrNull { it.contains("X360_XENIA_STAGE=FIRST_FRAME_CAPTURED") }
+        if (firstFrameLine != null) {
+            return XeniaStartupAnalysis(
+                stage = XeniaStartupStage.FIRST_FRAME_CAPTURED,
+                detail = firstFrameLine.trim(),
+                titleName = lines.firstOrNull { it.contains("Title name: ") }
+                    ?.substringAfter("Title name: ")
+                    ?.trim()
+                    ?.ifBlank { null },
             )
         }
 
@@ -123,28 +181,113 @@ internal object XeniaStartupStageParser {
 internal fun buildXeniaBringupArgs(
     directories: RuntimeDirectories,
     launchMode: XeniaLaunchMode = XeniaLaunchMode.NoTitleBringup,
+    presentationSettings: XeniaPresentationSettings = when (launchMode) {
+        XeniaLaunchMode.NoTitleBringup -> XeniaPresentationSettings.HeadlessBringup
+        is XeniaLaunchMode.TitleBoot -> XeniaPresentationSettings.FramebufferPolling
+    },
 ): List<String> {
-    val baseArgs = listOf(
-        "--config=/opt/x360-v3/xenia/bin/xenia-canary.config.toml",
-        "--headless=true",
-        "--portable=true",
-        "--gpu=vulkan",
-        "--apu=nop",
-        "--hid=nop",
-        "--discord=false",
-        "--log_file=stdout",
-        "--mount_cache=false",
-        "--mount_scratch=false",
-        "--mount_memory_unit=false",
-        "--content_root=/opt/x360-v3/xenia/content",
-        "--cache_root=/opt/x360-v3/xenia/cache-host",
-        "--storage_root=/opt/x360-v3/xenia/bin",
-    )
+    require(presentationSettings.guestRenderScaleProfile == GuestRenderScaleProfile.ONE) {
+        "Phase 5A only supports GuestRenderScaleProfile.ONE as a true guest render scale"
+    }
+    val xeniaContentRoot = directories.xeniaWritableContentRoot.hostAbsolutePathString()
+    val xeniaCacheRoot = directories.xeniaWritableCacheHostRoot.hostAbsolutePathString()
+    val xeniaStorageRoot = directories.xeniaWritableStorageRoot.hostAbsolutePathString()
+    val xeniaFramebufferPath = directories.rootfsTmp.resolve("xenia_fb").hostAbsolutePathString()
+    val mountCache = launchMode is XeniaLaunchMode.TitleBoot
+    val apuBackend = when (launchMode) {
+        XeniaLaunchMode.NoTitleBringup -> XeniaApuBackend.NOP
+        is XeniaLaunchMode.TitleBoot -> XeniaApuBackend.SDL
+    }
+    val readbackResolveMode = when (launchMode) {
+        XeniaLaunchMode.NoTitleBringup -> null
+        is XeniaLaunchMode.TitleBoot -> "full"
+    }
+    val baseArgs = buildList {
+        addAll(
+            listOf(
+                "--config=/opt/x360-v3/xenia/bin/xenia-canary.config.toml",
+                "--headless=true",
+                "--portable=true",
+                "--gpu=vulkan",
+                "--apu=${apuBackend.cliValue}",
+                "--hid=nop",
+                "--discord=false",
+                "--log_file=stdout",
+                "--mount_cache=$mountCache",
+                "--mount_scratch=false",
+                "--mount_memory_unit=false",
+                "--content_root=$xeniaContentRoot",
+                "--cache_root=$xeniaCacheRoot",
+                "--storage_root=$xeniaStorageRoot",
+            ),
+        )
+        readbackResolveMode?.let { add("--readback_resolve=$it") }
+        if (presentationSettings.presentationBackend != PresentationBackend.HEADLESS_ONLY) {
+            add("--internal_display_resolution=17")
+            add("--internal_display_resolution_x=${presentationSettings.internalDisplayResolution.width}")
+            add("--internal_display_resolution_y=${presentationSettings.internalDisplayResolution.height}")
+            add("--draw_resolution_scale_x=1")
+            add("--draw_resolution_scale_y=1")
+            add("--x360_presentation_backend=${presentationSettings.presentationBackend.name.lowercase()}")
+            add("--x360_framebuffer_path=$xeniaFramebufferPath")
+            add("--x360_framebuffer_fps=10")
+        }
+    }
     return when (launchMode) {
         XeniaLaunchMode.NoTitleBringup -> baseArgs
         is XeniaLaunchMode.TitleBoot -> baseArgs + launchMode.guestPath
     }
 }
+
+internal fun buildXeniaConfigText(
+    directories: RuntimeDirectories,
+    launchMode: XeniaLaunchMode = XeniaLaunchMode.NoTitleBringup,
+): String {
+    val apuBackend = when (launchMode) {
+        XeniaLaunchMode.NoTitleBringup -> XeniaApuBackend.NOP
+        is XeniaLaunchMode.TitleBoot -> XeniaApuBackend.SDL
+    }
+    val mountCache = launchMode is XeniaLaunchMode.TitleBoot
+    val contentRoot = directories.xeniaWritableContentRoot.toGuestPath(directories.rootfs)
+    val cacheRoot = directories.xeniaWritableCacheHostRoot.toGuestPath(directories.rootfs)
+    val storageRoot = directories.xeniaWritableStorageRoot.toGuestPath(directories.rootfs)
+    return """
+        [General]
+        discord = false
+        portable = true
+        
+        [GPU]
+        gpu = "vulkan"
+        
+        [APU]
+        apu = "${apuBackend.cliValue}"
+        
+        [HID]
+        hid = "nop"
+        
+        [Kernel]
+        headless = true
+        
+        [Storage]
+        mount_cache = $mountCache
+        mount_memory_unit = false
+        mount_scratch = false
+        content_root = "$contentRoot"
+        cache_root = "$cacheRoot"
+        storage_root = "$storageRoot"
+    """.trimIndent() + "\n"
+}
+
+private fun java.nio.file.Path.hostAbsolutePathString(): String =
+    toString()
+        .replace('\\', '/')
+        .let { raw ->
+            if (raw.startsWith("/")) {
+                raw
+            } else {
+                toAbsolutePath().normalize().toString().replace('\\', '/')
+            }
+        }
 
 internal fun detectXeniaContentMode(
     directories: RuntimeDirectories,
@@ -156,7 +299,7 @@ internal fun detectXeniaContentMode(
     }
     return when {
         libraryEntries.isNotEmpty() -> "library"
-        !directories.rootfsXeniaContent.toFile().listFiles().isNullOrEmpty() -> "local-smoke"
+        !directories.xeniaWritableContentRoot.toFile().listFiles().isNullOrEmpty() -> "local-smoke"
         else -> "none"
     }
 }

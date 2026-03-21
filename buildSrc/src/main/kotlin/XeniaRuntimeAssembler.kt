@@ -353,6 +353,7 @@ class XeniaRuntimeAssembler(
             git config core.eol lf
             export CC=clang
             export CXX=clang++
+            export CMAKE_BUILD_PARALLEL_LEVEL=${'$'}{X360_XENIA_BUILD_JOBS:-2}
             $vulkanSdkExports
             SETUP_REQUIRED=1
             if [ -f ${shellQuote(setupSignatureFileWsl)} ] && [ ${shellQuote(setupSignature)} = "${'$'}(cat ${shellQuote(setupSignatureFileWsl)})" ]; then
@@ -517,6 +518,12 @@ class XeniaRuntimeAssembler(
         val xeniaCacheSlot0Dir = xeniaBinDir.resolve("cache0")
         val xeniaCacheSlot1Dir = xeniaBinDir.resolve("cache1")
         val xeniaScratchDir = xeniaBinDir.resolve("scratch")
+        val xeniaWritableRoot = rootfsOutput.resolve("tmp").resolve("x360-v3").resolve("xenia")
+        val xeniaWritableContentDir = xeniaWritableRoot.resolve("content")
+        val xeniaWritableCacheHostDir = xeniaWritableRoot.resolve("cache-host")
+        val xeniaWritableCacheModulesDir = xeniaWritableCacheHostDir.resolve("modules")
+        val xeniaWritableCacheShadersShareableDir = xeniaWritableCacheHostDir.resolve("shaders").resolve("shareable")
+        val xeniaWritableStorageDir = xeniaWritableRoot.resolve("storage")
         xeniaBinDir.createDirectories()
         xeniaContentDir.createDirectories()
         xeniaCacheHostDir.createDirectories()
@@ -527,6 +534,12 @@ class XeniaRuntimeAssembler(
         xeniaCacheSlot0Dir.createDirectories()
         xeniaCacheSlot1Dir.createDirectories()
         xeniaScratchDir.createDirectories()
+        xeniaWritableRoot.createDirectories()
+        xeniaWritableContentDir.createDirectories()
+        xeniaWritableCacheHostDir.createDirectories()
+        xeniaWritableCacheModulesDir.createDirectories()
+        xeniaWritableCacheShadersShareableDir.createDirectories()
+        xeniaWritableStorageDir.createDirectories()
 
         Files.copy(executable, xeniaBinDir.resolve("xenia-canary"), StandardCopyOption.REPLACE_EXISTING)
         xeniaBinDir.resolve("xenia-canary").toFile().setExecutable(true, false)
@@ -579,8 +592,8 @@ class XeniaRuntimeAssembler(
             mount_cache = false
             mount_memory_unit = false
             mount_scratch = false
-            content_root = "../content"
-            cache_root = "../cache-host"
+            content_root = "/tmp/x360-v3/xenia/content"
+            cache_root = "/tmp/x360-v3/xenia/cache-host"
         """.trimIndent() + "\n"
     }
 
