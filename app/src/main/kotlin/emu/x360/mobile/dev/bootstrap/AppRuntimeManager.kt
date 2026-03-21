@@ -408,7 +408,7 @@ class AppRuntimeManager(
                     }
                 },
             workingDirectory = directories.rootfsXeniaBin.toString(),
-            stdinRedirectPath = adoptedExecFd?.let { "/proc/self/fd/${it.fd}" },
+            stdinRedirectFd = adoptedExecFd?.fd,
         )
         val handle = xeniaGuestLauncher.startSession(
             request = request,
@@ -576,7 +576,7 @@ class AppRuntimeManager(
                     }
                 },
             workingDirectory = directories.rootfsXeniaBin.toString(),
-            stdinRedirectPath = adoptedExecFd?.let { "/proc/self/fd/${it.fd}" },
+            stdinRedirectFd = adoptedExecFd?.fd,
         )
             val result = try {
                 xeniaGuestLauncher.launch(
@@ -700,6 +700,7 @@ class AppRuntimeManager(
         environment: Map<String, String>,
         workingDirectory: String = directories.rootfs.toString(),
         stdinRedirectPath: String? = null,
+        stdinRedirectFd: Int? = null,
     ): GuestLaunchRequest {
         val logs = logStore.createSession(sessionId)
         return GuestLaunchRequest(
@@ -709,6 +710,7 @@ class AppRuntimeManager(
             environment = environment,
             workingDirectory = workingDirectory,
             stdinRedirectPath = stdinRedirectPath,
+            stdinRedirectFd = stdinRedirectFd,
             logDestinations = GuestLogDestinations(
                 appLog = logs.appLog,
                 fexLog = logs.fexLog,
@@ -1280,6 +1282,33 @@ private class StubGuestLauncher(
     }
 }
 
+private fun ProcessBuilder.startWithConfiguredStdin(request: GuestLaunchRequest): Process {
+    val stdinRedirectFd = request.stdinRedirectFd ?: return start()
+    val savedStdinFd = NativeBridge.remapFdToStdinForExec(stdinRedirectFd)
+    if (savedStdinFd < 0) {
+        throw IOException("Failed to remap inherited stdin fd $stdinRedirectFd: errno ${-savedStdinFd}")
+    }
+    val process = try {
+        start()
+    } catch (throwable: Throwable) {
+        if (!NativeBridge.restoreStdinAfterExec(savedStdinFd)) {
+            throwable.addSuppressed(
+                IOException("Failed to restore stdin after failed launch for session ${request.sessionId}"),
+            )
+        }
+        throw throwable
+    }
+    if (!NativeBridge.restoreStdinAfterExec(savedStdinFd)) {
+        process.destroy()
+        process.waitFor(3, TimeUnit.SECONDS)
+        if (process.isAlive) {
+            process.destroyForcibly()
+        }
+        throw IOException("Failed to restore stdin after launching session ${request.sessionId}")
+    }
+    return process
+}
+
 private class FexGuestLauncher(
     private val context: Context,
     private val directories: RuntimeDirectories,
@@ -1333,16 +1362,19 @@ private class FexGuestLauncher(
         val processBuilder = ProcessBuilder(launchSpec.command)
             .directory(File(request.workingDirectory))
             .redirectInput(
-                request.stdinRedirectPath
-                    ?.let { path -> ProcessBuilder.Redirect.from(File(path)) }
-                    ?: ProcessBuilder.Redirect.PIPE,
+                when {
+                    request.stdinRedirectFd != null -> ProcessBuilder.Redirect.INHERIT
+                    request.stdinRedirectPath != null ->
+                        ProcessBuilder.Redirect.from(File(request.stdinRedirectPath))
+                    else -> ProcessBuilder.Redirect.PIPE
+                },
             )
 
         val environment = processBuilder.environment()
         launchSpec.environment.forEach { (key, value) -> environment[key] = value }
 
         val process = try {
-            processBuilder.start()
+            processBuilder.startWithConfiguredStdin(request)
         } catch (throwable: Throwable) {
             val result = GuestLaunchResult(
                 sessionId = request.sessionId,
@@ -1483,16 +1515,19 @@ private class XeniaGuestLauncher(
         val processBuilder = ProcessBuilder(launchSpec.command)
             .directory(File(request.workingDirectory))
             .redirectInput(
-                request.stdinRedirectPath
-                    ?.let { path -> ProcessBuilder.Redirect.from(File(path)) }
-                    ?: ProcessBuilder.Redirect.PIPE,
+                when {
+                    request.stdinRedirectFd != null -> ProcessBuilder.Redirect.INHERIT
+                    request.stdinRedirectPath != null ->
+                        ProcessBuilder.Redirect.from(File(request.stdinRedirectPath))
+                    else -> ProcessBuilder.Redirect.PIPE
+                },
             )
 
         val environment = processBuilder.environment()
         launchSpec.environment.forEach { (key, value) -> environment[key] = value }
 
         val process = try {
-            processBuilder.start()
+            processBuilder.startWithConfiguredStdin(request)
         } catch (throwable: Throwable) {
             val result = GuestLaunchResult(
                 sessionId = request.sessionId,
@@ -1575,16 +1610,19 @@ private class XeniaGuestLauncher(
         val processBuilder = ProcessBuilder(launchSpec.command)
             .directory(File(request.workingDirectory))
             .redirectInput(
-                request.stdinRedirectPath
-                    ?.let { path -> ProcessBuilder.Redirect.from(File(path)) }
-                    ?: ProcessBuilder.Redirect.PIPE,
+                when {
+                    request.stdinRedirectFd != null -> ProcessBuilder.Redirect.INHERIT
+                    request.stdinRedirectPath != null ->
+                        ProcessBuilder.Redirect.from(File(request.stdinRedirectPath))
+                    else -> ProcessBuilder.Redirect.PIPE
+                },
             )
 
         val environment = processBuilder.environment()
         launchSpec.environment.forEach { (key, value) -> environment[key] = value }
 
         val process = try {
-            processBuilder.start()
+            processBuilder.startWithConfiguredStdin(request)
         } catch (throwable: Throwable) {
             val result = GuestLaunchResult(
                 sessionId = request.sessionId,

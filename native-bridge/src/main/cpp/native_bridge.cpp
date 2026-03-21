@@ -383,6 +383,78 @@ Java_emu_x360_mobile_dev_nativebridge_NativeBridge_adoptFdForExec(JNIEnv* /* env
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
+Java_emu_x360_mobile_dev_nativebridge_NativeBridge_restoreStdinAfterExec(
+    JNIEnv* /* env */,
+    jobject /* this */,
+    jint saved_fd) {
+  if (saved_fd < 0) {
+    __android_log_print(ANDROID_LOG_WARN, kTag,
+                        "restoreStdinAfterExec(%d) ignored invalid saved fd", saved_fd);
+    return JNI_FALSE;
+  }
+
+  if (dup2(saved_fd, STDIN_FILENO) < 0) {
+    __android_log_print(ANDROID_LOG_ERROR, kTag,
+                        "restoreStdinAfterExec(%d) dup2 failed: errno=%d",
+                        saved_fd, errno);
+    close(saved_fd);
+    return JNI_FALSE;
+  }
+
+  const int flags = fcntl(STDIN_FILENO, F_GETFD);
+  if (flags >= 0) {
+    fcntl(STDIN_FILENO, F_SETFD, flags & ~FD_CLOEXEC);
+  }
+
+  if (close(saved_fd) != 0) {
+    __android_log_print(ANDROID_LOG_WARN, kTag,
+                        "restoreStdinAfterExec(%d) close failed: errno=%d",
+                        saved_fd, errno);
+  }
+  return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_emu_x360_mobile_dev_nativebridge_NativeBridge_remapFdToStdinForExec(
+    JNIEnv* /* env */,
+    jobject /* this */,
+    jint fd) {
+  if (fd < 0) {
+    __android_log_print(ANDROID_LOG_ERROR, kTag,
+                        "remapFdToStdinForExec(%d) invalid descriptor", fd);
+    return -EINVAL;
+  }
+
+  const int saved_stdin = dup(STDIN_FILENO);
+  const int saved_errno = errno;
+  if (saved_stdin < 0) {
+    __android_log_print(ANDROID_LOG_ERROR, kTag,
+                        "remapFdToStdinForExec(%d) dup stdin failed: errno=%d",
+                        fd, saved_errno);
+    return -saved_errno;
+  }
+
+  if (dup2(fd, STDIN_FILENO) < 0) {
+    const int dup_errno = errno;
+    __android_log_print(ANDROID_LOG_ERROR, kTag,
+                        "remapFdToStdinForExec(%d) dup2 failed: errno=%d",
+                        fd, dup_errno);
+    close(saved_stdin);
+    return -dup_errno;
+  }
+
+  const int flags = fcntl(STDIN_FILENO, F_GETFD);
+  if (flags >= 0) {
+    fcntl(STDIN_FILENO, F_SETFD, flags & ~FD_CLOEXEC);
+  }
+
+  __android_log_print(ANDROID_LOG_INFO, kTag,
+                      "remapFdToStdinForExec(%d) saved stdin as %d",
+                      fd, saved_stdin);
+  return saved_stdin;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
 Java_emu_x360_mobile_dev_nativebridge_NativeBridge_closeFd(JNIEnv* /* env */,
                                                            jobject /* this */,
                                                            jint fd) {

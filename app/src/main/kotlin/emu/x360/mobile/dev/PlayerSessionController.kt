@@ -105,44 +105,38 @@ internal object PlayerSessionController {
         session: ActivePlayerSessionHandle,
         showFpsCounter: Boolean,
     ) {
-        var lastFrameIndex = -1L
-        var lastFrameTimeMillis = 0L
-        var lastComputedFps = 0f
-
         while (currentCoroutineContext().isActive) {
             val analysis = session.readStartupAnalysis()
-            val preview = session.readOutputPreview()
-            val nowMillis = System.currentTimeMillis()
+            val currentState = mutableState.value
 
-            if (preview.frameIndex >= 0 && preview.frameIndex != lastFrameIndex) {
-                if (lastFrameIndex >= 0 && lastFrameTimeMillis > 0L) {
-                    val deltaFrames = (preview.frameIndex - lastFrameIndex).coerceAtLeast(1L)
-                    val deltaMillis = (nowMillis - lastFrameTimeMillis).coerceAtLeast(1L)
-                    lastComputedFps = (deltaFrames * 1000f) / deltaMillis.toFloat()
-                }
-                lastFrameIndex = preview.frameIndex
-                lastFrameTimeMillis = nowMillis
+            val streamStatus = when (analysis.stage) {
+                XeniaStartupStage.FRAME_STREAM_ACTIVE -> "active"
+                XeniaStartupStage.FIRST_FRAME_CAPTURED -> "first-frame"
+                else -> "idle"
             }
 
-            mutableState.value = PlayerSessionUiState(
+            val nextState = PlayerSessionUiState(
                 status = if (session.isAlive()) PlayerSessionStatus.RUNNING else PlayerSessionStatus.STOPPED,
                 entryId = session.entryId,
                 sessionId = session.sessionId,
                 titleName = analysis.titleName ?: session.entryDisplayName,
                 startupStage = analysis.stage.name.lowercase(),
                 detail = analysis.detail,
-                framebufferPath = preview.framebufferPath,
-                frameStreamStatus = preview.status,
-                frameIndex = preview.frameIndex,
-                frameWidth = preview.width,
-                frameHeight = preview.height,
-                frameFreshnessSeconds = preview.freshnessSeconds,
-                fps = lastComputedFps,
+                framebufferPath = session.framebufferPath.toString(),
+                frameStreamStatus = streamStatus,
+                frameIndex = currentState.frameIndex,
+                frameWidth = currentState.frameWidth,
+                frameHeight = currentState.frameHeight,
+                frameFreshnessSeconds = currentState.frameFreshnessSeconds,
+                fps = 0f,
                 showFpsCounter = showFpsCounter,
                 presentationBackend = PresentationBackend.FRAMEBUFFER_POLLING.name.lowercase(),
                 renderScaleProfile = GuestRenderScaleProfile.ONE.name.lowercase(),
                 internalDisplayResolution = "1280x720",
             )
+            if (mutableState.value != nextState) {
+                mutableState.value = nextState
+            }
 
             if (!session.isAlive()) {
                 val result = session.finalizeIfExited()

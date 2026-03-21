@@ -5,33 +5,36 @@ import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.ImageView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -117,10 +120,10 @@ private fun PlayerScreen(
     onExit: () -> Unit,
 ) {
     BackHandler(onBack = onExit)
+    val sessionKey = state.sessionId ?: state.framebufferPath
     val frameState by produceState(
         initialValue = PlayerFrameState.placeholder(state.detail),
-        key1 = state.framebufferPath,
-        key2 = state.frameStreamStatus,
+        key1 = sessionKey,
     ) {
         var lastModifiedMillis = Long.MIN_VALUE
         var lastFrameIndex = Long.MIN_VALUE
@@ -142,6 +145,38 @@ private fun PlayerScreen(
             delay(120)
         }
     }
+    val context = LocalContext.current
+    var displayFps by remember(sessionKey) { mutableFloatStateOf(0f) }
+    var fpsWindowStartFrameIndex by remember(sessionKey) { mutableLongStateOf(-1L) }
+    var fpsWindowStartTimeMillis by remember(sessionKey) { mutableLongStateOf(0L) }
+    LaunchedEffect(sessionKey, state.showFpsCounter, frameState.frameIndex) {
+        if (!state.showFpsCounter) {
+            displayFps = 0f
+            fpsWindowStartFrameIndex = frameState.frameIndex
+            fpsWindowStartTimeMillis = if (frameState.frameIndex >= 0L) System.currentTimeMillis() else 0L
+            return@LaunchedEffect
+        }
+
+        val currentFrameIndex = frameState.frameIndex
+        if (currentFrameIndex < 0L) {
+            return@LaunchedEffect
+        }
+
+        val nowMillis = System.currentTimeMillis()
+        if (fpsWindowStartFrameIndex < 0L || fpsWindowStartTimeMillis <= 0L) {
+            fpsWindowStartFrameIndex = currentFrameIndex
+            fpsWindowStartTimeMillis = nowMillis
+            return@LaunchedEffect
+        }
+
+        val deltaFrames = currentFrameIndex - fpsWindowStartFrameIndex
+        val deltaMillis = nowMillis - fpsWindowStartTimeMillis
+        if (deltaFrames > 0L && deltaMillis >= 500L) {
+            displayFps = (deltaFrames * 1000f) / deltaMillis.toFloat()
+            fpsWindowStartFrameIndex = currentFrameIndex
+            fpsWindowStartTimeMillis = nowMillis
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -149,14 +184,17 @@ private fun PlayerScreen(
             .background(Color.Black),
     ) {
         val bitmap = frameState.bitmap
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = "Xenia live framebuffer",
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Fit,
-            )
-        } else {
+        val imageView = rememberPlayerImageView(context)
+        LaunchedEffect(bitmap) {
+            imageView.setImageBitmap(bitmap)
+        }
+        AndroidView(
+            factory = { imageView },
+            modifier = Modifier.fillMaxSize(),
+            update = {},
+        )
+
+        if (bitmap == null) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
@@ -180,7 +218,7 @@ private fun PlayerScreen(
 
         if (state.showFpsCounter && bitmap != null) {
             Text(
-                text = String.format(Locale.US, "%.1f FPS", state.fps),
+                text = String.format(Locale.US, "%.1f FPS", displayFps),
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(16.dp)
@@ -261,6 +299,15 @@ private fun readPlayerFrameState(
         )
     }
 
+    if (lastBitmap != null && !playerFrameHasVisibleContent(frame.rgbaBytes)) {
+        return PlayerFrameState(
+            bitmap = lastBitmap,
+            frameIndex = frame.header.frameIndex,
+            modifiedAtMillis = modifiedMillis,
+            message = "Keeping the last visible frame while the current xenia_fb sample is black.",
+        )
+    }
+
     return PlayerFrameState(
         bitmap = playerFrameToBitmap(frame),
         frameIndex = frame.header.frameIndex,
@@ -286,4 +333,33 @@ private fun playerFrameToBitmap(frame: emu.x360.mobile.dev.runtime.XeniaFramebuf
         }
     }
     return Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
+}
+
+private fun playerFrameHasVisibleContent(rgbaBytes: ByteArray): Boolean {
+    var index = 0
+    while (index + 3 < rgbaBytes.size) {
+        val red = rgbaBytes[index].toInt() and 0xFF
+        val green = rgbaBytes[index + 1].toInt() and 0xFF
+        val blue = rgbaBytes[index + 2].toInt() and 0xFF
+        if (red != 0 || green != 0 || blue != 0) {
+            return true
+        }
+        index += 96
+    }
+    return false
+}
+
+@Composable
+private fun rememberPlayerImageView(context: Context): ImageView {
+    return remember(context) {
+        ImageView(context).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            adjustViewBounds = true
+            setBackgroundColor(android.graphics.Color.BLACK)
+        }
+    }
 }

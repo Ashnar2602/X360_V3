@@ -15,5 +15,9 @@ object NativeBridge {
 
     external fun adoptFdForExec(rawFd: Int, minimumFd: Int): Int
 
+    external fun remapFdToStdinForExec(fd: Int): Int
+
+    external fun restoreStdinAfterExec(savedFd: Int): Boolean
+
     external fun closeFd(fd: Int): Boolean
 }

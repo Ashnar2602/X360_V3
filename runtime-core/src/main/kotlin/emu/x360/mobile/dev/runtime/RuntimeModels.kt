@@ -244,6 +244,7 @@ data class GuestLaunchRequest(
     val environment: Map<String, String>,
     val workingDirectory: String,
     val stdinRedirectPath: String? = null,
+    val stdinRedirectFd: Int? = null,
     val logDestinations: GuestLogDestinations,
 )
 
