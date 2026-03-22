@@ -369,7 +369,7 @@ Delivered:
 - FPS overlay setting and player session controller
 - in-player pause menu opened by Android back
 - quick in-player options overlay for live-safe player settings
-- `X360 Mobile` `0.2.0 alpha` visible product shell
+- `X360 Mobile` `0.2.1 alpha` visible product shell
 
 ### Phase 6A: Universal Android display baseline
 

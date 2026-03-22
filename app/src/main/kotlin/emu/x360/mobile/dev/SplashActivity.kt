@@ -85,7 +85,7 @@ private fun SplashScreen() {
                 color = Color(0xFFF4F8FB),
             )
             Text(
-                text = "0.2.0 alpha",
+                text = "0.2.1 alpha",
                 style = MaterialTheme.typography.titleMedium,
                 color = Color(0xFF9AD9FF),
             )

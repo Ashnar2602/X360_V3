@@ -221,7 +221,7 @@ private fun LibraryScreen(
     ) {
         ProductHeader(
             title = "X360 Mobile",
-            subtitle = "0.2.0 alpha",
+            subtitle = "0.2.1 alpha",
             onOpenOptions = onOpenOptions,
         )
 
