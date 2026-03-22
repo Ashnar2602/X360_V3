@@ -7,6 +7,11 @@ Current archived milestone:
 - `phase4a-vulkan-init`
 - `phase5b-visible-player`
 
+Working tree note:
+
+- the repo has moved forward to the Phase 6A shared-memory display baseline
+- artifact archiving is still intentionally conservative, so the archive set currently stops at the last explicitly preserved milestone above
+
 Contents preserved there:
 
 - built `xenia-canary` binary for the successful Phase 4A bring-up

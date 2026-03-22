@@ -23,15 +23,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -39,12 +37,21 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import emu.x360.mobile.dev.bootstrap.RollingPresentationMetricsTracker
+import emu.x360.mobile.dev.bootstrap.SharedFramePresentationReader
+import emu.x360.mobile.dev.runtime.PresentationPerformanceMetrics
+import emu.x360.mobile.dev.runtime.PresentationBackend
+import emu.x360.mobile.dev.runtime.SharedFrameTransportFrame
 import emu.x360.mobile.dev.runtime.XeniaFramebufferCodec
+import emu.x360.mobile.dev.runtime.XeniaFramebufferHeader
 import emu.x360.mobile.dev.ui.theme.X360RebuildTheme
 import java.io.File
+import java.io.InputStream
+import java.nio.ByteBuffer
 import java.util.Locale
 import kotlin.io.path.exists
 import kotlin.io.path.getLastModifiedTime
+import kotlin.io.path.inputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -73,6 +80,8 @@ class PlayerActivity : ComponentActivity() {
                 }
                 PlayerScreen(
                     state = state,
+                    openPresentationReader = viewModel::openPresentationReader,
+                    onMetrics = viewModel::reportVisibleMetrics,
                     onExit = {
                         viewModel.stop()
                         finish()
@@ -117,64 +126,140 @@ class PlayerActivity : ComponentActivity() {
 @Composable
 private fun PlayerScreen(
     state: PlayerSessionUiState,
+    openPresentationReader: () -> SharedFramePresentationReader?,
+    onMetrics: (PresentationPerformanceMetrics) -> Unit,
     onExit: () -> Unit,
 ) {
     BackHandler(onBack = onExit)
     val sessionKey = state.sessionId ?: state.framebufferPath
-    val frameState by produceState(
-        initialValue = PlayerFrameState.placeholder(state.detail),
-        key1 = sessionKey,
-    ) {
-        var lastModifiedMillis = Long.MIN_VALUE
-        var lastFrameIndex = Long.MIN_VALUE
-        var lastBitmap: Bitmap? = null
-        while (currentCoroutineContext().isActive) {
-            val updated = withContext(Dispatchers.IO) {
-                readPlayerFrameState(
-                    framebufferPath = state.framebufferPath,
-                    fallbackMessage = state.detail,
-                    lastModifiedMillis = lastModifiedMillis,
-                    lastFrameIndex = lastFrameIndex,
-                    lastBitmap = lastBitmap,
-                )
-            }
-            value = updated
-            lastModifiedMillis = updated.modifiedAtMillis ?: Long.MIN_VALUE
-            lastFrameIndex = updated.frameIndex
-            lastBitmap = updated.bitmap
-            delay(120)
-        }
-    }
     val context = LocalContext.current
-    var displayFps by remember(sessionKey) { mutableFloatStateOf(0f) }
-    var fpsWindowStartFrameIndex by remember(sessionKey) { mutableLongStateOf(-1L) }
-    var fpsWindowStartTimeMillis by remember(sessionKey) { mutableLongStateOf(0L) }
-    LaunchedEffect(sessionKey, state.showFpsCounter, frameState.frameIndex) {
-        if (!state.showFpsCounter) {
-            displayFps = 0f
-            fpsWindowStartFrameIndex = frameState.frameIndex
-            fpsWindowStartTimeMillis = if (frameState.frameIndex >= 0L) System.currentTimeMillis() else 0L
-            return@LaunchedEffect
-        }
+    val sharedMemoryBackend = state.presentationBackend == PresentationBackend.FRAMEBUFFER_SHARED_MEMORY.name.lowercase()
+    val imageView = rememberPlayerImageView(context)
+    var overlayState by remember(sessionKey) {
+        mutableStateOf(PlayerOverlayState.placeholder(state.detail))
+    }
 
-        val currentFrameIndex = frameState.frameIndex
-        if (currentFrameIndex < 0L) {
-            return@LaunchedEffect
-        }
+    LaunchedEffect(
+        sessionKey,
+        sharedMemoryBackend,
+        state.playerPollIntervalMs,
+        state.keepLastVisibleFrame,
+        imageView,
+    ) {
+        val tracker = RollingPresentationMetricsTracker()
+        var lastOverlayReportAtMillis = 0L
+        var lastMetricsReportAtMillis = 0L
+        if (sharedMemoryBackend) {
+            val reader = openPresentationReader()
+            if (reader == null) {
+                overlayState = PlayerOverlayState.placeholder("Shared-memory presentation session is unavailable")
+                return@LaunchedEffect
+            }
+            try {
+                var lastFrameIndex = Long.MIN_VALUE
+                var lastBuffer: PlayerBitmapBuffer? = null
+                while (currentCoroutineContext().isActive) {
+                    val frame = withContext(Dispatchers.IO) {
+                        reader.awaitNextFrame(
+                            lastFrameIndex = lastFrameIndex,
+                            timeoutMillis = state.playerPollIntervalMs.coerceAtLeast(16L),
+                        )
+                    }
+                    if (frame != null) {
+                        tracker.onExportObserved(frame.header.frameIndex)
+                        if (!(state.keepLastVisibleFrame && lastBuffer != null && !playerFrameHasVisibleContent(frame.rgbaBytes, frame.header.payloadSize))) {
+                            tracker.onDecoded()
+                            val updatedBuffer = updatePlayerBitmapBufferFromSharedFrame(frame, lastBuffer)
+                            lastBuffer = updatedBuffer
+                            if (imageView.tag !== updatedBuffer.bitmap) {
+                                imageView.setImageBitmap(updatedBuffer.bitmap)
+                                imageView.tag = updatedBuffer.bitmap
+                            }
+                            imageView.postInvalidateOnAnimation()
+                            tracker.onPresented(frame.header.frameIndex)
+                            lastFrameIndex = frame.header.frameIndex
+                        }
+                    }
 
-        val nowMillis = System.currentTimeMillis()
-        if (fpsWindowStartFrameIndex < 0L || fpsWindowStartTimeMillis <= 0L) {
-            fpsWindowStartFrameIndex = currentFrameIndex
-            fpsWindowStartTimeMillis = nowMillis
-            return@LaunchedEffect
-        }
+                    val nowMillis = System.currentTimeMillis()
+                    val metrics = tracker.snapshot(
+                        frameSourceStatus = if (lastFrameIndex >= 0L) "active" else "idle",
+                    )
+                    val message = when {
+                        lastFrameIndex >= 0L -> "Frame $lastFrameIndex"
+                        else -> state.detail
+                    }
+                    if (overlayState.hasFrame != (lastFrameIndex >= 0L) ||
+                        overlayState.message != message ||
+                        nowMillis - lastOverlayReportAtMillis >= 250L
+                    ) {
+                        overlayState = PlayerOverlayState(
+                            hasFrame = lastFrameIndex >= 0L,
+                            message = message,
+                            metrics = metrics,
+                        )
+                        lastOverlayReportAtMillis = nowMillis
+                    }
+                    if (metrics.presentedFrameCount > 0L &&
+                        nowMillis - lastMetricsReportAtMillis >= 250L
+                    ) {
+                        onMetrics(metrics)
+                        lastMetricsReportAtMillis = nowMillis
+                    }
+                }
+            } finally {
+                reader.close()
+            }
+        } else {
+            var lastModifiedMillis = Long.MIN_VALUE
+            var lastFrameIndex = Long.MIN_VALUE
+            var lastBuffer: PlayerBitmapBuffer? = null
+            while (currentCoroutineContext().isActive) {
+                val updated = withContext(Dispatchers.IO) {
+                    readPlayerFrameState(
+                        framebufferPath = state.framebufferPath,
+                        fallbackMessage = state.detail,
+                        lastModifiedMillis = lastModifiedMillis,
+                        lastFrameIndex = lastFrameIndex,
+                        lastBuffer = lastBuffer,
+                        keepLastVisibleFrame = state.keepLastVisibleFrame,
+                        tracker = tracker,
+                    )
+                }
+                val bitmap = updated.buffer?.bitmap
+                if (bitmap != null) {
+                    if (imageView.tag !== bitmap) {
+                        imageView.setImageBitmap(bitmap)
+                        imageView.tag = bitmap
+                    }
+                    imageView.postInvalidateOnAnimation()
+                }
 
-        val deltaFrames = currentFrameIndex - fpsWindowStartFrameIndex
-        val deltaMillis = nowMillis - fpsWindowStartTimeMillis
-        if (deltaFrames > 0L && deltaMillis >= 500L) {
-            displayFps = (deltaFrames * 1000f) / deltaMillis.toFloat()
-            fpsWindowStartFrameIndex = currentFrameIndex
-            fpsWindowStartTimeMillis = nowMillis
+                val nowMillis = System.currentTimeMillis()
+                if (overlayState.hasFrame != updated.hasFrame ||
+                    overlayState.message != updated.message ||
+                    nowMillis - lastOverlayReportAtMillis >= 250L
+                ) {
+                    overlayState = PlayerOverlayState(
+                        hasFrame = updated.hasFrame,
+                        message = updated.message,
+                        metrics = updated.metrics,
+                    )
+                    lastOverlayReportAtMillis = nowMillis
+                }
+
+                if (updated.metrics.presentedFrameCount > 0L &&
+                    nowMillis - lastMetricsReportAtMillis >= 250L
+                ) {
+                    onMetrics(updated.metrics)
+                    lastMetricsReportAtMillis = nowMillis
+                }
+
+                lastModifiedMillis = updated.modifiedAtMillis ?: Long.MIN_VALUE
+                lastFrameIndex = updated.frameIndex
+                lastBuffer = updated.buffer
+                delay(state.playerPollIntervalMs.coerceAtLeast(1L))
+            }
         }
     }
 
@@ -183,18 +268,13 @@ private fun PlayerScreen(
             .fillMaxSize()
             .background(Color.Black),
     ) {
-        val bitmap = frameState.bitmap
-        val imageView = rememberPlayerImageView(context)
-        LaunchedEffect(bitmap) {
-            imageView.setImageBitmap(bitmap)
-        }
         AndroidView(
             factory = { imageView },
             modifier = Modifier.fillMaxSize(),
-            update = {},
+            update = { },
         )
 
-        if (bitmap == null) {
+        if (!overlayState.hasFrame) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center,
@@ -207,7 +287,7 @@ private fun PlayerScreen(
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
-                        text = frameState.message,
+                        text = overlayState.message,
                         modifier = Modifier.padding(top = 12.dp),
                         style = MaterialTheme.typography.bodyMedium,
                         color = Color(0xFFCFD9E1),
@@ -216,9 +296,9 @@ private fun PlayerScreen(
             }
         }
 
-        if (state.showFpsCounter && bitmap != null) {
+        if (state.showFpsCounter && overlayState.hasFrame) {
             Text(
-                text = String.format(Locale.US, "%.1f FPS", displayFps),
+                text = String.format(Locale.US, "Visible %.1f FPS", overlayState.metrics.visibleFps),
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(16.dp)
@@ -246,29 +326,64 @@ private fun PlayerScreen(
 }
 
 private data class PlayerFrameState(
-    val bitmap: Bitmap?,
+    val buffer: PlayerBitmapBuffer?,
     val frameIndex: Long,
     val modifiedAtMillis: Long?,
     val message: String,
+    val metrics: PresentationPerformanceMetrics,
 ) {
+    val hasFrame: Boolean
+        get() = buffer != null
+
     companion object {
         fun placeholder(message: String): PlayerFrameState {
             return PlayerFrameState(
-                bitmap = null,
+                buffer = null,
                 frameIndex = -1L,
                 modifiedAtMillis = null,
                 message = message,
+                metrics = PresentationPerformanceMetrics.Empty,
             )
         }
     }
 }
+
+private data class PlayerOverlayState(
+    val hasFrame: Boolean,
+    val message: String,
+    val metrics: PresentationPerformanceMetrics,
+) {
+    companion object {
+        fun placeholder(message: String): PlayerOverlayState {
+            return PlayerOverlayState(
+                hasFrame = false,
+                message = message,
+                metrics = PresentationPerformanceMetrics.Empty,
+            )
+        }
+    }
+}
+
+private data class PlayerBitmapBuffer(
+    val bitmap: Bitmap,
+    val sourceBytes: ByteArray,
+    val scratchBytes: ByteArray,
+    val scratchBuffer: ByteBuffer,
+)
+
+private data class PlayerFramebufferSample(
+    val header: XeniaFramebufferHeader,
+    val buffer: PlayerBitmapBuffer,
+)
 
 private fun readPlayerFrameState(
     framebufferPath: String,
     fallbackMessage: String,
     lastModifiedMillis: Long,
     lastFrameIndex: Long,
-    lastBitmap: Bitmap?,
+    lastBuffer: PlayerBitmapBuffer?,
+    keepLastVisibleFrame: Boolean,
+    tracker: RollingPresentationMetricsTracker,
 ): PlayerFrameState {
     if (framebufferPath.isBlank()) {
         return PlayerFrameState.placeholder(fallbackMessage)
@@ -280,64 +395,220 @@ private fun readPlayerFrameState(
     }
 
     val modifiedMillis = runCatching { path.getLastModifiedTime().toMillis() }.getOrDefault(lastModifiedMillis)
-    if (modifiedMillis == lastModifiedMillis && lastBitmap != null) {
+    val header = runCatching { readPlayerFramebufferHeader(path) }.getOrNull()
+    if (header == null) {
         return PlayerFrameState(
-            bitmap = lastBitmap,
-            frameIndex = lastFrameIndex,
-            modifiedAtMillis = modifiedMillis,
-            message = "Frame unchanged",
-        )
-    }
-
-    val frame = runCatching { XeniaFramebufferCodec.readFrame(path) }.getOrNull()
-    if (frame == null) {
-        return PlayerFrameState(
-            bitmap = lastBitmap,
+            buffer = lastBuffer,
             frameIndex = lastFrameIndex,
             modifiedAtMillis = modifiedMillis,
             message = fallbackMessage,
+            metrics = tracker.snapshot(frameSourceStatus = "invalid"),
         )
     }
 
-    if (lastBitmap != null && !playerFrameHasVisibleContent(frame.rgbaBytes)) {
+    if (header.frameIndex == lastFrameIndex && lastBuffer != null) {
         return PlayerFrameState(
-            bitmap = lastBitmap,
-            frameIndex = frame.header.frameIndex,
+            buffer = lastBuffer,
+            frameIndex = lastFrameIndex,
+            modifiedAtMillis = modifiedMillis,
+            message = if (modifiedMillis == lastModifiedMillis) {
+                "Frame index unchanged"
+            } else {
+                "Frame header unchanged"
+            },
+            metrics = tracker.snapshot(frameSourceStatus = "stale"),
+        )
+    }
+
+    val sample = runCatching { readPlayerFramebufferSample(path, header, lastBuffer) }.getOrNull()
+    if (sample == null) {
+        return PlayerFrameState(
+            buffer = lastBuffer,
+            frameIndex = lastFrameIndex,
+            modifiedAtMillis = modifiedMillis,
+            message = fallbackMessage,
+            metrics = tracker.snapshot(frameSourceStatus = "invalid"),
+        )
+    }
+
+    if (sample.header.frameIndex == lastFrameIndex && lastBuffer != null) {
+        return PlayerFrameState(
+            buffer = lastBuffer,
+            frameIndex = lastFrameIndex,
+            modifiedAtMillis = modifiedMillis,
+            message = "Frame header unchanged",
+            metrics = tracker.snapshot(frameSourceStatus = "stale"),
+        )
+    }
+
+    tracker.onExportObserved(sample.header.frameIndex)
+
+    if (keepLastVisibleFrame &&
+        lastBuffer != null &&
+        !playerFrameHasVisibleContent(sample.buffer.sourceBytes, sample.header.minimumPayloadSize)
+    ) {
+        return PlayerFrameState(
+            buffer = lastBuffer,
+            frameIndex = lastFrameIndex,
             modifiedAtMillis = modifiedMillis,
             message = "Keeping the last visible frame while the current xenia_fb sample is black.",
+            metrics = tracker.snapshot(frameSourceStatus = "black-sample"),
         )
     }
 
+    tracker.onDecoded()
+    val updatedBuffer = updatePlayerBitmapBuffer(sample)
+    tracker.onPresented(sample.header.frameIndex)
     return PlayerFrameState(
-        bitmap = playerFrameToBitmap(frame),
-        frameIndex = frame.header.frameIndex,
+        buffer = updatedBuffer,
+        frameIndex = sample.header.frameIndex,
         modifiedAtMillis = modifiedMillis,
-        message = "Frame ${frame.header.frameIndex}",
+        message = "Frame ${sample.header.frameIndex}",
+        metrics = tracker.snapshot(frameSourceStatus = "active"),
     )
 }
 
-private fun playerFrameToBitmap(frame: emu.x360.mobile.dev.runtime.XeniaFramebufferFrame): Bitmap {
-    val width = frame.header.width
-    val height = frame.header.height
-    val stride = frame.header.stride
-    val pixels = IntArray(width * height)
-    var pixelIndex = 0
-    for (y in 0 until height) {
-        val rowStart = y * stride
-        for (x in 0 until width) {
-            val base = rowStart + (x * 4)
-            val r = frame.rgbaBytes[base].toInt() and 0xFF
-            val g = frame.rgbaBytes[base + 1].toInt() and 0xFF
-            val b = frame.rgbaBytes[base + 2].toInt() and 0xFF
-            pixels[pixelIndex++] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-        }
+private fun readPlayerFramebufferHeader(
+    path: java.nio.file.Path,
+): XeniaFramebufferHeader {
+    val headerBytes = ByteArray(PlayerFramebufferHeaderSize)
+    path.inputStream().use { input ->
+        readExactly(input, headerBytes, PlayerFramebufferHeaderSize)
     }
-    return Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
+    return XeniaFramebufferCodec.decodeHeader(headerBytes)
 }
 
-private fun playerFrameHasVisibleContent(rgbaBytes: ByteArray): Boolean {
+private fun readPlayerFramebufferSample(
+    path: java.nio.file.Path,
+    header: XeniaFramebufferHeader,
+    existing: PlayerBitmapBuffer?,
+): PlayerFramebufferSample {
+    val headerBytes = ByteArray(PlayerFramebufferHeaderSize)
+    path.inputStream().use { input ->
+        readExactly(input, headerBytes, PlayerFramebufferHeaderSize)
+        val buffer = if (existing == null ||
+            existing.bitmap.width != header.width ||
+            existing.bitmap.height != header.height ||
+            existing.sourceBytes.size != header.minimumPayloadSize
+        ) {
+            createPlayerBitmapBuffer(
+                width = header.width,
+                height = header.height,
+                payloadSize = header.minimumPayloadSize,
+            )
+        } else {
+            existing
+        }
+        readExactly(input, buffer.sourceBytes, header.minimumPayloadSize)
+        return PlayerFramebufferSample(
+            header = header,
+            buffer = buffer,
+        )
+    }
+}
+
+private fun createPlayerBitmapBuffer(
+    width: Int,
+    height: Int,
+    payloadSize: Int,
+): PlayerBitmapBuffer {
+    val scratchBytes = ByteArray(width * height * 4)
+    return PlayerBitmapBuffer(
+        bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888),
+        sourceBytes = ByteArray(payloadSize),
+        scratchBytes = scratchBytes,
+        scratchBuffer = ByteBuffer.wrap(scratchBytes),
+    )
+}
+
+private fun updatePlayerBitmapBuffer(
+    sample: PlayerFramebufferSample,
+): PlayerBitmapBuffer {
+    val header = sample.header
+    val buffer = sample.buffer
+    val width = header.width
+    val height = header.height
+    val stride = header.stride
+    val sourceBytes = buffer.sourceBytes
+    val scratchBytes = buffer.scratchBytes
+    val rowByteCount = width * 4
+    if (stride == rowByteCount) {
+        System.arraycopy(sourceBytes, 0, scratchBytes, 0, rowByteCount * height)
+    } else {
+        var destinationIndex = 0
+        for (y in 0 until height) {
+            val rowStart = y * stride
+            System.arraycopy(sourceBytes, rowStart, scratchBytes, destinationIndex, rowByteCount)
+            destinationIndex += rowByteCount
+        }
+    }
+    buffer.scratchBuffer.rewind()
+    buffer.bitmap.copyPixelsFromBuffer(buffer.scratchBuffer)
+    buffer.scratchBuffer.rewind()
+    return buffer
+}
+
+private fun updatePlayerBitmapBufferFromSharedFrame(
+    frame: SharedFrameTransportFrame,
+    existing: PlayerBitmapBuffer?,
+): PlayerBitmapBuffer {
+    val header = frame.header
+    val payloadSize = header.payloadSize
+    val buffer = if (existing == null ||
+        existing.bitmap.width != header.width ||
+        existing.bitmap.height != header.height ||
+        existing.sourceBytes.size != payloadSize
+    ) {
+        createPlayerBitmapBuffer(
+            width = header.width,
+            height = header.height,
+            payloadSize = payloadSize,
+        )
+    } else {
+        existing
+    }
+
+    System.arraycopy(frame.rgbaBytes, 0, buffer.sourceBytes, 0, payloadSize)
+    copySharedFrameRowsToBitmapBuffer(
+        rgbaBytes = buffer.sourceBytes,
+        destination = buffer.scratchBytes,
+        width = header.width,
+        height = header.height,
+        stride = header.stride,
+    )
+    buffer.scratchBuffer.rewind()
+    buffer.bitmap.copyPixelsFromBuffer(buffer.scratchBuffer)
+    buffer.scratchBuffer.rewind()
+    return buffer
+}
+
+private fun copySharedFrameRowsToBitmapBuffer(
+    rgbaBytes: ByteArray,
+    destination: ByteArray,
+    width: Int,
+    height: Int,
+    stride: Int,
+) {
+    val rowByteCount = width * 4
+    if (stride == rowByteCount) {
+        System.arraycopy(rgbaBytes, 0, destination, 0, rowByteCount * height)
+        return
+    }
+
+    var destinationIndex = 0
+    for (y in 0 until height) {
+        val rowStart = y * stride
+        System.arraycopy(rgbaBytes, rowStart, destination, destinationIndex, rowByteCount)
+        destinationIndex += rowByteCount
+    }
+}
+
+private fun playerFrameHasVisibleContent(
+    rgbaBytes: ByteArray,
+    payloadSize: Int,
+): Boolean {
     var index = 0
-    while (index + 3 < rgbaBytes.size) {
+    while (index + 3 < payloadSize) {
         val red = rgbaBytes[index].toInt() and 0xFF
         val green = rgbaBytes[index + 1].toInt() and 0xFF
         val blue = rgbaBytes[index + 2].toInt() and 0xFF
@@ -347,6 +618,21 @@ private fun playerFrameHasVisibleContent(rgbaBytes: ByteArray): Boolean {
         index += 96
     }
     return false
+}
+
+private fun readExactly(
+    input: InputStream,
+    destination: ByteArray,
+    byteCount: Int,
+) {
+    var offset = 0
+    while (offset < byteCount) {
+        val read = input.read(destination, offset, byteCount - offset)
+        require(read >= 0) {
+            "xenia_fb read truncated: expected $byteCount bytes, got $offset"
+        }
+        offset += read
+    }
 }
 
 @Composable
@@ -363,3 +649,5 @@ private fun rememberPlayerImageView(context: Context): ImageView {
         }
     }
 }
+
+private const val PlayerFramebufferHeaderSize = 32

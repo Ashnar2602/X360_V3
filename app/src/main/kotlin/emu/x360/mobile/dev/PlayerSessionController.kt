@@ -3,11 +3,14 @@ package emu.x360.mobile.dev
 import android.content.Context
 import emu.x360.mobile.dev.bootstrap.ActivePlayerSessionHandle
 import emu.x360.mobile.dev.bootstrap.AppRuntimeManager
+import emu.x360.mobile.dev.bootstrap.GuestPresentationMetricsParser
 import emu.x360.mobile.dev.bootstrap.InternalDisplayResolution
+import emu.x360.mobile.dev.bootstrap.SharedFramePresentationReader
 import emu.x360.mobile.dev.bootstrap.XeniaPresentationSettings
 import emu.x360.mobile.dev.runtime.AppSettings
 import emu.x360.mobile.dev.runtime.ExitClassification
 import emu.x360.mobile.dev.runtime.GuestRenderScaleProfile
+import emu.x360.mobile.dev.runtime.PresentationPerformanceMetrics
 import emu.x360.mobile.dev.runtime.PresentationBackend
 import emu.x360.mobile.dev.runtime.XeniaStartupStage
 import kotlinx.coroutines.CoroutineScope
@@ -24,6 +27,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 internal object PlayerSessionController {
+    private const val DiagnosticsPollIntervalMs = 1_000L
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutableState = MutableStateFlow(PlayerSessionUiState())
     private var activeSession: ActivePlayerSessionHandle? = null
@@ -37,6 +41,7 @@ internal object PlayerSessionController {
         settings: AppSettings,
     ) {
         stop(context, "replaced-session")
+        val presentationSettings = settings.toPresentationSettings()
         mutableState.value = PlayerSessionUiState(
             status = PlayerSessionStatus.LAUNCHING,
             entryId = entryId,
@@ -44,13 +49,15 @@ internal object PlayerSessionController {
             presentationBackend = settings.defaultPresentationBackend.name.lowercase(),
             renderScaleProfile = settings.defaultRenderScaleProfile.name.lowercase(),
             internalDisplayResolution = "1280x720",
+            playerPollIntervalMs = presentationSettings.playerPollIntervalMs,
+            keepLastVisibleFrame = presentationSettings.keepLastVisibleFrame,
             detail = "Starting player session",
         )
         scope.launch {
             val manager = AppRuntimeManager(context.applicationContext)
             val startResult = manager.startPlayerSession(
                 entryId = entryId,
-                presentationSettings = settings.toPresentationSettings(),
+                presentationSettings = presentationSettings,
             )
             val session = startResult.session
             if (session == null) {
@@ -61,6 +68,8 @@ internal object PlayerSessionController {
                     presentationBackend = settings.defaultPresentationBackend.name.lowercase(),
                     renderScaleProfile = settings.defaultRenderScaleProfile.name.lowercase(),
                     internalDisplayResolution = "1280x720",
+                    playerPollIntervalMs = presentationSettings.playerPollIntervalMs,
+                    keepLastVisibleFrame = presentationSettings.keepLastVisibleFrame,
                     detail = startResult.detail,
                     errorMessage = startResult.detail,
                 )
@@ -100,6 +109,30 @@ internal object PlayerSessionController {
         }
     }
 
+    fun reportVisibleMetrics(metrics: PresentationPerformanceMetrics) {
+        val session = activeSession ?: return
+        session.reportPlayerMetrics(metrics)
+        mutableState.update { current ->
+            current.copy(
+                presentationMetrics = current.presentationMetrics.copy(
+                    exportFrameCount = metrics.exportFrameCount,
+                    decodedFrameCount = metrics.decodedFrameCount,
+                    presentedFrameCount = metrics.presentedFrameCount,
+                    exportFps = metrics.exportFps,
+                    decodeFps = metrics.decodeFps,
+                    presentFps = metrics.presentFps,
+                    visibleFps = metrics.visibleFps,
+                    frameSourceStatus = metrics.frameSourceStatus,
+                ),
+                fps = metrics.visibleFps,
+            )
+        }
+    }
+
+    fun openPresentationReader(): SharedFramePresentationReader? {
+        return activeSession?.openPresentationReader()
+    }
+
     private suspend fun monitorSession(
         manager: AppRuntimeManager,
         session: ActivePlayerSessionHandle,
@@ -107,13 +140,38 @@ internal object PlayerSessionController {
     ) {
         while (currentCoroutineContext().isActive) {
             val analysis = session.readStartupAnalysis()
+            val outputPreview = session.readOutputPreview()
+            val guestMetrics = GuestPresentationMetricsParser.parse(
+                logContent = session.readGuestLog(),
+                exportedFrameCount = outputPreview.frameIndex,
+                elapsedMillis = session.elapsedMillis(),
+                frameSourceStatus = outputPreview.status,
+            )
             val currentState = mutableState.value
 
-            val streamStatus = when (analysis.stage) {
+            val stageDerivedStatus = when (analysis.stage) {
                 XeniaStartupStage.FRAME_STREAM_ACTIVE -> "active"
                 XeniaStartupStage.FIRST_FRAME_CAPTURED -> "first-frame"
                 else -> "idle"
             }
+            val streamStatus = when {
+                outputPreview.status != "idle" -> outputPreview.status
+                currentState.presentationMetrics.frameSourceStatus != "idle" -> currentState.presentationMetrics.frameSourceStatus
+                else -> stageDerivedStatus
+            }
+
+            val mergedMetrics = guestMetrics.copy(
+                decodedFrameCount = currentState.presentationMetrics.decodedFrameCount,
+                presentedFrameCount = currentState.presentationMetrics.presentedFrameCount,
+                decodeFps = currentState.presentationMetrics.decodeFps,
+                presentFps = currentState.presentationMetrics.presentFps,
+                visibleFps = currentState.presentationMetrics.visibleFps,
+                frameSourceStatus = if (currentState.presentationMetrics.frameSourceStatus != "idle") {
+                    currentState.presentationMetrics.frameSourceStatus
+                } else {
+                    guestMetrics.frameSourceStatus
+                },
+            )
 
             val nextState = PlayerSessionUiState(
                 status = if (session.isAlive()) PlayerSessionStatus.RUNNING else PlayerSessionStatus.STOPPED,
@@ -122,17 +180,20 @@ internal object PlayerSessionController {
                 titleName = analysis.titleName ?: session.entryDisplayName,
                 startupStage = analysis.stage.name.lowercase(),
                 detail = analysis.detail,
-                framebufferPath = session.framebufferPath.toString(),
+                framebufferPath = outputPreview.framebufferPath,
                 frameStreamStatus = streamStatus,
-                frameIndex = currentState.frameIndex,
-                frameWidth = currentState.frameWidth,
-                frameHeight = currentState.frameHeight,
-                frameFreshnessSeconds = currentState.frameFreshnessSeconds,
-                fps = 0f,
+                frameIndex = outputPreview.frameIndex,
+                frameWidth = outputPreview.width,
+                frameHeight = outputPreview.height,
+                frameFreshnessSeconds = outputPreview.freshnessSeconds,
+                fps = mergedMetrics.visibleFps,
                 showFpsCounter = showFpsCounter,
-                presentationBackend = PresentationBackend.FRAMEBUFFER_POLLING.name.lowercase(),
-                renderScaleProfile = GuestRenderScaleProfile.ONE.name.lowercase(),
-                internalDisplayResolution = "1280x720",
+                presentationBackend = currentState.presentationBackend,
+                renderScaleProfile = currentState.renderScaleProfile,
+                internalDisplayResolution = currentState.internalDisplayResolution,
+                playerPollIntervalMs = currentState.playerPollIntervalMs,
+                keepLastVisibleFrame = currentState.keepLastVisibleFrame,
+                presentationMetrics = mergedMetrics,
             )
             if (mutableState.value != nextState) {
                 mutableState.value = nextState
@@ -166,7 +227,7 @@ internal object PlayerSessionController {
                 return
             }
 
-            delay(120)
+            delay(maxOf(currentState.playerPollIntervalMs, DiagnosticsPollIntervalMs))
         }
     }
 }
@@ -194,9 +255,12 @@ internal data class PlayerSessionUiState(
     val frameFreshnessSeconds: Long? = null,
     val fps: Float = 0f,
     val showFpsCounter: Boolean = false,
-    val presentationBackend: String = PresentationBackend.FRAMEBUFFER_POLLING.name.lowercase(),
+    val presentationBackend: String = PresentationBackend.FRAMEBUFFER_SHARED_MEMORY.name.lowercase(),
     val renderScaleProfile: String = GuestRenderScaleProfile.ONE.name.lowercase(),
     val internalDisplayResolution: String = "1280x720",
+    val playerPollIntervalMs: Long = 120L,
+    val keepLastVisibleFrame: Boolean = true,
+    val presentationMetrics: PresentationPerformanceMetrics = PresentationPerformanceMetrics.Empty,
     val errorMessage: String? = null,
 ) {
     val hasFrame: Boolean
@@ -204,9 +268,18 @@ internal data class PlayerSessionUiState(
 }
 
 private fun AppSettings.toPresentationSettings(): XeniaPresentationSettings {
-    return XeniaPresentationSettings(
-        presentationBackend = defaultPresentationBackend,
-        guestRenderScaleProfile = GuestRenderScaleProfile.ONE,
-        internalDisplayResolution = InternalDisplayResolution(1280, 720),
-    )
+    return when (defaultPresentationBackend) {
+        PresentationBackend.HEADLESS_ONLY -> XeniaPresentationSettings.HeadlessBringup
+        PresentationBackend.FRAMEBUFFER_SHARED_MEMORY -> XeniaPresentationSettings.FramebufferSharedMemory.copy(
+            guestRenderScaleProfile = GuestRenderScaleProfile.ONE,
+            internalDisplayResolution = InternalDisplayResolution(1280, 720),
+        )
+        PresentationBackend.FRAMEBUFFER_POLLING,
+        PresentationBackend.SURFACE_BRIDGE,
+        -> XeniaPresentationSettings.FramebufferPollingPerformance.copy(
+            presentationBackend = defaultPresentationBackend,
+            guestRenderScaleProfile = GuestRenderScaleProfile.ONE,
+            internalDisplayResolution = InternalDisplayResolution(1280, 720),
+        )
+    }
 }

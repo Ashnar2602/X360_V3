@@ -99,9 +99,23 @@ Pass outcome:
 - FPS overlay support exists and is user-configurable
 - the visible framebuffer path is usable from the product shell, not only from the debug harness
 
+### Phase 9: Universal Android display baseline
+
+Status: complete
+
+Pass outcome:
+
+- the normal player path uses `FRAMEBUFFER_SHARED_MEMORY`
+- visible rendering no longer depends on file polling cadence
+- the fullscreen player consumes the app-owned shared-memory transport on:
+  - `AYN Odin2 Mini`
+  - `Odin3`
+- title display is no longer coupled to ISO location; descriptor-backed title portals remain the normal path
+- `FRAMEBUFFER_POLLING` survives only as a debug/regression backend
+
 ## Next phases
 
-### Phase 9: Rebuild interaction layers
+### Phase 10: Rebuild interaction layers
 
 Test objective:
 
@@ -112,7 +126,7 @@ Pass criteria:
 - input and audio attach without destabilizing the running title
 - regressions can still be attributed cleanly by subsystem
 
-### Phase 10: Revalidate historical game cases
+### Phase 11: Revalidate historical game cases
 
 Priority titles:
 
@@ -163,8 +177,8 @@ Pass criteria:
 
 ## Reconstruction priorities from here
 
-1. Preserve the working Phase 5B baseline and its artifacts.
-2. Keep the visible framebuffer-polling player path stable on both devices.
+1. Preserve the working Phase 6A baseline and its artifacts.
+2. Keep the shared-memory player path stable on both devices.
 3. Add interaction layers only after visible output is diagnosable.
 4. Keep exact observations separate from guesses.
 5. Only then chase performance tuning.

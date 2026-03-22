@@ -2,6 +2,7 @@ package emu.x360.mobile.dev.bootstrap
 
 import com.google.common.truth.Truth.assertThat
 import emu.x360.mobile.dev.runtime.GuestRenderScaleProfile
+import emu.x360.mobile.dev.runtime.MesaRuntimeBranch
 import emu.x360.mobile.dev.runtime.PresentationBackend
 import emu.x360.mobile.dev.runtime.RuntimeDirectories
 import emu.x360.mobile.dev.runtime.XeniaStartupStage
@@ -46,7 +47,26 @@ class XeniaBringupModelTest {
 
         assertThat(args.last()).isEqualTo("/mnt/library/dante.iso")
         assertThat(args).contains("--apu=sdl")
-        assertThat(args).contains("--readback_resolve=full")
+        assertThat(args).contains("--readback_resolve=fast")
+        assertThat(args).contains("--x360_framebuffer_fps=60")
+        assertThat(args).contains("--x360_presentation_backend=framebuffer_shared_memory")
+        assertThat(args).doesNotContain("--x360_framebuffer_path=/data/user/0/emu.x360.mobile.dev/files/rootfs/tmp/xenia_fb")
+    }
+
+    @Test
+    fun `xenia performance title boot args use sdl audio fast readback and sixty fps export`() {
+        val args = buildXeniaBringupArgs(
+            directories = directories,
+            launchMode = XeniaLaunchMode.TitleBoot(
+                entryId = "dante",
+                guestPath = "/mnt/library/dante.iso",
+            ),
+            presentationSettings = XeniaPresentationSettings.FramebufferPollingPerformance,
+        )
+
+        assertThat(args).contains("--apu=sdl")
+        assertThat(args).contains("--readback_resolve=fast")
+        assertThat(args).contains("--x360_framebuffer_fps=60")
     }
 
     @Test
@@ -78,6 +98,46 @@ class XeniaBringupModelTest {
         assertThat(config).contains("content_root = \"/tmp/x360-v3/xenia/content\"")
         assertThat(config).contains("cache_root = \"/tmp/x360-v3/xenia/cache-host\"")
         assertThat(config).contains("storage_root = \"/tmp/x360-v3/xenia/storage\"")
+    }
+
+    @Test
+    fun `xenia title boot config keeps sdl audio in performance mode`() {
+        val config = buildXeniaConfigText(
+            directories = directories,
+            launchMode = XeniaLaunchMode.TitleBoot(
+                entryId = "dante",
+                guestPath = "/mnt/library/dante.iso",
+            ),
+            presentationSettings = XeniaPresentationSettings.FramebufferPollingPerformance,
+        )
+
+        assertThat(config).contains("apu = \"sdl\"")
+        assertThat(config).contains("mount_cache = true")
+    }
+
+    @Test
+    fun `performance settings fall back to full readback on mesa25`() {
+        val resolved = XeniaPresentationSettings.FramebufferPollingPerformance
+            .resolveForMesaBranch(MesaRuntimeBranch.MESA25)
+
+        assertThat(resolved.readbackResolveMode).isEqualTo(XeniaReadbackResolveMode.FULL)
+        assertThat(resolved.apuBackend).isEqualTo(XeniaApuBackend.SDL)
+    }
+
+    @Test
+    fun `performance settings keep fast readback on mesa26`() {
+        val resolved = XeniaPresentationSettings.FramebufferPollingPerformance
+            .resolveForMesaBranch(MesaRuntimeBranch.MESA26)
+
+        assertThat(resolved.readbackResolveMode).isEqualTo(XeniaReadbackResolveMode.FAST)
+    }
+
+    @Test
+    fun `shared memory settings force full readback on mesa26`() {
+        val resolved = XeniaPresentationSettings.FramebufferSharedMemory
+            .resolveForMesaBranch(MesaRuntimeBranch.MESA26)
+
+        assertThat(resolved.readbackResolveMode).isEqualTo(XeniaReadbackResolveMode.FULL)
     }
 
     @Test
@@ -164,7 +224,25 @@ class XeniaBringupModelTest {
     }
 
     @Test
-    fun `title boot defaults to framebuffer polling at one x render scale`() {
+    fun `title boot defaults to shared memory at one x render scale`() {
+        val args = buildXeniaBringupArgs(
+            directories = directories,
+            launchMode = XeniaLaunchMode.TitleBoot(
+                entryId = "dante",
+                guestPath = "/mnt/library/dante.iso",
+            ),
+        )
+
+        assertThat(args).contains("--x360_presentation_backend=framebuffer_shared_memory")
+        assertThat(args).contains("--internal_display_resolution_x=1280")
+        assertThat(args).contains("--internal_display_resolution_y=720")
+        assertThat(args).contains("--draw_resolution_scale_x=1")
+        assertThat(args).contains("--draw_resolution_scale_y=1")
+        assertThat(args).doesNotContain("--x360_framebuffer_path=/data/user/0/emu.x360.mobile.dev/files/rootfs/tmp/xenia_fb")
+    }
+
+    @Test
+    fun `polling backend keeps framebuffer path for debug and regression`() {
         val args = buildXeniaBringupArgs(
             directories = directories,
             launchMode = XeniaLaunchMode.TitleBoot(
@@ -179,10 +257,6 @@ class XeniaBringupModelTest {
         )
 
         assertThat(args).contains("--x360_presentation_backend=framebuffer_polling")
-        assertThat(args).contains("--internal_display_resolution_x=1280")
-        assertThat(args).contains("--internal_display_resolution_y=720")
-        assertThat(args).contains("--draw_resolution_scale_x=1")
-        assertThat(args).contains("--draw_resolution_scale_y=1")
         assertThat(args).contains("--x360_framebuffer_path=/data/user/0/emu.x360.mobile.dev/files/rootfs/tmp/xenia_fb")
     }
 

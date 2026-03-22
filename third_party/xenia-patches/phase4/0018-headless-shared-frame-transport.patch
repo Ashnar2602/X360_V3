@@ -1,0 +1,383 @@
+diff --git a/src/xenia/app/xenia_main.cc b/src/xenia/app/xenia_main.cc
+index 3ebf9e2..60e95c7 100644
+--- a/src/xenia/app/xenia_main.cc
++++ b/src/xenia/app/xenia_main.cc
+@@ -10,15 +10,21 @@
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
++#include <cerrno>
+ #include <chrono>
+ #include <cctype>
++#include <cstring>
+ #include <cstdlib>
++#include <fcntl.h>
+ #include <fstream>
+ #include <functional>
+ #include <memory>
+ #include <string>
++#include <sys/mman.h>
++#include <sys/stat.h>
+ #include <system_error>
+ #include <thread>
++#include <unistd.h>
+ 
+ #include "xenia/app/discord/discord_presence.h"
+ #include "xenia/app/emulator_window.h"
+@@ -143,7 +149,8 @@ DECLARE_bool(widescreen);
+ DEFINE_string(
+     x360_presentation_backend, "headless_only",
+     "Presentation backend contract for Android/X360 reconstruction. Use: "
+-    "[headless_only, framebuffer_polling, surface_bridge]",
++    "[headless_only, framebuffer_polling, framebuffer_shared_memory, "
++    "surface_bridge]",
+     "General");
+ DEFINE_path(
+     x360_framebuffer_path, "/tmp/xenia_fb",
+@@ -183,6 +190,15 @@ bool IsFramebufferPollingBackendEnabled() {
+          "framebuffer_polling";
+ }
+ 
++bool IsSharedMemoryBackendEnabled() {
++  return ToLowerAscii(cvars::x360_presentation_backend) ==
++         "framebuffer_shared_memory";
++}
++
++bool IsFrameCaptureBackendEnabled() {
++  return IsFramebufferPollingBackendEnabled() || IsSharedMemoryBackendEnabled();
++}
++
+ bool PromoteFramebufferTempFile(const std::filesystem::path& temp_path,
+                                 const std::filesystem::path& target_path) {
+   std::error_code error_code;
+@@ -313,6 +329,263 @@ uint64_t ComputeFramebufferExportSignature(const xe::ui::RawImage& image) {
+   return hash;
+ }
+ 
++constexpr uint32_t kX360SharedFrameHeaderSize = 64;
++constexpr uint32_t kX360SharedFrameVersion = 1;
++constexpr uint32_t kX360SharedFramePixelFormatRgba8888Srgb = 1;
++constexpr uint32_t kX360SharedFrameColorSpaceSrgb = 1;
++
++struct X360SharedFrameHeader {
++  std::array<char, 4> magic = {'X', 'S', 'M', '1'};
++  uint32_t header_size = kX360SharedFrameHeaderSize;
++  uint32_t version = kX360SharedFrameVersion;
++  uint32_t width = 0;
++  uint32_t height = 0;
++  uint32_t stride = 0;
++  uint32_t pixel_format = kX360SharedFramePixelFormatRgba8888Srgb;
++  uint32_t color_space = kX360SharedFrameColorSpaceSrgb;
++  uint32_t slot_count = 0;
++  uint32_t slot_size = 0;
++  uint32_t active_slot = 0;
++  uint32_t reserved = 0;
++  uint64_t frame_index = uint64_t(-1);
++  uint64_t publish_sequence = 0;
++};
++static_assert(sizeof(X360SharedFrameHeader) == kX360SharedFrameHeaderSize);
++
++struct X360SharedFrameTransport {
++  int mapping_fd = -1;
++  int signal_fd = -1;
++  X360SharedFrameHeader header = {};
++};
++
++int ParseInheritedFdEnv(const char* env_name) {
++  const char* raw_value = std::getenv(env_name);
++  if (!raw_value || !raw_value[0]) {
++    return -1;
++  }
++  char* parse_end = nullptr;
++  errno = 0;
++  long parsed = std::strtol(raw_value, &parse_end, 10);
++  if (errno != 0 || parse_end == raw_value ||
++      (parse_end && *parse_end != '\0') || parsed < 0 ||
++      parsed > 0x7fffffffL) {
++    XELOGE("Invalid inherited fd '{}' for {}", raw_value, env_name);
++    return -1;
++  }
++  return int(parsed);
++}
++
++void CloseSharedFrameTransport(X360SharedFrameTransport& transport) {
++  if (transport.mapping_fd >= 0) {
++    close(transport.mapping_fd);
++  }
++  if (transport.signal_fd >= 0) {
++    close(transport.signal_fd);
++  }
++  transport = {};
++}
++
++bool OpenSharedFrameTransport(X360SharedFrameTransport& transport) {
++  transport.mapping_fd = ParseInheritedFdEnv("X360_FRAME_TRANSPORT_SHM_FD");
++  const char* transport_path = std::getenv("X360_FRAME_TRANSPORT_PATH");
++  if (transport.mapping_fd >= 0) {
++    errno = 0;
++    if (fcntl(transport.mapping_fd, F_GETFD, 0) < 0 && errno == EBADF) {
++      XELOGW("Shared frame transport fd {} is invalid, falling back to path",
++             transport.mapping_fd);
++      transport.mapping_fd = -1;
++    }
++  }
++  if (transport.mapping_fd < 0) {
++    if (!transport_path || !transport_path[0]) {
++      XELOGE("Missing shared frame transport mapping");
++      CloseSharedFrameTransport(transport);
++      return false;
++    }
++    transport.mapping_fd = open(transport_path, O_RDWR | O_CLOEXEC);
++    if (transport.mapping_fd < 0) {
++      XELOGE("Failed to open shared frame transport path {}: errno={}",
++             transport_path, errno);
++      CloseSharedFrameTransport(transport);
++      return false;
++    }
++  }
++
++  transport.signal_fd = ParseInheritedFdEnv("X360_FRAME_TRANSPORT_SIGNAL_FD");
++  if (transport.signal_fd >= 0) {
++    errno = 0;
++    if (fcntl(transport.signal_fd, F_GETFD, 0) < 0 && errno == EBADF) {
++      XELOGW(
++          "Shared frame transport signal fd {} is invalid; continuing without "
++          "notifications",
++          transport.signal_fd);
++      transport.signal_fd = -1;
++    }
++  }
++  if (transport.signal_fd >= 0) {
++    const int signal_flags = fcntl(transport.signal_fd, F_GETFL, 0);
++    if (signal_flags >= 0) {
++      fcntl(transport.signal_fd, F_SETFL, signal_flags | O_NONBLOCK);
++    }
++  }
++
++  X360SharedFrameHeader header;
++  ssize_t header_bytes_read =
++      pread(transport.mapping_fd, &header, sizeof(header), 0);
++  if (header_bytes_read != ssize_t(sizeof(header))) {
++    XELOGE("Failed to read shared frame transport header: bytes={} errno={}",
++           header_bytes_read, errno);
++    CloseSharedFrameTransport(transport);
++    return false;
++  }
++  transport.header = header;
++
++  if (transport.header.magic[0] != 'X' || transport.header.magic[1] != 'S' ||
++      transport.header.magic[2] != 'M' || transport.header.magic[3] != '1' ||
++      transport.header.header_size != kX360SharedFrameHeaderSize ||
++      transport.header.version != kX360SharedFrameVersion ||
++      transport.header.slot_count < 2 || transport.header.slot_size == 0) {
++    XELOGE("Shared frame transport header is invalid");
++    CloseSharedFrameTransport(transport);
++    return false;
++  }
++
++  struct stat mapping_stat;
++  if (fstat(transport.mapping_fd, &mapping_stat) != 0 ||
++      mapping_stat.st_size <= 0) {
++    XELOGE("Shared frame transport fd {} has invalid size",
++           transport.mapping_fd);
++    CloseSharedFrameTransport(transport);
++    return false;
++  }
++
++  const size_t minimum_mapping_size =
++      kX360SharedFrameHeaderSize +
++      size_t(transport.header.slot_count) * size_t(transport.header.slot_size);
++  if (size_t(mapping_stat.st_size) < minimum_mapping_size) {
++    XELOGE(
++        "Shared frame transport mapping too small: size={} expected_at_least={}",
++        size_t(mapping_stat.st_size), minimum_mapping_size);
++    CloseSharedFrameTransport(transport);
++    return false;
++  }
++  return true;
++}
++
++bool SignalSharedFrameTransport(const X360SharedFrameTransport& transport) {
++  if (transport.signal_fd < 0) {
++    return true;
++  }
++  uint8_t signal_byte = 1;
++  ssize_t result;
++  do {
++    result = write(transport.signal_fd, &signal_byte, sizeof(signal_byte));
++  } while (result < 0 && errno == EINTR);
++  if (result == ssize_t(sizeof(signal_byte))) {
++    return true;
++  }
++  if (result < 0 &&
++      (errno == EAGAIN || errno == EWOULDBLOCK || errno == EPIPE)) {
++    return false;
++  }
++  return false;
++}
++
++bool PwriteAll(int fd, const void* data, size_t size, off_t offset) {
++  const uint8_t* source = reinterpret_cast<const uint8_t*>(data);
++  size_t written = 0;
++  while (written < size) {
++    ssize_t result =
++        pwrite(fd, source + written, size - written, offset + off_t(written));
++    if (result < 0) {
++      if (errno == EINTR) {
++        continue;
++      }
++      return false;
++    }
++    written += size_t(result);
++  }
++  return true;
++}
++
++bool PwriteZeroFill(int fd, size_t size, off_t offset) {
++  std::array<uint8_t, 4096> zeros = {};
++  size_t written = 0;
++  while (written < size) {
++    const size_t chunk_size = std::min(zeros.size(), size - written);
++    if (!PwriteAll(fd, zeros.data(), chunk_size, offset + off_t(written))) {
++      return false;
++    }
++    written += chunk_size;
++  }
++  return true;
++}
++
++bool PublishSharedFrameTransport(X360SharedFrameTransport& transport,
++                                 const xe::ui::RawImage& image,
++                                 uint64_t frame_index) {
++  if (transport.mapping_fd < 0 || !image.width ||
++      !image.height || image.stride < size_t(image.width) * 4 ||
++      image.data.empty()) {
++    return false;
++  }
++
++  const size_t payload_size =
++      image.stride * size_t(image.height - 1) + size_t(image.width) * 4;
++  if (payload_size > size_t(transport.header.slot_size)) {
++    XELOGE("Shared frame payload too large: payload={} slot_size={}",
++           payload_size, transport.header.slot_size);
++    return false;
++  }
++
++  uint64_t sequence = transport.header.publish_sequence;
++  if (sequence & 1ull) {
++    ++sequence;
++  }
++  transport.header.publish_sequence = sequence + 1ull;
++  if (!PwriteAll(transport.mapping_fd, &transport.header,
++                 sizeof(transport.header), 0)) {
++    XELOGE("Failed to publish shared frame transport in-progress header: errno={}",
++           errno);
++    return false;
++  }
++
++  const uint32_t active_slot =
++      uint32_t((frame_index - 1) % uint64_t(transport.header.slot_count));
++  const off_t slot_offset =
++      off_t(kX360SharedFrameHeaderSize) +
++      off_t(active_slot) * off_t(transport.header.slot_size);
++  if (!PwriteAll(transport.mapping_fd, image.data.data(), payload_size,
++                 slot_offset)) {
++    XELOGE("Failed to publish shared frame payload: errno={}", errno);
++    return false;
++  }
++  if (size_t(transport.header.slot_size) > payload_size &&
++      !PwriteZeroFill(transport.mapping_fd,
++                      size_t(transport.header.slot_size) - payload_size,
++                      slot_offset + off_t(payload_size))) {
++    XELOGE("Failed to zero-fill shared frame payload tail: errno={}", errno);
++    return false;
++  }
++
++  transport.header.width = image.width;
++  transport.header.height = image.height;
++  transport.header.stride = uint32_t(image.stride);
++  transport.header.pixel_format = kX360SharedFramePixelFormatRgba8888Srgb;
++  transport.header.color_space = kX360SharedFrameColorSpaceSrgb;
++  transport.header.active_slot = active_slot;
++  transport.header.frame_index = frame_index;
++
++  transport.header.publish_sequence = sequence + 2ull;
++  if (!PwriteAll(transport.mapping_fd, &transport.header,
++                 sizeof(transport.header), 0)) {
++    XELOGE("Failed to publish shared frame transport header: errno={}", errno);
++    return false;
++  }
++  SignalSharedFrameTransport(transport);
++  return true;
++}
++
+ }  // namespace
+ 
+ namespace xe {
+@@ -1023,7 +1296,7 @@ void EmulatorApp::ShutdownEmulatorThreadFromUIThread() {
+ 
+ void EmulatorApp::StartFramebufferExportThread() {
+   StopFramebufferExportThread();
+-  if (!cvars::headless || !IsFramebufferPollingBackendEnabled()) {
++  if (!cvars::headless || !IsFrameCaptureBackendEnabled()) {
+     return;
+   }
+   framebuffer_export_thread_quit_requested_.store(false,
+@@ -1044,15 +1317,29 @@ void EmulatorApp::FramebufferExportThreadMain() {
+   xe::threading::set_name("XeniaFrameExport");
+   Profiler::ThreadEnter("XeniaFrameExport");
+ 
++  const bool use_shared_transport = IsSharedMemoryBackendEnabled();
+   std::filesystem::path framebuffer_path = cvars::x360_framebuffer_path;
+-  if (!framebuffer_path.is_absolute() && emulator_) {
++  X360SharedFrameTransport shared_transport;
++  if (use_shared_transport) {
++    if (!OpenSharedFrameTransport(shared_transport)) {
++      XELOGE("Shared frame transport initialization failed");
++      return;
++    }
++  } else if (!framebuffer_path.is_absolute() && emulator_) {
+     framebuffer_path = emulator_->storage_root() / framebuffer_path;
+   }
+-  const uint32_t export_fps = std::max(uint32_t(1), cvars::x360_framebuffer_fps);
++  const uint32_t export_fps =
++      std::max(uint32_t(1), cvars::x360_framebuffer_fps);
+   const auto export_interval =
+       std::chrono::milliseconds(std::max(uint32_t(1), 1000u / export_fps));
+-  XELOGI("Headless framebuffer polling enabled: path={} fps={}",
+-         framebuffer_path, export_fps);
++  if (use_shared_transport) {
++    XELOGI("Headless shared frame transport enabled: slots={} slot_size={} fps={}",
++           shared_transport.header.slot_count, shared_transport.header.slot_size,
++           export_fps);
++  } else {
++    XELOGI("Headless framebuffer polling enabled: path={} fps={}",
++           framebuffer_path, export_fps);
++  }
+ 
+   uint64_t frame_index = 0;
+   uint64_t last_export_signature = 0;
+@@ -1098,7 +1385,12 @@ void EmulatorApp::FramebufferExportThreadMain() {
+     }
+ 
+     ++frame_index;
+-    if (!WriteFramebufferExport(framebuffer_path, image, frame_index)) {
++    const bool exported = use_shared_transport
++                              ? PublishSharedFrameTransport(shared_transport,
++                                                            image, frame_index)
++                              : WriteFramebufferExport(framebuffer_path, image,
++                                                       frame_index);
++    if (!exported) {
+       consecutive_exports = 0;
+       std::this_thread::sleep_for(export_interval);
+       continue;
+@@ -1125,6 +1417,9 @@ void EmulatorApp::FramebufferExportThreadMain() {
+ 
+     std::this_thread::sleep_for(export_interval);
+   }
++  if (use_shared_transport) {
++    CloseSharedFrameTransport(shared_transport);
++  }
+ }
+ 
+ }  // namespace app

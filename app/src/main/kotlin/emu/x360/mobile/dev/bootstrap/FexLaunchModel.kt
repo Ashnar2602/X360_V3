@@ -15,6 +15,9 @@ internal fun buildFexLaunchSpec(
     request: GuestLaunchRequest,
 ): FexLaunchSpec {
     val environment = request.environment.toMutableMap()
+    request.inheritedFileDescriptors.forEach { descriptor ->
+        environment[descriptor.name] = descriptor.fd.toString()
+    }
     environment["HOME"] = directories.baseDir.toString()
     environment["FEX_ROOTFS"] = directories.rootfs.toString()
     environment["FEX_DISABLESANDBOX"] = "1"

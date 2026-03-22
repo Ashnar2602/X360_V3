@@ -76,7 +76,7 @@ data class GameOptionsUi(
                     null -> "inherit global"
                 },
                 presentationBackendOverrideLabel = options.presentationBackendOverride?.name?.lowercase()?.replace('_', ' ')
-                    ?: "inherit global (framebuffer polling)",
+                    ?: "inherit global (framebuffer shared memory)",
                 note = options.note ?: "Per-game overrides are reserved for a future milestone.",
             )
         }

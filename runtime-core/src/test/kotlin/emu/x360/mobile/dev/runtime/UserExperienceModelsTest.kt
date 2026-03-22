@@ -10,7 +10,7 @@ class UserExperienceModelsTest {
 
         assertThat(decoded.showFpsCounter).isFalse()
         assertThat(decoded.defaultRenderScaleProfile).isEqualTo(GuestRenderScaleProfile.ONE)
-        assertThat(decoded.defaultPresentationBackend).isEqualTo(PresentationBackend.FRAMEBUFFER_POLLING)
+        assertThat(decoded.defaultPresentationBackend).isEqualTo(PresentationBackend.FRAMEBUFFER_SHARED_MEMORY)
     }
 
     @Test

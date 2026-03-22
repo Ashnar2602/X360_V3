@@ -90,13 +90,36 @@ Use:
 ### Active bring-up baseline
 
 - `canary_experimental@c50b036178108f87cb0acaf3691a7c3caf07820f`
-- patch set: `phase5a-framebuffer-polling-v11`
+- patch set: `phase6a-shared-frame-v2`
 
 Reason:
 
 - upstream Canary is active and materially newer than the forensic pin
 - the goal is a working Android/FEX/Linux bring-up, not archaeological replay at all costs
-- the current repo-owned patch queue captures the POSIX/headless fixes, non-fatal cache handling, and framebuffer-polling presentation path needed for the visible-player milestone
+- the current repo-owned patch queue captures the POSIX/headless fixes, non-fatal cache handling, the legacy framebuffer-polling fallback, and the shared-memory presentation path now used by the normal fullscreen player
+
+## Presentation strategy
+
+### Active baseline
+
+- default backend: `FRAMEBUFFER_SHARED_MEMORY`
+- debug fallback: `FRAMEBUFFER_POLLING`
+- future optimization track: `SURFACE_BRIDGE`
+
+Reason:
+
+- the universal display goal should not depend on filesystem polling cadence
+- the shared-memory path is app-owned and device-agnostic at the display layer
+- the polling path remains valuable for regressions and side-by-side debugging
+
+### Important compatibility rule
+
+- shared-memory player launches are forced to `readback_resolve=full`
+
+Reason:
+
+- Odin3 exported frames reliably only once the shared-memory backend used `full` readback
+- keeping this rule explicit is better than silently rediscovering the same device split later
 
 ### Local development loop
 

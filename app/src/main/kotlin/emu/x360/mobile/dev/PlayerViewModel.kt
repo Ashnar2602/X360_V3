@@ -1,7 +1,9 @@
 package emu.x360.mobile.dev
 
 import android.app.Application
+import emu.x360.mobile.dev.bootstrap.SharedFramePresentationReader
 import androidx.lifecycle.AndroidViewModel
+import emu.x360.mobile.dev.runtime.PresentationPerformanceMetrics
 import emu.x360.mobile.dev.runtime.AppSettings
 import kotlinx.coroutines.flow.StateFlow
 
@@ -25,6 +27,12 @@ internal class PlayerViewModel(
             reason = reason,
         )
     }
+
+    fun reportVisibleMetrics(metrics: PresentationPerformanceMetrics) {
+        PlayerSessionController.reportVisibleMetrics(metrics)
+    }
+
+    fun openPresentationReader(): SharedFramePresentationReader? = PlayerSessionController.openPresentationReader()
 
     fun currentSettings(): AppSettings = appSettingsStore.load()
 }

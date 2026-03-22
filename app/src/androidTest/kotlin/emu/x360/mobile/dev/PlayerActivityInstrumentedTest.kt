@@ -1,19 +1,23 @@
 package emu.x360.mobile.dev
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.google.common.truth.Truth.assertWithMessage
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import emu.x360.mobile.dev.bootstrap.AppRuntimeManager
+import emu.x360.mobile.dev.runtime.PresentationBackend
+import emu.x360.mobile.dev.runtime.SharedFrameTransportCodec
 import emu.x360.mobile.dev.runtime.XeniaFramebufferCodec
 import java.io.File
+import java.io.RandomAccessFile
+import java.nio.channels.FileChannel
 import java.nio.file.Path
+import java.nio.file.Paths
 import kotlin.math.max
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -48,47 +52,134 @@ class PlayerActivityInstrumentedTest {
             emu.x360.mobile.dev.runtime.AppSettings(showFpsCounter = showFpsCounter),
         )
 
-        val framebufferPath = context.filesDir.toPath().resolve("rootfs/tmp/xenia_fb")
         val scenario = ActivityScenario.launch<PlayerActivity>(PlayerActivity.intent(context, entry.id))
         try {
-            val passed = waitForVisiblePlayerFrame(framebufferPath)
+            val diagnostics = waitForVisiblePlayerDiagnostics(
+                manager = manager,
+                minimumVisibleFps = 1f,
+            )
             assertWithMessage(
                 buildString {
                     appendLine("Expected PlayerActivity to render non-black content.")
                     appendLine("showFpsCounter=$showFpsCounter")
                     appendLine("isoPath=$resolvedIsoPath")
                     appendLine("entryId=${entry.id}")
-                    appendLine("framebufferExists=${framebufferPath.toFile().exists()}")
-                    appendLine("framebufferSize=${framebufferPath.toFile().takeIf { it.exists() }?.length() ?: -1}")
+                    appendLine("presentationBackend=${diagnostics.presentationBackend}")
+                    appendLine("framebufferPath=${diagnostics.framebufferPath}")
+                    appendLine("visibleFps=${diagnostics.visibleFps}")
+                    appendLine("exportFps=${diagnostics.exportFps}")
+                    appendLine("frameStreamStatus=${diagnostics.frameStreamStatus}")
+                    appendLine("stage=${diagnostics.lastStartupStage}")
                 },
-            ).that(passed).isTrue()
+            ).that(diagnostics.visibleFps).isGreaterThan(0f)
+            assertThat(diagnostics.frameStreamStatus).isEqualTo("active")
         } finally {
             scenario.onActivity { it.finish() }
             scenario.close()
         }
     }
 
-    private fun waitForVisiblePlayerFrame(framebufferPath: Path): Boolean {
-        repeat(20) {
-            Thread.sleep(2_000L)
-            val framebufferHasVisibleContent = runCatching {
-                val frame = XeniaFramebufferCodec.readFrame(framebufferPath)
-                countNonBlackPixels(frame.rgbaBytes, stepPixels = 24) > 0
-            }.getOrDefault(false)
-            if (!framebufferHasVisibleContent) {
-                return@repeat
-            }
+    @Test
+    fun playerActivityUsesSharedMemoryBackendForVisibleFrames() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val arguments = InstrumentationRegistry.getArguments()
+        assumeTrue(
+            "Player smoke is opt-in and requires the Dante ISO on-device",
+            arguments.containsKey("dante_uri_mode") || arguments.getString("enable_dante_smoke") == "1",
+        )
 
-            val screenshot = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
-            if (screenshot != null) {
-                screenshot.useBitmap { bitmap ->
-                    if (countNonBlackPixelsInCentralViewport(bitmap, stepPixels = 24) > 0) {
-                        return true
-                    }
-                }
+        val isoPath = findDanteIso()
+        assumeTrue("Dante's Inferno ISO not found on this device", isoPath != null)
+        val resolvedIsoPath = isoPath!!
+        val launchUri = buildDocumentUri(resolvedIsoPath) ?: Uri.fromFile(resolvedIsoPath.toFile())
+
+        val manager = AppRuntimeManager(context)
+        manager.install()
+        val imported = withShellIdentity {
+            manager.importIso(launchUri)
+        }
+        val entry = imported.gameLibraryEntries.firstOrNull { it.displayName.lowercase().contains("dante") }
+            ?: imported.gameLibraryEntries.first()
+
+        AppSettingsStore(context.filesDir.toPath()).save(
+            emu.x360.mobile.dev.runtime.AppSettings(showFpsCounter = true),
+        )
+
+        val scenario = ActivityScenario.launch<PlayerActivity>(PlayerActivity.intent(context, entry.id))
+        try {
+            val diagnostics = waitForVisiblePlayerDiagnostics(
+                manager = manager,
+                minimumVisibleFps = 1f,
+            )
+            assertWithMessage(
+                buildString {
+                    appendLine("Expected the normal player path to use the shared-memory presentation backend.")
+                    appendLine("isoPath=$resolvedIsoPath")
+                    appendLine("presentationBackend=${diagnostics.presentationBackend}")
+                    appendLine("framebufferPath=${diagnostics.framebufferPath}")
+                    appendLine("visibleFps=${diagnostics.visibleFps}")
+                    appendLine("exportFps=${diagnostics.exportFps}")
+                    appendLine("captureFps=${diagnostics.captureFps}")
+                    appendLine("swapFps=${diagnostics.swapFps}")
+                    appendLine("stage=${diagnostics.lastStartupStage}")
+                    appendLine("frameStreamStatus=${diagnostics.frameStreamStatus}")
+                    appendLine("detail=${diagnostics.lastStartupDetail}")
+                },
+            ).that(diagnostics.presentationBackend)
+                .isEqualTo(PresentationBackend.FRAMEBUFFER_SHARED_MEMORY.name.lowercase())
+            assertThat(diagnostics.framebufferPath).contains("/presentation/session-")
+            assertThat(diagnostics.frameStreamStatus).isEqualTo("active")
+            assertThat(diagnostics.visibleFps).isGreaterThan(0f)
+        } finally {
+            scenario.onActivity { it.finish() }
+            scenario.close()
+        }
+    }
+
+    private fun waitForVisiblePlayerDiagnostics(
+        manager: AppRuntimeManager,
+        minimumVisibleFps: Float,
+    ): emu.x360.mobile.dev.bootstrap.XeniaDiagnostics {
+        repeat(45) {
+            Thread.sleep(1_000L)
+            val diagnostics = manager.snapshot(lastAction = "player-visible-check").xeniaDiagnostics
+            val framebufferHasVisibleContent = hasVisibleFrameContent(
+                backend = diagnostics.presentationBackend,
+                transportPath = diagnostics.framebufferPath,
+            )
+            if (framebufferHasVisibleContent &&
+                diagnostics.frameStreamStatus == "active" &&
+                diagnostics.lastFrameWidth > 0 &&
+                diagnostics.lastFrameHeight > 0 &&
+                diagnostics.visibleFps >= minimumVisibleFps
+            ) {
+                return diagnostics
             }
         }
-        return false
+        return manager.snapshot(lastAction = "player-visible-check-final").xeniaDiagnostics
+    }
+
+    private fun hasVisibleFrameContent(
+        backend: String,
+        transportPath: String,
+    ): Boolean {
+        if (transportPath.isBlank()) {
+            return false
+        }
+        return when (backend) {
+            PresentationBackend.FRAMEBUFFER_SHARED_MEMORY.name.lowercase() -> runCatching {
+                RandomAccessFile(File(transportPath), "r").use { file ->
+                    val mapped = file.channel.map(FileChannel.MapMode.READ_ONLY, 0L, file.length())
+                    val frame = SharedFrameTransportCodec.tryCopyLatestFrame(mapped, null)
+                    frame != null && countNonBlackPixels(frame.rgbaBytes, stepPixels = 24) > 0
+                }
+            }.getOrDefault(false)
+
+            else -> runCatching {
+                val frame = XeniaFramebufferCodec.readFrame(Paths.get(transportPath))
+                countNonBlackPixels(frame.rgbaBytes, stepPixels = 24) > 0
+            }.getOrDefault(false)
+        }
     }
 
     private fun buildDocumentUri(path: Path): Uri? {
@@ -213,41 +304,5 @@ class PlayerActivityInstrumentedTest {
             index += byteStep
         }
         return nonBlackPixels
-    }
-
-    private fun countNonBlackPixelsInCentralViewport(
-        bitmap: Bitmap,
-        stepPixels: Int,
-    ): Int {
-        val startX = bitmap.width / 5
-        val endX = bitmap.width - startX
-        val startY = bitmap.height / 4
-        val endY = bitmap.height - (bitmap.height / 5)
-        var nonBlackPixels = 0
-        val step = max(1, stepPixels)
-        var y = startY
-        while (y < endY) {
-            var x = startX
-            while (x < endX) {
-                val pixel = bitmap.getPixel(x, y)
-                val red = pixel shr 16 and 0xFF
-                val green = pixel shr 8 and 0xFF
-                val blue = pixel and 0xFF
-                if (red != 0 || green != 0 || blue != 0) {
-                    nonBlackPixels += 1
-                }
-                x += step
-            }
-            y += step
-        }
-        return nonBlackPixels
-    }
-
-    private inline fun Bitmap.useBitmap(block: (Bitmap) -> Unit) {
-        try {
-            block(this)
-        } finally {
-            recycle()
-        }
     }
 }

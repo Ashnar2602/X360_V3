@@ -1,16 +1,8 @@
-From c523fdf1f1d2f5ce6c02b1cc7decb3d2e676f9a2 Mon Sep 17 00:00:00 2001
-From: Codex <codex@example.invalid>
-Date: Fri, 20 Mar 2026 22:24:00 +0100
-Subject: [PATCH] headless enable offscreen presenter for framebuffer polling
-
----
- src/xenia/emulator.cc | 11 ++++++++++-
- 1 file changed, 10 insertions(+), 1 deletion(-)
-
 diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
+index 0898820..52bf885 100644
 --- a/src/xenia/emulator.cc
 +++ b/src/xenia/emulator.cc
-@@ -88,6 +88,8 @@ DEFINE_bool(allow_game_relative_writes, false,
+@@ -89,6 +89,8 @@ DEFINE_bool(allow_game_relative_writes, false,
  DECLARE_int32(user_language);
  
  DECLARE_bool(allow_plugins);
@@ -19,17 +11,18 @@ diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
  
  DEFINE_int32(priority_class, 0,
               "Forces Xenia to use different process priority than default one. "
-@@ -320,10 +322,19 @@ X_STATUS Emulator::Setup(
+@@ -320,10 +322,20 @@ X_STATUS Emulator::Setup(
  
    XELOGI("{}: Starting graphics_system...", __func__);
    // Setup the core components.
 +  const bool with_presentation =
 +      display_window_ != nullptr ||
 +      (cvars::headless &&
-+       cvars::x360_presentation_backend == "framebuffer_polling");
++       (cvars::x360_presentation_backend == "framebuffer_polling" ||
++        cvars::x360_presentation_backend == "framebuffer_shared_memory"));
 +  if (with_presentation && !display_window_) {
 +    XELOGI(
-+        "{}: Enabling offscreen presenter for headless framebuffer polling",
++        "{}: Enabling offscreen presenter for headless frame capture backend",
 +        __func__);
 +  }
    result = graphics_system_->Setup(
@@ -40,5 +33,3 @@ diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
    if (result) {
      XELOGE("{}: Failed to setup graphics_system!", __func__);
      return result;
--- 
-2.53.0.windows.1

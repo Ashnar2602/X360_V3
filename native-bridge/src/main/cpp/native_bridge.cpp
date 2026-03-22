@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <iomanip>
+#include <poll.h>
 #include <sstream>
 #include <string>
 #include <sys/ioctl.h>
@@ -452,6 +453,35 @@ Java_emu_x360_mobile_dev_nativebridge_NativeBridge_remapFdToStdinForExec(
                       "remapFdToStdinForExec(%d) saved stdin as %d",
                       fd, saved_stdin);
   return saved_stdin;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_emu_x360_mobile_dev_nativebridge_NativeBridge_pollFdReadable(
+    JNIEnv* /* env */,
+    jobject /* this */,
+    jint fd,
+    jint timeout_ms) {
+  if (fd < 0) {
+    return -EINVAL;
+  }
+
+  pollfd descriptor = {
+      .fd = fd,
+      .events = static_cast<short>(POLLIN | POLLERR | POLLHUP),
+      .revents = 0,
+  };
+  int result;
+  do {
+    result = poll(&descriptor, 1, timeout_ms);
+  } while (result < 0 && errno == EINTR);
+
+  if (result < 0) {
+    return -errno;
+  }
+  if (result == 0) {
+    return 0;
+  }
+  return descriptor.revents;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL

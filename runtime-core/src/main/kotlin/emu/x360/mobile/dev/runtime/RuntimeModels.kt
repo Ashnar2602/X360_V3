@@ -81,6 +81,7 @@ sealed interface RuntimeInstallIssue {
 data class RuntimeDirectories(
     val baseDir: Path,
 ) {
+    val presentationRoot: Path = baseDir.resolve("presentation")
     val libraryRoot: Path = baseDir.resolve("library")
     val libraryDatabase: Path = libraryRoot.resolve("game-library.json")
     val rootfs: Path = baseDir.resolve("rootfs")
@@ -169,6 +170,7 @@ data class RuntimeDirectories(
 
     fun requiredDirectories(): List<Path> = listOf(
         baseDir,
+        presentationRoot,
         libraryRoot,
         rootfs,
         rootfsLib,
@@ -237,6 +239,11 @@ data class GuestLogDestinations(
     val guestLog: Path,
 )
 
+data class InheritedFileDescriptor(
+    val name: String,
+    val fd: Int,
+)
+
 data class GuestLaunchRequest(
     val sessionId: String,
     val executable: String,
@@ -245,6 +252,7 @@ data class GuestLaunchRequest(
     val workingDirectory: String,
     val stdinRedirectPath: String? = null,
     val stdinRedirectFd: Int? = null,
+    val inheritedFileDescriptors: List<InheritedFileDescriptor> = emptyList(),
     val logDestinations: GuestLogDestinations,
 )
 
@@ -268,6 +276,9 @@ enum class PresentationBackend {
     @SerialName("headless-only")
     HEADLESS_ONLY,
 
+    @SerialName("framebuffer-shared-memory")
+    FRAMEBUFFER_SHARED_MEMORY,
+
     @SerialName("framebuffer-polling")
     FRAMEBUFFER_POLLING,
 
@@ -288,6 +299,25 @@ enum class GuestRenderScaleProfile {
 
     @SerialName("two")
     TWO,
+}
+
+data class PresentationPerformanceMetrics(
+    val issueSwapCount: Long = 0L,
+    val captureSuccessCount: Long = 0L,
+    val exportFrameCount: Long = 0L,
+    val decodedFrameCount: Long = 0L,
+    val presentedFrameCount: Long = 0L,
+    val swapFps: Float = 0f,
+    val captureFps: Float = 0f,
+    val exportFps: Float = 0f,
+    val decodeFps: Float = 0f,
+    val presentFps: Float = 0f,
+    val visibleFps: Float = 0f,
+    val frameSourceStatus: String = "idle",
+) {
+    companion object {
+        val Empty = PresentationPerformanceMetrics()
+    }
 }
 
 @Serializable

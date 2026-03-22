@@ -4,7 +4,7 @@
 
 This repo is no longer "docs only".
 
-Phase 0, Phase 1, Phase 2, Phase 3A, Phase 3B, Phase 4A, Phase 4B, Phase 4C, Phase 5A, and Phase 5B are now implemented to the point where the Android wrapper can:
+Phase 0, Phase 1, Phase 2, Phase 3A, Phase 3B, Phase 4A, Phase 4B, Phase 4C, Phase 5A, Phase 5B, and Phase 6A are now implemented to the point where the Android wrapper can:
 
 - build a real FEX host baseline from vendored source
 - install a deterministic runtime under `filesDir`
@@ -22,8 +22,9 @@ Phase 0, Phase 1, Phase 2, Phase 3A, Phase 3B, Phase 4A, Phase 4B, Phase 4C, Pha
 - import and resolve filesystem-backed ISO paths into `rootfs/mnt/library`
 - launch `Dante's Inferno` from ISO and reach `TITLE_MODULE_LOADING`
 - keep `Dante's Inferno` alive headless for the fixed observation window without fatal aborts on both devices
-- export visible frames through `rootfs/tmp/xenia_fb`
-- display visible Dante frames in the Android app on both devices
+- export visible frames through a session-scoped shared-memory transport
+- keep `rootfs/tmp/xenia_fb` as a debug/regression fallback instead of the normal player path
+- display visible Dante frames in the Android app on both devices through the same shared-memory backend
 - run a product-facing shell with splash, library home, options, debug screen, and fullscreen player
 
 The immediate blocker is no longer "make Turnip exist at all", no longer "make Xenia start at all", no longer "make a title survive module load", and no longer "make any visible frames appear". The next milestone is interaction and player hardening on top of the visible path.
@@ -87,7 +88,7 @@ The immediate blocker is no longer "make Turnip exist at all", no longer "make X
 - active pin:
   - `sourceRef = canary_experimental`
   - `sourceRevision = c50b036178108f87cb0acaf3691a7c3caf07820f`
-  - `patchSetId = phase5a-framebuffer-polling-v11`
+  - `patchSetId = phase6a-shared-frame-v2`
 - repo-owned Xenia patch queue under `third_party/xenia-patches/phase4`
 - generated Xenia runtime tree:
   - `rootfs/opt/x360-v3/xenia/bin/xenia-canary`
@@ -111,7 +112,9 @@ The immediate blocker is no longer "make Turnip exist at all", no longer "make X
   - `memfd_create`-first POSIX memory mapping
   - null-safe headless path when no ImGui drawer exists
   - non-fatal module cache initialization for headless title boot
-  - framebuffer-polling export path for visible Android frames
+  - framebuffer-polling export path for debug/regression
+  - shared-memory frame transport for the normal Android player path
+  - duplicate-content publication kept for shared-memory so static scenes still render
 - persistent incremental build workspace for local Xenia development
 - JSON-backed no-copy ISO library with title-aware launch
 
@@ -152,7 +155,11 @@ Reserved future placeholder:
 
 - `rootfs/tmp/anative_window.ptr`
 
-Active framebuffer export path:
+Default shared-memory presentation transport:
+
+- `rootfs/tmp/x360-v3/xenia/presentation/session-<session-id>/frame-transport.bin`
+
+Debug framebuffer export path:
 
 - `rootfs/tmp/xenia_fb`
 
@@ -362,9 +369,31 @@ Delivered:
 - FPS overlay setting and player session controller
 - `X360 Mobile` `0.2.0 alpha` visible product shell
 
-## Verified Phase 5B result
+### Phase 6A: Universal Android display baseline
 
-Phase 5B is considered complete in this repo because all of the following are now true:
+Status: complete
+
+Delivered:
+
+- `FRAMEBUFFER_SHARED_MEMORY` presentation backend
+- app-owned shared-memory presentation session under `rootfs/tmp/x360-v3/xenia/presentation`
+- Android player transport reader decoupled from file polling
+- descriptor-backed normal title portal flow, so ISO location does not control the display backend
+- `FRAMEBUFFER_POLLING` retained only as debug/regression fallback
+- presentation diagnostics for:
+  - `swapFps`
+  - `captureFps`
+  - `exportFps`
+  - `decodeFps`
+  - `presentFps`
+  - `visibleFps`
+- shared-memory stabilization fixes:
+  - force `readback_resolve=full` for the shared-memory backend
+  - Android-side color correction by removing the local `R/B` swap assumption
+
+## Verified Phase 6A result
+
+Phase 6A is considered complete in this repo because all of the following are now true:
 
 - the Vulkan probe still passes with `lavapipe`
 - the Turnip hardware probe still passes on `AYN Odin2 Mini`
@@ -372,7 +401,8 @@ Phase 5B is considered complete in this repo because all of the following are no
 - Xenia is still built from pinned source inside this repo
 - imported ISO titles still pass through deterministic no-copy portalization
 - `Dante's Inferno` still reaches `TITLE_RUNNING_HEADLESS` on both connected devices
-- visible Dante frames are confirmed on both connected devices through `xenia_fb`
+- the normal fullscreen player uses `FRAMEBUFFER_SHARED_MEMORY` on both connected devices
+- visible Dante frames are confirmed on both connected devices through the shared-memory player path
 - the app launches into a product shell and plays titles in a dedicated fullscreen player
 
 ### Verified per-device outcome
@@ -383,7 +413,7 @@ Phase 5B is considered complete in this repo because all of the following are no
 - Turnip probe passes
 - Xenia bring-up reaches `VULKAN_INITIALIZED`
 - `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
-- visible Dante frames confirmed in the fullscreen player
+- visible Dante frames confirmed in the fullscreen player through `FRAMEBUFFER_SHARED_MEMORY`
 
 `Odin3`:
 
@@ -392,24 +422,25 @@ Phase 5B is considered complete in this repo because all of the following are no
 - `KgslPropertiesInstrumentedTest` confirms `ubwc_mode = 5`
 - Xenia bring-up reaches `VULKAN_INITIALIZED`
 - `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
-- visible Dante frames confirmed in the fullscreen player
+- visible Dante frames confirmed in the fullscreen player through `FRAMEBUFFER_SHARED_MEMORY`
 
 Note:
 
-- the visible-frame milestone is currently confirmed primarily by direct device observation in the player UI
-- the stricter black-frame automation used during Phase 5A can still report a false negative if it samples too early while the stream is warming up
+- `FRAMEBUFFER_POLLING` is no longer the normal user-facing path
+- `xenia_fb` remains intentionally available for debug comparison and fallback analysis
+- the current universal-baseline work is limited to the display method; Android 16 `openat2` seccomp issues in FEX remain a separate future track
 
-## Next milestone: Phase 6
+## Next milestone: Interaction and audio recovery
 
 ### Goal
 
-Move from visible passive playback to usable interaction while keeping the validated FEX, Turnip, title-boot, and visible-frame baseline green on both devices.
+Move from visible passive playback to usable interaction while keeping the validated FEX, Turnip, title-boot, and shared-memory visible baseline green on both devices.
 
 ### Scope
 
 - keep the current FEX and Turnip regression matrix intact
 - keep the stable no-copy title launch path intact
-- keep the visible framebuffer-polling player path intact
+- keep the shared-memory player path intact
 - recover input and audio only after the visible path stays stable
 
 ### Pass criteria

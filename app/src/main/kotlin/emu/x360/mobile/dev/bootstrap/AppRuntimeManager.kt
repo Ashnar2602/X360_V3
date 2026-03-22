@@ -13,8 +13,10 @@ import emu.x360.mobile.dev.runtime.GuestRuntimeMetadataCodec
 import emu.x360.mobile.dev.runtime.GuestLaunchRequest
 import emu.x360.mobile.dev.runtime.GuestLaunchResult
 import emu.x360.mobile.dev.runtime.GuestLogDestinations
+import emu.x360.mobile.dev.runtime.InheritedFileDescriptor
 import emu.x360.mobile.dev.runtime.MesaRuntimeBranch
 import emu.x360.mobile.dev.runtime.PresentationBackend
+import emu.x360.mobile.dev.runtime.PresentationPerformanceMetrics
 import emu.x360.mobile.dev.runtime.MesaRuntimeMetadata
 import emu.x360.mobile.dev.runtime.MesaRuntimeMetadataCodec
 import emu.x360.mobile.dev.runtime.RuntimeAssetSource
@@ -24,6 +26,7 @@ import emu.x360.mobile.dev.runtime.RuntimeInstaller
 import emu.x360.mobile.dev.runtime.RuntimeManifest
 import emu.x360.mobile.dev.runtime.RuntimeManifestCodec
 import emu.x360.mobile.dev.runtime.RuntimePhase
+import emu.x360.mobile.dev.runtime.SharedFrameTransportFrame
 import emu.x360.mobile.dev.runtime.XeniaFramebufferCodec
 import emu.x360.mobile.dev.runtime.XeniaBuildMetadata
 import emu.x360.mobile.dev.runtime.XeniaBuildMetadataCodec
@@ -108,8 +111,8 @@ class AppRuntimeManager(
         val kgslAccess = KgslAccessInspector.inspect()
         val latestLogs = logStore.latestLogs()
         val xeniaStartupAnalysis = XeniaStartupStageParser.analyze(latestLogs.guestLog)
-        val outputPreview = OutputPreviewState.from(
-            framebufferPath = directories.rootfsTmp.resolve("xenia_fb"),
+        val outputPreview = resolveLatestOutputPreview(
+            latestLogs = latestLogs,
             startupAnalysis = xeniaStartupAnalysis,
         )
         return RuntimeSnapshot(
@@ -330,7 +333,7 @@ class AppRuntimeManager(
 
     internal fun startPlayerSession(
         entryId: String,
-        presentationSettings: XeniaPresentationSettings = XeniaPresentationSettings.FramebufferPolling,
+        presentationSettings: XeniaPresentationSettings = XeniaPresentationSettings.FramebufferSharedMemory,
     ): PlayerSessionStartResult {
         val manifest = manifestLoader.load()
         val installState = ensureRuntimeInstalled(manifest)
@@ -358,20 +361,16 @@ class AppRuntimeManager(
             return PlayerSessionStartResult(null, detail)
         }
 
-        val adoptedExecFd = when (resolution) {
-            is ResolvedTitleSource.FileDescriptorPath -> titleContentResolver.adoptDescriptorForExec(resolution)
-            else -> null
-        }
-        if (resolution is ResolvedTitleSource.FileDescriptorPath && adoptedExecFd == null) {
+        val descriptorBackedResolution = descriptorBackedResolution(resolution)
+            ?: return PlayerSessionStartResult(null, "Title source could not be inherited for ${currentEntry.displayName}")
+
+        val adoptedExecFd = titleContentResolver.adoptDescriptorForExec(descriptorBackedResolution)
+        if (adoptedExecFd == null) {
             return PlayerSessionStartResult(null, "Could not inherit descriptor for ${currentEntry.displayName}")
         }
 
         val portalPath = runCatching {
-            when (resolution) {
-                is ResolvedTitleSource.HostPath -> guestContentPortalManager.materializeIsoPortal(currentEntry, resolution.hostPath)
-                is ResolvedTitleSource.FileDescriptorPath -> guestContentPortalManager.materializeFdBackedPortal(currentEntry.id)
-                else -> error("Unsupported title resolution: $resolution")
-            }
+            guestContentPortalManager.materializeFdBackedPortal(currentEntry.id)
         }.getOrElse { throwable ->
             adoptedExecFd?.close()
             return PlayerSessionStartResult(null, "Failed to portal ${currentEntry.displayName}: ${throwable.message}")
@@ -381,26 +380,44 @@ class AppRuntimeManager(
             entryId = currentEntry.id,
             guestPath = portalPath.toGuestPath(directories.rootfs),
         )
-        prepareXeniaLaunchConfig(
-            launchMode = launchMode,
-            presentationSettings = presentationSettings,
-        )?.let { detail ->
-            adoptedExecFd?.close()
-            return PlayerSessionStartResult(null, detail)
-        }
+        val sessionId = SessionIdFactory.create()
         val resolvedMesaRuntime = DeviceMesaRuntimePolicy.resolve(
             overrideMode = mesaOverrideStore.read(),
             properties = DeviceProperties.read(),
         )
+        val effectivePresentationSettings = presentationSettings.resolveForMesaBranch(resolvedMesaRuntime.branch)
+        val presentationSession = when (effectivePresentationSettings.presentationBackend) {
+            PresentationBackend.FRAMEBUFFER_SHARED_MEMORY -> PlayerPresentationSession.create(
+                directories = directories,
+                sessionId = sessionId,
+                presentationSettings = effectivePresentationSettings,
+            )
+            else -> null
+        }
+        if (effectivePresentationSettings.presentationBackend == PresentationBackend.FRAMEBUFFER_SHARED_MEMORY &&
+            presentationSession == null
+        ) {
+            adoptedExecFd.close()
+            return PlayerSessionStartResult(null, "Failed to create a shared-memory presentation session")
+        }
+        prepareXeniaLaunchConfig(
+            launchMode = launchMode,
+            presentationSettings = effectivePresentationSettings,
+        )?.let { detail ->
+            adoptedExecFd?.close()
+            presentationSession?.close()
+            return PlayerSessionStartResult(null, detail)
+        }
         val request = createRequest(
-            sessionId = SessionIdFactory.create(),
+            sessionId = sessionId,
             executable = directories.xeniaBinary.toString(),
             args = buildXeniaBringupArgs(
                 directories = directories,
                 launchMode = launchMode,
-                presentationSettings = presentationSettings,
+                presentationSettings = effectivePresentationSettings,
             ),
             environment = buildVulkanGuestEnvironment(resolvedMesaRuntime.branch, directories) +
+                presentationSession?.launchEnvironment.orEmpty() +
                 buildMap {
                     if (adoptedExecFd != null) {
                         put("X360_TITLE_SOURCE_FD", "0")
@@ -409,15 +426,18 @@ class AppRuntimeManager(
                 },
             workingDirectory = directories.rootfsXeniaBin.toString(),
             stdinRedirectFd = adoptedExecFd?.fd,
+            inheritedFileDescriptors = presentationSession?.inheritedFileDescriptors.orEmpty(),
         )
         val handle = xeniaGuestLauncher.startSession(
             request = request,
             entryId = currentEntry.id,
             entryDisplayName = currentEntry.displayName,
             adoptedExecFd = adoptedExecFd,
-            presentationSettings = presentationSettings,
+            presentationSession = presentationSession,
+            presentationSettings = effectivePresentationSettings,
         ) ?: run {
             adoptedExecFd?.close()
+            presentationSession?.close()
             return PlayerSessionStartResult(null, "Failed to start ${currentEntry.displayName}")
         }
         updateLibraryEntry(
@@ -527,20 +547,16 @@ class AppRuntimeManager(
             return snapshot(lastAction = "Imported title validation_error for ${currentEntry.displayName}")
         }
 
-        val adoptedExecFd = when (resolution) {
-            is ResolvedTitleSource.FileDescriptorPath -> titleContentResolver.adoptDescriptorForExec(resolution)
-            else -> null
-        }
-        if (resolution is ResolvedTitleSource.FileDescriptorPath && adoptedExecFd == null) {
+        val descriptorBackedResolution = descriptorBackedResolution(resolution)
+            ?: return snapshot(lastAction = "Launch blocked: title source could not be inherited for ${currentEntry.displayName}")
+
+        val adoptedExecFd = titleContentResolver.adoptDescriptorForExec(descriptorBackedResolution)
+        if (adoptedExecFd == null) {
             return snapshot(lastAction = "Launch blocked: could not inherit descriptor for ${currentEntry.displayName}")
         }
 
         val portalPath = runCatching {
-            when (resolution) {
-                is ResolvedTitleSource.HostPath -> guestContentPortalManager.materializeIsoPortal(currentEntry, resolution.hostPath)
-                is ResolvedTitleSource.FileDescriptorPath -> guestContentPortalManager.materializeFdBackedPortal(currentEntry.id)
-                else -> error("Unsupported title resolution: $resolution")
-            }
+            guestContentPortalManager.materializeFdBackedPortal(currentEntry.id)
         }.getOrElse { throwable ->
             adoptedExecFd?.close()
             return snapshot(lastAction = "Launch blocked: failed to portal ${currentEntry.displayName}: ${throwable.message}")
@@ -549,26 +565,44 @@ class AppRuntimeManager(
             entryId = currentEntry.id,
             guestPath = portalPath.toGuestPath(directories.rootfs),
         )
-        prepareXeniaLaunchConfig(
-            launchMode = launchMode,
-            presentationSettings = presentationSettings,
-        )?.let { detail ->
-            adoptedExecFd?.close()
-            return snapshot(lastAction = detail)
-        }
         val resolvedMesaRuntime = DeviceMesaRuntimePolicy.resolve(
             overrideMode = mesaOverrideStore.read(),
             properties = DeviceProperties.read(),
         )
+        val effectivePresentationSettings = presentationSettings.resolveForMesaBranch(resolvedMesaRuntime.branch)
+        val sessionId = SessionIdFactory.create()
+        val presentationSession = when (effectivePresentationSettings.presentationBackend) {
+            PresentationBackend.FRAMEBUFFER_SHARED_MEMORY -> PlayerPresentationSession.create(
+                directories = directories,
+                sessionId = sessionId,
+                presentationSettings = effectivePresentationSettings,
+            )
+            else -> null
+        }
+        if (effectivePresentationSettings.presentationBackend == PresentationBackend.FRAMEBUFFER_SHARED_MEMORY &&
+            presentationSession == null
+        ) {
+            adoptedExecFd.close()
+            return snapshot(lastAction = "Launch blocked: failed to create a shared-memory presentation session")
+        }
+        prepareXeniaLaunchConfig(
+            launchMode = launchMode,
+            presentationSettings = effectivePresentationSettings,
+        )?.let { detail ->
+            adoptedExecFd?.close()
+            presentationSession?.close()
+            return snapshot(lastAction = detail)
+        }
         val request = createRequest(
-            sessionId = SessionIdFactory.create(),
+            sessionId = sessionId,
             executable = directories.xeniaBinary.toString(),
             args = buildXeniaBringupArgs(
                 directories = directories,
                 launchMode = launchMode,
-                presentationSettings = presentationSettings,
+                presentationSettings = effectivePresentationSettings,
             ),
             environment = buildVulkanGuestEnvironment(resolvedMesaRuntime.branch, directories) +
+                presentationSession?.launchEnvironment.orEmpty() +
                 buildMap {
                     if (adoptedExecFd != null) {
                         put("X360_TITLE_SOURCE_FD", "0")
@@ -577,18 +611,21 @@ class AppRuntimeManager(
                 },
             workingDirectory = directories.rootfsXeniaBin.toString(),
             stdinRedirectFd = adoptedExecFd?.fd,
+            inheritedFileDescriptors = presentationSession?.inheritedFileDescriptors.orEmpty(),
         )
-            val result = try {
-                xeniaGuestLauncher.launch(
-                    request,
-                    XeniaRunGoal.TitleSteadyState(
-                        requiredStage = requiredStage,
-                        presentationBackend = presentationSettings.presentationBackend,
-                    ),
-                )
-            } finally {
-                adoptedExecFd?.close()
-            }
+        val result = try {
+            xeniaGuestLauncher.launch(
+                request,
+                XeniaRunGoal.TitleSteadyState(
+                    requiredStage = requiredStage,
+                    presentationBackend = effectivePresentationSettings.presentationBackend,
+                ),
+                presentationSession = presentationSession,
+            )
+        } finally {
+            adoptedExecFd?.close()
+            presentationSession?.close()
+        }
         val startupAnalysis = XeniaStartupStageParser.analyze(logStore.latestLogs().guestLog)
         updateLibraryEntry(
             currentEntry.copy(
@@ -650,6 +687,19 @@ class AppRuntimeManager(
         gameLibraryStore.upsert(entry)
     }
 
+    private fun descriptorBackedResolution(
+        resolution: ResolvedTitleSource,
+    ): ResolvedTitleSource.FileDescriptorPath? {
+        return when (resolution) {
+            is ResolvedTitleSource.FileDescriptorPath -> resolution
+            is ResolvedTitleSource.HostPath -> ResolvedTitleSource.FileDescriptorPath(
+                hostPath = resolution.hostPath,
+                origin = "${resolution.origin}-fd",
+            )
+            else -> null
+        }
+    }
+
     private fun prepareXeniaLaunchConfig(
         launchMode: XeniaLaunchMode,
         presentationSettings: XeniaPresentationSettings,
@@ -660,6 +710,7 @@ class AppRuntimeManager(
                 buildXeniaConfigText(
                     directories = directories,
                     launchMode = launchMode,
+                    presentationSettings = presentationSettings,
                 ),
             )
             null
@@ -701,6 +752,7 @@ class AppRuntimeManager(
         workingDirectory: String = directories.rootfs.toString(),
         stdinRedirectPath: String? = null,
         stdinRedirectFd: Int? = null,
+        inheritedFileDescriptors: List<InheritedFileDescriptor> = emptyList(),
     ): GuestLaunchRequest {
         val logs = logStore.createSession(sessionId)
         return GuestLaunchRequest(
@@ -711,6 +763,7 @@ class AppRuntimeManager(
             workingDirectory = workingDirectory,
             stdinRedirectPath = stdinRedirectPath,
             stdinRedirectFd = stdinRedirectFd,
+            inheritedFileDescriptors = inheritedFileDescriptors,
             logDestinations = GuestLogDestinations(
                 appLog = logs.appLog,
                 fexLog = logs.fexLog,
@@ -795,6 +848,11 @@ class AppRuntimeManager(
         outputPreview: OutputPreviewState,
     ): XeniaDiagnostics {
         val appFields = parseKeyValueLines(latestLogs.appLog)
+        val presentationMetrics = collectPresentationMetrics(
+            guestLog = latestLogs.guestLog,
+            outputPreview = outputPreview,
+            appFields = appFields,
+        )
         val lastLogPath = latestLogs.sessionId
             ?.let { sessionId -> directories.guestLogs.resolve("session-$sessionId.guest.log").toString() }
             ?: "none"
@@ -816,15 +874,58 @@ class AppRuntimeManager(
             presentationBackend = appFields["xenia.presentationBackend"] ?: PresentationBackend.HEADLESS_ONLY.name.lowercase(),
             guestRenderScaleProfile = appFields["xenia.guestRenderScaleProfile"] ?: "one",
             internalDisplayResolution = appFields["xenia.internalDisplayResolution"] ?: "1280x720",
+            issueSwapCount = presentationMetrics.issueSwapCount,
+            captureSuccessCount = presentationMetrics.captureSuccessCount,
+            exportFrameCount = presentationMetrics.exportFrameCount,
+            decodedFrameCount = presentationMetrics.decodedFrameCount,
+            presentedFrameCount = presentationMetrics.presentedFrameCount,
+            swapFps = presentationMetrics.swapFps,
+            captureFps = presentationMetrics.captureFps,
+            exportFps = presentationMetrics.exportFps,
+            decodeFps = presentationMetrics.decodeFps,
+            presentFps = presentationMetrics.presentFps,
+            visibleFps = presentationMetrics.visibleFps,
             framebufferPath = appFields["xenia.framebufferPath"] ?: outputPreview.framebufferPath,
-            frameStreamStatus = appFields["xenia.frameStreamStatus"] ?: outputPreview.status,
-            lastFrameWidth = outputPreview.width ?: 0,
-            lastFrameHeight = outputPreview.height ?: 0,
-            lastFrameIndex = outputPreview.frameIndex,
+            frameStreamStatus = appFields["xenia.frameSourceStatus"] ?: appFields["xenia.frameStreamStatus"] ?: outputPreview.status,
+            lastFrameWidth = appFields["xenia.lastFrameWidth"]?.toIntOrNull() ?: outputPreview.width ?: 0,
+            lastFrameHeight = appFields["xenia.lastFrameHeight"]?.toIntOrNull() ?: outputPreview.height ?: 0,
+            lastFrameIndex = appFields["xenia.lastFrameIndex"]?.toLongOrNull() ?: outputPreview.frameIndex,
             frameFreshnessSeconds = outputPreview.freshnessSeconds,
             lastLogPath = lastLogPath,
             executablePath = directories.xeniaBinary.toString(),
         )
+    }
+
+    private fun resolveLatestOutputPreview(
+        latestLogs: LatestSessionLogs,
+        startupAnalysis: XeniaStartupAnalysis,
+    ): OutputPreviewState {
+        val appFields = parseKeyValueLines(latestLogs.appLog)
+        val framebufferPath = appFields["xenia.framebufferPath"]
+            ?.takeIf { it.isNotBlank() }
+            ?.let { File(it).toPath() }
+            ?: directories.rootfsTmp.resolve("xenia_fb")
+        val backend = appFields["xenia.presentationBackend"]
+        return if (backend == PresentationBackend.FRAMEBUFFER_SHARED_MEMORY.name.lowercase()) {
+            val sharedFrame = runCatching {
+                SharedFramePresentationReader(
+                    transportPath = framebufferPath,
+                    signalReadPfd = null,
+                ).use { reader ->
+                    reader.peekLatestFrame()
+                }
+            }.getOrNull()
+            OutputPreviewState.fromSharedFrame(
+                transportPath = framebufferPath,
+                startupAnalysis = startupAnalysis,
+                frame = sharedFrame,
+            )
+        } else {
+            OutputPreviewState.from(
+                framebufferPath = framebufferPath,
+                startupAnalysis = startupAnalysis,
+            )
+        }
     }
 }
 
@@ -913,6 +1014,17 @@ data class XeniaDiagnostics(
     val presentationBackend: String,
     val guestRenderScaleProfile: String,
     val internalDisplayResolution: String,
+    val issueSwapCount: Long,
+    val captureSuccessCount: Long,
+    val exportFrameCount: Long,
+    val decodedFrameCount: Long,
+    val presentedFrameCount: Long,
+    val swapFps: Float,
+    val captureFps: Float,
+    val exportFps: Float,
+    val decodeFps: Float,
+    val presentFps: Float,
+    val visibleFps: Float,
     val framebufferPath: String,
     val frameStreamStatus: String,
     val lastFrameWidth: Int,
@@ -922,6 +1034,29 @@ data class XeniaDiagnostics(
     val lastLogPath: String,
     val executablePath: String,
 )
+
+private fun collectPresentationMetrics(
+    guestLog: String,
+    outputPreview: OutputPreviewState,
+    appFields: Map<String, String>,
+): PresentationPerformanceMetrics {
+    val guestMetrics = GuestPresentationMetricsParser.parse(
+        logContent = guestLog,
+        exportedFrameCount = outputPreview.frameIndex,
+        elapsedMillis = appFields["xenia.sessionElapsedMillis"]?.toLongOrNull() ?: 1L,
+        frameSourceStatus = outputPreview.status,
+    )
+    return guestMetrics.copy(
+        exportFrameCount = appFields["xenia.exportFrameCount"]?.toLongOrNull() ?: guestMetrics.exportFrameCount,
+        decodedFrameCount = appFields["xenia.decodedFrameCount"]?.toLongOrNull() ?: guestMetrics.decodedFrameCount,
+        presentedFrameCount = appFields["xenia.presentedFrameCount"]?.toLongOrNull() ?: guestMetrics.presentedFrameCount,
+        exportFps = appFields["xenia.exportFps"]?.toFloatOrNull() ?: guestMetrics.exportFps,
+        decodeFps = appFields["xenia.decodeFps"]?.toFloatOrNull() ?: guestMetrics.decodeFps,
+        presentFps = appFields["xenia.presentFps"]?.toFloatOrNull() ?: guestMetrics.presentFps,
+        visibleFps = appFields["xenia.visibleFps"]?.toFloatOrNull() ?: guestMetrics.visibleFps,
+        frameSourceStatus = appFields["xenia.frameSourceStatus"] ?: guestMetrics.frameSourceStatus,
+    )
+}
 
 data class OutputPreviewState(
     val framebufferPath: String,
@@ -987,7 +1122,44 @@ data class OutputPreviewState(
                 summary = "status=$streamStatus ${header.width}x${header.height} stride=${header.stride} frame=${header.frameIndex} freshness=${freshnessSeconds ?: -1}s",
             )
         }
+
+        internal fun fromSharedFrame(
+            transportPath: Path,
+            startupAnalysis: XeniaStartupAnalysis,
+            frame: SharedFrameTransportFrame?,
+        ): OutputPreviewState {
+            if (frame == null) {
+                return OutputPreviewState(
+                    framebufferPath = transportPath.toString(),
+                    exists = transportPath.exists(),
+                    status = "idle",
+                    width = null,
+                    height = null,
+                    stride = null,
+                    frameIndex = -1L,
+                    freshnessSeconds = null,
+                    summary = "waiting for shared frame transport",
+                )
+            }
+            val streamStatus = when (startupAnalysis.stage) {
+                XeniaStartupStage.FRAME_STREAM_ACTIVE -> "active"
+                XeniaStartupStage.FIRST_FRAME_CAPTURED -> "first-frame"
+                else -> "first-frame"
+            }
+            return OutputPreviewState(
+                framebufferPath = transportPath.toString(),
+                exists = true,
+                status = streamStatus,
+                width = frame.header.width,
+                height = frame.header.height,
+                stride = frame.header.stride,
+                frameIndex = frame.header.frameIndex,
+                freshnessSeconds = 0L,
+                summary = "status=$streamStatus ${frame.header.width}x${frame.header.height} stride=${frame.header.stride} frame=${frame.header.frameIndex}",
+            )
+        }
     }
+
 }
 
 internal class ActivePlayerSessionHandle(
@@ -1004,11 +1176,13 @@ internal class ActivePlayerSessionHandle(
     private val stdoutPump: Thread,
     private val stderrPump: Thread,
     private val adoptedExecFd: AdoptedExecFd?,
+    private val presentationSession: PlayerPresentationSession?,
     private val logStore: SessionLogStore,
     private val backendName: String,
 ) {
     @Volatile
     private var finalized = false
+    private val previewReader = presentationSession?.openReader()
 
     fun isAlive(): Boolean = process.isAlive
 
@@ -1016,7 +1190,51 @@ internal class ActivePlayerSessionHandle(
 
     fun readStartupAnalysis(): XeniaStartupAnalysis = XeniaStartupStageParser.analyze(readGuestLog())
 
-    fun readOutputPreview(): OutputPreviewState = OutputPreviewState.from(framebufferPath, readStartupAnalysis())
+    fun openPresentationReader(): SharedFramePresentationReader? = presentationSession?.openReader()
+
+    fun readOutputPreview(): OutputPreviewState {
+        val startupAnalysis = readStartupAnalysis()
+        val sharedFrame = previewReader?.peekLatestFrame()
+        return if (sharedFrame != null || presentationSession != null) {
+            OutputPreviewState.fromSharedFrame(
+                transportPath = presentationSession?.transportPath ?: framebufferPath,
+                startupAnalysis = startupAnalysis,
+                frame = sharedFrame,
+            )
+        } else {
+            OutputPreviewState.from(framebufferPath, startupAnalysis)
+        }
+    }
+
+    fun elapsedMillis(): Long = java.time.Duration.between(startedAt, Instant.now()).toMillis().coerceAtLeast(1L)
+
+    fun reportPlayerMetrics(metrics: PresentationPerformanceMetrics) {
+        val outputPreview = readOutputPreview()
+        val presentationBackend = request.args
+            .firstOrNull { it.startsWith("--x360_presentation_backend=") }
+            ?.substringAfter('=')
+            ?: PresentationBackend.HEADLESS_ONLY.name.lowercase()
+        logStore.appendAppFields(
+            appLogPath,
+            mapOf(
+                "xenia.presentationBackend" to presentationBackend,
+                "xenia.framebufferPath" to outputPreview.framebufferPath,
+                "xenia.frameStreamStatus" to outputPreview.status,
+                "xenia.sessionElapsedMillis" to elapsedMillis().toString(),
+                "xenia.exportFrameCount" to metrics.exportFrameCount.toString(),
+                "xenia.decodedFrameCount" to metrics.decodedFrameCount.toString(),
+                "xenia.presentedFrameCount" to metrics.presentedFrameCount.toString(),
+                "xenia.exportFps" to metrics.exportFps.toString(),
+                "xenia.decodeFps" to metrics.decodeFps.toString(),
+                "xenia.presentFps" to metrics.presentFps.toString(),
+                "xenia.visibleFps" to metrics.visibleFps.toString(),
+                "xenia.frameSourceStatus" to metrics.frameSourceStatus,
+                "xenia.lastFrameWidth" to (outputPreview.width ?: 0).toString(),
+                "xenia.lastFrameHeight" to (outputPreview.height ?: 0).toString(),
+                "xenia.lastFrameIndex" to outputPreview.frameIndex.toString(),
+            ),
+        )
+    }
 
     fun stop(reason: String): GuestLaunchResult {
         if (process.isAlive) {
@@ -1061,8 +1279,15 @@ internal class ActivePlayerSessionHandle(
 
         val startupAnalysis = readStartupAnalysis()
         val outputPreview = readOutputPreview()
-        val exitCode = runCatching { process.exitValue() }.getOrNull()
         val finishedAt = Instant.now()
+        val sessionElapsedMillis = java.time.Duration.between(startedAt, finishedAt).toMillis().coerceAtLeast(1L)
+        val existingAppFields = parseKeyValueLines(runCatching { appLogPath.readText() }.getOrDefault(""))
+        val presentationMetrics = collectPresentationMetrics(
+            guestLog = readGuestLog(),
+            outputPreview = outputPreview,
+            appFields = existingAppFields + mapOf("xenia.sessionElapsedMillis" to sessionElapsedMillis.toString()),
+        )
+        val exitCode = runCatching { process.exitValue() }.getOrNull()
         val classification = classificationOverride ?: when {
             startupAnalysis.stage == XeniaStartupStage.FAILED -> ExitClassification.PROCESS_ERROR
             exitCode != null && exitCode != 0 -> ExitClassification.PROCESS_ERROR
@@ -1090,13 +1315,31 @@ internal class ActivePlayerSessionHandle(
                 "xenia.presentationBackend" to (request.args.firstOrNull { it.startsWith("--x360_presentation_backend=") }
                     ?.substringAfter('=')
                     ?: PresentationBackend.HEADLESS_ONLY.name.lowercase()),
+                "xenia.exportTargetFps" to (request.args.firstOrNull { it.startsWith("--x360_framebuffer_fps=") }
+                    ?.substringAfter('=')
+                    ?: "0"),
                 "xenia.framebufferPath" to outputPreview.framebufferPath,
                 "xenia.frameStreamStatus" to outputPreview.status,
+                "xenia.sessionElapsedMillis" to sessionElapsedMillis.toString(),
+                "xenia.issueSwapCount" to presentationMetrics.issueSwapCount.toString(),
+                "xenia.captureSuccessCount" to presentationMetrics.captureSuccessCount.toString(),
+                "xenia.exportFrameCount" to presentationMetrics.exportFrameCount.toString(),
+                "xenia.decodedFrameCount" to presentationMetrics.decodedFrameCount.toString(),
+                "xenia.presentedFrameCount" to presentationMetrics.presentedFrameCount.toString(),
+                "xenia.swapFps" to presentationMetrics.swapFps.toString(),
+                "xenia.captureFps" to presentationMetrics.captureFps.toString(),
+                "xenia.exportFps" to presentationMetrics.exportFps.toString(),
+                "xenia.decodeFps" to presentationMetrics.decodeFps.toString(),
+                "xenia.presentFps" to presentationMetrics.presentFps.toString(),
+                "xenia.visibleFps" to presentationMetrics.visibleFps.toString(),
+                "xenia.frameSourceStatus" to presentationMetrics.frameSourceStatus,
                 "xenia.lastFrameWidth" to (outputPreview.width ?: 0).toString(),
                 "xenia.lastFrameHeight" to (outputPreview.height ?: 0).toString(),
                 "xenia.lastFrameIndex" to outputPreview.frameIndex.toString(),
             ),
         )
+        runCatching { previewReader?.close() }
+        runCatching { presentationSession?.close() }
         return result
     }
 }
@@ -1365,7 +1608,7 @@ private class FexGuestLauncher(
                 when {
                     request.stdinRedirectFd != null -> ProcessBuilder.Redirect.INHERIT
                     request.stdinRedirectPath != null ->
-                        ProcessBuilder.Redirect.from(File(request.stdinRedirectPath))
+                        ProcessBuilder.Redirect.from(File(requireNotNull(request.stdinRedirectPath)))
                     else -> ProcessBuilder.Redirect.PIPE
                 },
             )
@@ -1452,7 +1695,11 @@ private class XeniaGuestLauncher(
     override val backendName: String = "fex-xenia"
 
     override fun launch(request: GuestLaunchRequest): GuestLaunchResult {
-        return launch(request, XeniaRunGoal.StopAtStage(XeniaStartupStage.VULKAN_INITIALIZED))
+        return launch(
+            request,
+            XeniaRunGoal.StopAtStage(XeniaStartupStage.VULKAN_INITIALIZED),
+            presentationSession = null,
+        )
     }
 
     fun startSession(
@@ -1460,6 +1707,7 @@ private class XeniaGuestLauncher(
         entryId: String,
         entryDisplayName: String,
         adoptedExecFd: AdoptedExecFd?,
+        presentationSession: PlayerPresentationSession?,
         presentationSettings: XeniaPresentationSettings,
     ): ActivePlayerSessionHandle? {
         val startedAt = Instant.now()
@@ -1508,6 +1756,11 @@ private class XeniaGuestLauncher(
                 "xenia.presentationBackend" to presentationSettings.presentationBackend.name.lowercase(),
                 "xenia.guestRenderScaleProfile" to presentationSettings.guestRenderScaleProfile.name.lowercase(),
                 "xenia.internalDisplayResolution" to "${presentationSettings.internalDisplayResolution.width}x${presentationSettings.internalDisplayResolution.height}",
+                "xenia.exportTargetFps" to presentationSettings.exportTargetFps.toString(),
+                "xenia.playerPollIntervalMs" to presentationSettings.playerPollIntervalMs.toString(),
+                "xenia.keepLastVisibleFrame" to presentationSettings.keepLastVisibleFrame.toString(),
+                "xenia.apuBackend" to presentationSettings.apuBackend.cliValue,
+                "xenia.readbackResolveMode" to (presentationSettings.readbackResolveMode?.cliValue ?: "none"),
             ),
         )
 
@@ -1518,7 +1771,7 @@ private class XeniaGuestLauncher(
                 when {
                     request.stdinRedirectFd != null -> ProcessBuilder.Redirect.INHERIT
                     request.stdinRedirectPath != null ->
-                        ProcessBuilder.Redirect.from(File(request.stdinRedirectPath))
+                        ProcessBuilder.Redirect.from(File(requireNotNull(request.stdinRedirectPath)))
                     else -> ProcessBuilder.Redirect.PIPE
                 },
             )
@@ -1557,6 +1810,7 @@ private class XeniaGuestLauncher(
             stdoutPump = stdoutPump,
             stderrPump = stderrPump,
             adoptedExecFd = adoptedExecFd,
+            presentationSession = presentationSession,
             logStore = logStore,
             backendName = backendName,
         )
@@ -1565,6 +1819,7 @@ private class XeniaGuestLauncher(
     fun launch(
         request: GuestLaunchRequest,
         goal: XeniaRunGoal,
+        presentationSession: PlayerPresentationSession? = null,
     ): GuestLaunchResult {
         val startedAt = Instant.now()
         val nativeLibraryDir = File(context.applicationInfo.nativeLibraryDir).toPath()
@@ -1613,7 +1868,7 @@ private class XeniaGuestLauncher(
                 when {
                     request.stdinRedirectFd != null -> ProcessBuilder.Redirect.INHERIT
                     request.stdinRedirectPath != null ->
-                        ProcessBuilder.Redirect.from(File(request.stdinRedirectPath))
+                        ProcessBuilder.Redirect.from(File(requireNotNull(request.stdinRedirectPath)))
                     else -> ProcessBuilder.Redirect.PIPE
                 },
             )
@@ -1725,9 +1980,26 @@ private class XeniaGuestLauncher(
         val exitCode = runCatching { process.exitValue() }.getOrNull()
         val finishedAt = Instant.now()
         val finishedAtNanos = System.nanoTime()
-        val outputPreview = OutputPreviewState.from(
-            framebufferPath = directories.rootfsTmp.resolve("xenia_fb"),
-            startupAnalysis = startupAnalysis,
+        val outputPreview = if (presentationSession != null) {
+            val sharedFrame = presentationSession.openReader().use { reader ->
+                reader?.peekLatestFrame()
+            }
+            OutputPreviewState.fromSharedFrame(
+                transportPath = presentationSession.transportPath,
+                startupAnalysis = startupAnalysis,
+                frame = sharedFrame,
+            )
+        } else {
+            OutputPreviewState.from(
+                framebufferPath = directories.rootfsTmp.resolve("xenia_fb"),
+                startupAnalysis = startupAnalysis,
+            )
+        }
+        val sessionElapsedMillis = java.time.Duration.between(startedAt, finishedAt).toMillis().coerceAtLeast(1L)
+        val presentationMetrics = collectPresentationMetrics(
+            guestLog = finalGuestLog,
+            outputPreview = outputPreview,
+            appFields = mapOf("xenia.sessionElapsedMillis" to sessionElapsedMillis.toString()),
         )
         val aliveAfterModuleLoadSeconds = moduleLoadObservedAt?.let { observedAt ->
             val finishedNanos = if (goal is XeniaRunGoal.TitleSteadyState &&
@@ -1810,8 +2082,19 @@ private class XeniaGuestLauncher(
                 "xenia.presentationBackend" to presentationBackend,
                 "xenia.guestRenderScaleProfile" to guestRenderScaleProfile,
                 "xenia.internalDisplayResolution" to internalDisplayResolution,
+                "xenia.exportTargetFps" to (request.args.firstOrNull { it.startsWith("--x360_framebuffer_fps=") }
+                    ?.substringAfter('=')
+                    ?: "0"),
                 "xenia.framebufferPath" to outputPreview.framebufferPath,
                 "xenia.frameStreamStatus" to outputPreview.status,
+                "xenia.sessionElapsedMillis" to sessionElapsedMillis.toString(),
+                "xenia.issueSwapCount" to presentationMetrics.issueSwapCount.toString(),
+                "xenia.captureSuccessCount" to presentationMetrics.captureSuccessCount.toString(),
+                "xenia.exportFrameCount" to presentationMetrics.exportFrameCount.toString(),
+                "xenia.swapFps" to presentationMetrics.swapFps.toString(),
+                "xenia.captureFps" to presentationMetrics.captureFps.toString(),
+                "xenia.exportFps" to presentationMetrics.exportFps.toString(),
+                "xenia.frameSourceStatus" to presentationMetrics.frameSourceStatus,
                 "xenia.lastFrameWidth" to (outputPreview.width ?: 0).toString(),
                 "xenia.lastFrameHeight" to (outputPreview.height ?: 0).toString(),
                 "xenia.lastFrameIndex" to outputPreview.frameIndex.toString(),
@@ -2014,6 +2297,16 @@ internal class SessionLogStore(
 
     fun appendGuestLine(path: Path, line: String) {
         append(path, "$line\n")
+    }
+
+    fun appendAppFields(
+        path: Path,
+        fields: Map<String, String>,
+    ) {
+        append(
+            path,
+            fields.entries.joinToString(separator = "\n", postfix = "\n") { (key, value) -> "$key=$value" },
+        )
     }
 
     fun pump(input: InputStream, destination: Path): Thread {

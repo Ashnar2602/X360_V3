@@ -1,6 +1,7 @@
 package emu.x360.mobile.dev.bootstrap
 
 import emu.x360.mobile.dev.runtime.GuestRenderScaleProfile
+import emu.x360.mobile.dev.runtime.MesaRuntimeBranch
 import emu.x360.mobile.dev.runtime.PresentationBackend
 import emu.x360.mobile.dev.runtime.RuntimeDirectories
 import emu.x360.mobile.dev.runtime.XeniaStartupStage
@@ -31,27 +32,86 @@ internal data class XeniaPresentationSettings(
     val presentationBackend: PresentationBackend,
     val guestRenderScaleProfile: GuestRenderScaleProfile,
     val internalDisplayResolution: InternalDisplayResolution,
+    val exportTargetFps: Int = 10,
+    val playerPollIntervalMs: Long = 120L,
+    val keepLastVisibleFrame: Boolean = true,
+    val apuBackend: XeniaApuBackend = XeniaApuBackend.SDL,
+    val readbackResolveMode: XeniaReadbackResolveMode? = XeniaReadbackResolveMode.FULL,
 ) {
     companion object {
         val HeadlessBringup = XeniaPresentationSettings(
             presentationBackend = PresentationBackend.HEADLESS_ONLY,
             guestRenderScaleProfile = GuestRenderScaleProfile.ONE,
             internalDisplayResolution = InternalDisplayResolution(1280, 720),
+            apuBackend = XeniaApuBackend.NOP,
+            readbackResolveMode = null,
         )
 
-        val FramebufferPolling = XeniaPresentationSettings(
+        val FramebufferPollingDebug = XeniaPresentationSettings(
             presentationBackend = PresentationBackend.FRAMEBUFFER_POLLING,
             guestRenderScaleProfile = GuestRenderScaleProfile.ONE,
             internalDisplayResolution = InternalDisplayResolution(1280, 720),
+            exportTargetFps = 10,
+            playerPollIntervalMs = 120L,
+            keepLastVisibleFrame = true,
+            apuBackend = XeniaApuBackend.SDL,
+            readbackResolveMode = XeniaReadbackResolveMode.FULL,
         )
+
+        val FramebufferSharedMemory = XeniaPresentationSettings(
+            presentationBackend = PresentationBackend.FRAMEBUFFER_SHARED_MEMORY,
+            guestRenderScaleProfile = GuestRenderScaleProfile.ONE,
+            internalDisplayResolution = InternalDisplayResolution(1280, 720),
+            exportTargetFps = 60,
+            playerPollIntervalMs = 16L,
+            keepLastVisibleFrame = true,
+            apuBackend = XeniaApuBackend.SDL,
+            readbackResolveMode = XeniaReadbackResolveMode.FAST,
+        )
+
+        val FramebufferPollingPerformance = FramebufferSharedMemory.copy(
+            presentationBackend = PresentationBackend.FRAMEBUFFER_POLLING,
+        )
+
+        val FramebufferPolling: XeniaPresentationSettings = FramebufferPollingDebug
     }
 }
 
-private enum class XeniaApuBackend(
+internal enum class XeniaApuBackend(
     val cliValue: String,
 ) {
     NOP("nop"),
     SDL("sdl"),
+}
+
+internal enum class XeniaReadbackResolveMode(
+    val cliValue: String,
+) {
+    FAST("fast"),
+    FULL("full"),
+    NONE("none"),
+}
+
+internal fun XeniaPresentationSettings.resolveForMesaBranch(
+    mesaRuntimeBranch: MesaRuntimeBranch,
+): XeniaPresentationSettings {
+    if (presentationBackend == PresentationBackend.HEADLESS_ONLY) {
+        return this
+    }
+
+    val effectiveReadbackResolveMode = when {
+        presentationBackend == PresentationBackend.FRAMEBUFFER_SHARED_MEMORY &&
+            readbackResolveMode == XeniaReadbackResolveMode.FAST -> XeniaReadbackResolveMode.FULL
+        mesaRuntimeBranch == MesaRuntimeBranch.MESA25 &&
+            readbackResolveMode == XeniaReadbackResolveMode.FAST -> XeniaReadbackResolveMode.FULL
+        else -> readbackResolveMode
+    }
+
+    return if (effectiveReadbackResolveMode == readbackResolveMode) {
+        this
+    } else {
+        copy(readbackResolveMode = effectiveReadbackResolveMode)
+    }
 }
 
 internal object XeniaStartupStageParser {
@@ -183,24 +243,20 @@ internal fun buildXeniaBringupArgs(
     launchMode: XeniaLaunchMode = XeniaLaunchMode.NoTitleBringup,
     presentationSettings: XeniaPresentationSettings = when (launchMode) {
         XeniaLaunchMode.NoTitleBringup -> XeniaPresentationSettings.HeadlessBringup
-        is XeniaLaunchMode.TitleBoot -> XeniaPresentationSettings.FramebufferPolling
+        is XeniaLaunchMode.TitleBoot -> XeniaPresentationSettings.FramebufferSharedMemory
     },
 ): List<String> {
     require(presentationSettings.guestRenderScaleProfile == GuestRenderScaleProfile.ONE) {
-        "Phase 5A only supports GuestRenderScaleProfile.ONE as a true guest render scale"
+        "Phase 5C only supports GuestRenderScaleProfile.ONE as a true guest render scale"
     }
     val xeniaContentRoot = directories.xeniaWritableContentRoot.hostAbsolutePathString()
     val xeniaCacheRoot = directories.xeniaWritableCacheHostRoot.hostAbsolutePathString()
     val xeniaStorageRoot = directories.xeniaWritableStorageRoot.hostAbsolutePathString()
     val xeniaFramebufferPath = directories.rootfsTmp.resolve("xenia_fb").hostAbsolutePathString()
     val mountCache = launchMode is XeniaLaunchMode.TitleBoot
-    val apuBackend = when (launchMode) {
-        XeniaLaunchMode.NoTitleBringup -> XeniaApuBackend.NOP
-        is XeniaLaunchMode.TitleBoot -> XeniaApuBackend.SDL
-    }
     val readbackResolveMode = when (launchMode) {
         XeniaLaunchMode.NoTitleBringup -> null
-        is XeniaLaunchMode.TitleBoot -> "full"
+        is XeniaLaunchMode.TitleBoot -> presentationSettings.readbackResolveMode?.cliValue
     }
     val baseArgs = buildList {
         addAll(
@@ -209,7 +265,7 @@ internal fun buildXeniaBringupArgs(
                 "--headless=true",
                 "--portable=true",
                 "--gpu=vulkan",
-                "--apu=${apuBackend.cliValue}",
+                "--apu=${presentationSettings.apuBackend.cliValue}",
                 "--hid=nop",
                 "--discord=false",
                 "--log_file=stdout",
@@ -229,8 +285,10 @@ internal fun buildXeniaBringupArgs(
             add("--draw_resolution_scale_x=1")
             add("--draw_resolution_scale_y=1")
             add("--x360_presentation_backend=${presentationSettings.presentationBackend.name.lowercase()}")
-            add("--x360_framebuffer_path=$xeniaFramebufferPath")
-            add("--x360_framebuffer_fps=10")
+            add("--x360_framebuffer_fps=${presentationSettings.exportTargetFps}")
+            if (presentationSettings.presentationBackend == PresentationBackend.FRAMEBUFFER_POLLING) {
+                add("--x360_framebuffer_path=$xeniaFramebufferPath")
+            }
         }
     }
     return when (launchMode) {
@@ -242,15 +300,15 @@ internal fun buildXeniaBringupArgs(
 internal fun buildXeniaConfigText(
     directories: RuntimeDirectories,
     launchMode: XeniaLaunchMode = XeniaLaunchMode.NoTitleBringup,
+    presentationSettings: XeniaPresentationSettings = when (launchMode) {
+        XeniaLaunchMode.NoTitleBringup -> XeniaPresentationSettings.HeadlessBringup
+        is XeniaLaunchMode.TitleBoot -> XeniaPresentationSettings.FramebufferSharedMemory
+    },
 ): String {
-    val apuBackend = when (launchMode) {
-        XeniaLaunchMode.NoTitleBringup -> XeniaApuBackend.NOP
-        is XeniaLaunchMode.TitleBoot -> XeniaApuBackend.SDL
-    }
     val mountCache = launchMode is XeniaLaunchMode.TitleBoot
-    val contentRoot = directories.xeniaWritableContentRoot.toGuestPath(directories.rootfs)
-    val cacheRoot = directories.xeniaWritableCacheHostRoot.toGuestPath(directories.rootfs)
-    val storageRoot = directories.xeniaWritableStorageRoot.toGuestPath(directories.rootfs)
+    val contentRoot = directories.xeniaWritableContentRoot.toXeniaGuestPath(directories.rootfs)
+    val cacheRoot = directories.xeniaWritableCacheHostRoot.toXeniaGuestPath(directories.rootfs)
+    val storageRoot = directories.xeniaWritableStorageRoot.toXeniaGuestPath(directories.rootfs)
     return """
         [General]
         discord = false
@@ -260,7 +318,7 @@ internal fun buildXeniaConfigText(
         gpu = "vulkan"
         
         [APU]
-        apu = "${apuBackend.cliValue}"
+        apu = "${presentationSettings.apuBackend.cliValue}"
         
         [HID]
         hid = "nop"
@@ -301,5 +359,15 @@ internal fun detectXeniaContentMode(
         libraryEntries.isNotEmpty() -> "library"
         !directories.xeniaWritableContentRoot.toFile().listFiles().isNullOrEmpty() -> "local-smoke"
         else -> "none"
+    }
+}
+
+private fun java.nio.file.Path.toXeniaGuestPath(rootfs: java.nio.file.Path): String {
+    val normalizedRoot = rootfs.toAbsolutePath().normalize().toString().replace('\\', '/').trimEnd('/')
+    val normalizedPath = toAbsolutePath().normalize().toString().replace('\\', '/')
+    return when {
+        normalizedPath == normalizedRoot -> "/"
+        normalizedPath.startsWith("$normalizedRoot/") -> "/" + normalizedPath.removePrefix("$normalizedRoot/")
+        else -> "/" + normalizedPath.trimStart('/')
     }
 }

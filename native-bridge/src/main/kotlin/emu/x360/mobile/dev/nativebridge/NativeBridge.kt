@@ -19,5 +19,7 @@ object NativeBridge {
 
     external fun restoreStdinAfterExec(savedFd: Int): Boolean
 
+    external fun pollFdReadable(fd: Int, timeoutMs: Int): Int
+
     external fun closeFd(fd: Int): Boolean
 }

@@ -1,0 +1,102 @@
+diff --git a/src/xenia/app/xenia_main.cc b/src/xenia/app/xenia_main.cc
+--- a/src/xenia/app/xenia_main.cc
++++ b/src/xenia/app/xenia_main.cc
+@@ -264,6 +264,55 @@ bool WriteFramebufferExport(const std::filesystem::path& framebuffer_path,
+   return PromoteFramebufferTempFile(temp_path, framebuffer_path);
+ }
+ 
++uint64_t ComputeFramebufferExportSignature(const xe::ui::RawImage& image) {
++  constexpr uint64_t kFnvOffsetBasis = 1469598103934665603ull;
++  constexpr uint64_t kFnvPrime = 1099511628211ull;
++
++  auto hash_byte = [](uint64_t& hash, uint8_t value) {
++    hash ^= uint64_t(value);
++    hash *= kFnvPrime;
++  };
++
++  uint64_t hash = kFnvOffsetBasis;
++  const uint32_t width = image.width;
++  const uint32_t height = image.height;
++  const size_t stride = image.stride;
++  hash_byte(hash, uint8_t(width & 0xFF));
++  hash_byte(hash, uint8_t((width >> 8) & 0xFF));
++  hash_byte(hash, uint8_t(height & 0xFF));
++  hash_byte(hash, uint8_t((height >> 8) & 0xFF));
++
++  if (!width || !height || stride < size_t(width) * 4 || image.data.empty()) {
++    return hash;
++  }
++
++  const size_t row_step = std::max<size_t>(1, size_t(height) / 18);
++  const size_t column_step = std::max<size_t>(1, size_t(width) / 32);
++  for (size_t y = 0; y < height; y += row_step) {
++    const size_t row_start = y * stride;
++    for (size_t x = 0; x < width; x += column_step) {
++      const size_t base = row_start + x * 4;
++      if (base + 3 >= image.data.size()) {
++        break;
++      }
++      hash_byte(hash, image.data[base + 0]);
++      hash_byte(hash, image.data[base + 1]);
++      hash_byte(hash, image.data[base + 2]);
++      hash_byte(hash, image.data[base + 3]);
++    }
++  }
++
++  const size_t last_pixel =
++      (size_t(height) - 1) * stride + (size_t(width) - 1) * 4;
++  if (last_pixel + 3 < image.data.size()) {
++    hash_byte(hash, image.data[last_pixel + 0]);
++    hash_byte(hash, image.data[last_pixel + 1]);
++    hash_byte(hash, image.data[last_pixel + 2]);
++    hash_byte(hash, image.data[last_pixel + 3]);
++  }
++  return hash;
++}
++
+ }  // namespace
+ 
+ namespace xe {
+@@ -1006,6 +1054,9 @@ void EmulatorApp::FramebufferExportThreadMain() {
+          framebuffer_path, export_fps);
+ 
+   uint64_t frame_index = 0;
++  uint64_t last_export_signature = 0;
++  bool has_last_export_signature = false;
++  uint32_t skipped_duplicate_exports = 0;
+   uint32_t consecutive_exports = 0;
+   bool logged_first_frame = false;
+   bool logged_stream_active = false;
+@@ -1029,6 +1080,22 @@ void EmulatorApp::FramebufferExportThreadMain() {
+       continue;
+     }
+ 
++    const uint64_t export_signature = ComputeFramebufferExportSignature(image);
++    if (has_last_export_signature && export_signature == last_export_signature) {
++      consecutive_exports = 0;
++      ++skipped_duplicate_exports;
++      if (skipped_duplicate_exports <= 5 ||
++          !(skipped_duplicate_exports % 240)) {
++        XELOGI(
++            "X360_FRAMEBUFFER_DEBUG export_duplicate_skip count={} width={} "
++            "height={} stride={}",
++            skipped_duplicate_exports, image.width, image.height,
++            image.stride);
++      }
++      std::this_thread::sleep_for(export_interval);
++      continue;
++    }
++
+     ++frame_index;
+     if (!WriteFramebufferExport(framebuffer_path, image, frame_index)) {
+       consecutive_exports = 0;
+@@ -1036,6 +1100,9 @@ void EmulatorApp::FramebufferExportThreadMain() {
+       continue;
+     }
+ 
++    last_export_signature = export_signature;
++    has_last_export_signature = true;
++    skipped_duplicate_exports = 0;
+     ++consecutive_exports;
+     if (!logged_first_frame) {
+       logged_first_frame = true;
