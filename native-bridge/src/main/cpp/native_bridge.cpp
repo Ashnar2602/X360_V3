@@ -11,6 +11,7 @@
 #include <sstream>
 #include <string>
 #include <sys/ioctl.h>
+#include <signal.h>
 #include <unistd.h>
 #include <vector>
 
@@ -494,5 +495,27 @@ Java_emu_x360_mobile_dev_nativebridge_NativeBridge_closeFd(JNIEnv* /* env */,
                         fd, errno);
     return JNI_FALSE;
   }
+  return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_emu_x360_mobile_dev_nativebridge_NativeBridge_sendSignal(JNIEnv* /* env */,
+                                                              jobject /* this */,
+                                                              jint pid,
+                                                              jint signal) {
+  if (pid <= 0) {
+    __android_log_print(ANDROID_LOG_ERROR, kTag, "sendSignal(%d, %d) invalid pid",
+                        pid, signal);
+    return JNI_FALSE;
+  }
+
+  if (kill(pid, signal) != 0) {
+    __android_log_print(ANDROID_LOG_ERROR, kTag,
+                        "sendSignal(%d, %d) failed: errno=%d",
+                        pid, signal, errno);
+    return JNI_FALSE;
+  }
+
+  __android_log_print(ANDROID_LOG_INFO, kTag, "sendSignal(%d, %d)", pid, signal);
   return JNI_TRUE;
 }

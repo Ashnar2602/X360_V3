@@ -1181,10 +1181,15 @@ internal class ActivePlayerSessionHandle(
     private val backendName: String,
 ) {
     @Volatile
+    private var paused = false
+
+    @Volatile
     private var finalized = false
     private val previewReader = presentationSession?.openReader()
 
     fun isAlive(): Boolean = process.isAlive
+
+    fun isPaused(): Boolean = paused
 
     fun readGuestLog(): String = runCatching { guestLogPath.readText() }.getOrDefault("")
 
@@ -1236,7 +1241,51 @@ internal class ActivePlayerSessionHandle(
         )
     }
 
+    fun pause(): Boolean {
+        if (!process.isAlive || paused) {
+            return process.isAlive
+        }
+        val pid = processPid() ?: return false
+        val sent = NativeBridge.sendSignal(pid, SignalStop)
+        if (sent) {
+            paused = true
+            logStore.appendAppFields(
+                appLogPath,
+                mapOf(
+                    "xenia.playerPaused" to "true",
+                    "xenia.playerPauseReason" to "pause-menu",
+                ),
+            )
+        }
+        return sent
+    }
+
+    fun resume(): Boolean {
+        if (!process.isAlive) {
+            return false
+        }
+        if (!paused) {
+            return true
+        }
+        val pid = processPid() ?: return false
+        val sent = NativeBridge.sendSignal(pid, SignalContinue)
+        if (sent) {
+            paused = false
+            logStore.appendAppFields(
+                appLogPath,
+                mapOf(
+                    "xenia.playerPaused" to "false",
+                    "xenia.playerPauseReason" to "resume",
+                ),
+            )
+        }
+        return sent
+    }
+
     fun stop(reason: String): GuestLaunchResult {
+        if (paused && process.isAlive) {
+            resume()
+        }
         if (process.isAlive) {
             process.destroy()
             process.waitFor(3, TimeUnit.SECONDS)
@@ -1341,6 +1390,28 @@ internal class ActivePlayerSessionHandle(
         runCatching { previewReader?.close() }
         runCatching { presentationSession?.close() }
         return result
+    }
+
+    private fun processPid(): Int? {
+        val pidByMethod = runCatching {
+            val method = process.javaClass.getMethod("pid")
+            (method.invoke(process) as? Long)?.toInt()
+        }.getOrNull()
+        if (pidByMethod != null && pidByMethod > 0) {
+            return pidByMethod
+        }
+
+        val pidByField = runCatching {
+            val field = process.javaClass.getDeclaredField("pid")
+            field.isAccessible = true
+            (field.get(process) as? Int)
+        }.getOrNull()
+        return pidByField?.takeIf { it > 0 }
+    }
+
+    companion object {
+        private const val SignalContinue = 18
+        private const val SignalStop = 19
     }
 }
 

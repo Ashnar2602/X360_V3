@@ -367,6 +367,8 @@ Delivered:
 - per-game `Play` and `Options` actions
 - dedicated fullscreen `PlayerActivity`
 - FPS overlay setting and player session controller
+- in-player pause menu opened by Android back
+- quick in-player options overlay for live-safe player settings
 - `X360 Mobile` `0.2.0 alpha` visible product shell
 
 ### Phase 6A: Universal Android display baseline
@@ -404,6 +406,11 @@ Phase 6A is considered complete in this repo because all of the following are no
 - the normal fullscreen player uses `FRAMEBUFFER_SHARED_MEMORY` on both connected devices
 - visible Dante frames are confirmed on both connected devices through the shared-memory player path
 - the app launches into a product shell and plays titles in a dedicated fullscreen player
+- the player now supports a semitransparent pause dialog with:
+  - resume
+  - options
+  - exit to home
+  - exit Android
 
 ### Verified per-device outcome
 

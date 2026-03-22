@@ -69,6 +69,8 @@ Implemented in this repo today:
   - debug screen behind options
   - fullscreen `PlayerActivity`
   - optional FPS overlay
+  - in-player pause menu opened by Android back
+  - quick in-player options overlay for live-safe toggles such as the FPS counter
 
 Still deferred to later milestones:
 
@@ -307,6 +309,12 @@ Phase 6A is now real in this repo:
 - the Odin3 shared-memory path is stabilized by forcing `readback_resolve=full`
 - the shared-memory color path is corrected in Android so the visible player no longer depends on an `R/B` swizzle guess
 - the app now launches through `SplashActivity`, lands on a library-first shell, and plays titles in a dedicated fullscreen `PlayerActivity`
+- pressing Android back inside the player opens a semitransparent pause menu instead of immediately closing the session
+- the pause menu can:
+  - resume the game
+  - open a small in-player options overlay
+  - exit to the app home
+  - exit Android completely after stopping the running session
 
 Verified per-device bring-up:
 

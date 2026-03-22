@@ -97,6 +97,8 @@ Pass outcome:
 - debug tooling survives behind `Options -> Debug`
 - titles launch into a dedicated fullscreen `PlayerActivity`
 - FPS overlay support exists and is user-configurable
+- Android back in the player opens a pause menu instead of hard-exiting immediately
+- the pause menu offers resume, quick options, exit to home, and exit to Android
 - the visible framebuffer path is usable from the product shell, not only from the debug harness
 
 ### Phase 9: Universal Android display baseline

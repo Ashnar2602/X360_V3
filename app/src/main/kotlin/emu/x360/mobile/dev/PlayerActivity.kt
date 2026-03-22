@@ -14,11 +14,20 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -31,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
@@ -82,9 +92,17 @@ class PlayerActivity : ComponentActivity() {
                     state = state,
                     openPresentationReader = viewModel::openPresentationReader,
                     onMetrics = viewModel::reportVisibleMetrics,
-                    onExit = {
+                    onPausePlayer = viewModel::pause,
+                    onResumePlayer = viewModel::resume,
+                    onSetShowFpsCounter = viewModel::setShowFpsCounter,
+                    onExitHome = {
                         viewModel.stop()
                         finish()
+                    },
+                    onExitAndroid = {
+                        viewModel.stop("exit-android")
+                        finishAffinity()
+                        android.os.Process.killProcess(android.os.Process.myPid())
                     },
                 )
             }
@@ -128,15 +146,41 @@ private fun PlayerScreen(
     state: PlayerSessionUiState,
     openPresentationReader: () -> SharedFramePresentationReader?,
     onMetrics: (PresentationPerformanceMetrics) -> Unit,
-    onExit: () -> Unit,
+    onPausePlayer: () -> Boolean,
+    onResumePlayer: () -> Boolean,
+    onSetShowFpsCounter: (Boolean) -> Unit,
+    onExitHome: () -> Unit,
+    onExitAndroid: () -> Unit,
 ) {
-    BackHandler(onBack = onExit)
     val sessionKey = state.sessionId ?: state.framebufferPath
     val context = LocalContext.current
     val sharedMemoryBackend = state.presentationBackend == PresentationBackend.FRAMEBUFFER_SHARED_MEMORY.name.lowercase()
     val imageView = rememberPlayerImageView(context)
     var overlayState by remember(sessionKey) {
         mutableStateOf(PlayerOverlayState.placeholder(state.detail))
+    }
+    var pauseOverlay by remember(sessionKey) {
+        mutableStateOf(PlayerPauseOverlay.NONE)
+    }
+
+    fun openPauseMenu() {
+        if (!state.isPaused) {
+            onPausePlayer()
+        }
+        pauseOverlay = PlayerPauseOverlay.MENU
+    }
+
+    fun resumeAndCloseOverlay() {
+        onResumePlayer()
+        pauseOverlay = PlayerPauseOverlay.NONE
+    }
+
+    BackHandler {
+        when (pauseOverlay) {
+            PlayerPauseOverlay.NONE -> openPauseMenu()
+            PlayerPauseOverlay.OPTIONS -> pauseOverlay = PlayerPauseOverlay.MENU
+            PlayerPauseOverlay.MENU -> resumeAndCloseOverlay()
+        }
     }
 
     LaunchedEffect(
@@ -322,7 +366,48 @@ private fun PlayerScreen(
                 color = Color(0xFFFFD7DB),
             )
         }
+
+        if (pauseOverlay != PlayerPauseOverlay.NONE) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0x8A000000)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 28.dp),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xE6172634)),
+                ) {
+                    when (pauseOverlay) {
+                        PlayerPauseOverlay.MENU -> PauseMenuCard(
+                            title = state.titleName ?: "Game paused",
+                            onResume = ::resumeAndCloseOverlay,
+                            onOpenOptions = { pauseOverlay = PlayerPauseOverlay.OPTIONS },
+                            onExitHome = onExitHome,
+                            onExitAndroid = onExitAndroid,
+                        )
+                        PlayerPauseOverlay.OPTIONS -> PauseOptionsCard(
+                            showFpsCounter = state.showFpsCounter,
+                            presentationBackend = state.presentationBackend,
+                            renderScaleProfile = state.renderScaleProfile,
+                            onSetShowFpsCounter = onSetShowFpsCounter,
+                            onBack = { pauseOverlay = PlayerPauseOverlay.MENU },
+                        )
+                        PlayerPauseOverlay.NONE -> Unit
+                    }
+                }
+            }
+        }
     }
+}
+
+private enum class PlayerPauseOverlay {
+    NONE,
+    MENU,
+    OPTIONS,
 }
 
 private data class PlayerFrameState(
@@ -360,6 +445,130 @@ private data class PlayerOverlayState(
                 message = message,
                 metrics = PresentationPerformanceMetrics.Empty,
             )
+        }
+    }
+}
+
+@Composable
+private fun PauseMenuCard(
+    title: String,
+    onResume: () -> Unit,
+    onOpenOptions: () -> Unit,
+    onExitHome: () -> Unit,
+    onExitAndroid: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.headlineSmall,
+            color = Color(0xFFF4F8FB),
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            text = "Il gioco e stato messo in pausa.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color(0xFFCFD9E1),
+        )
+        Button(
+            onClick = onResume,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Riprendi")
+        }
+        OutlinedButton(
+            onClick = onOpenOptions,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Opzioni")
+        }
+        OutlinedButton(
+            onClick = onExitHome,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Esci alla Home")
+        }
+        OutlinedButton(
+            onClick = onExitAndroid,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Esci ad Android")
+        }
+    }
+}
+
+@Composable
+private fun PauseOptionsCard(
+    showFpsCounter: Boolean,
+    presentationBackend: String,
+    renderScaleProfile: String,
+    onSetShowFpsCounter: (Boolean) -> Unit,
+    onBack: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+    ) {
+        Text(
+            text = "Opzioni rapide",
+            style = MaterialTheme.typography.headlineSmall,
+            color = Color(0xFFF4F8FB),
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            text = "Il gioco resta in pausa mentre modifichi queste opzioni.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color(0xFFCFD9E1),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = "FPS Counter",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color(0xFFF4F8FB),
+                )
+                Text(
+                    text = "Mostra o nasconde il contatore Visible FPS in alto a sinistra.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFAFC0CF),
+                    lineHeight = 18.sp,
+                )
+            }
+            Switch(
+                checked = showFpsCounter,
+                onCheckedChange = onSetShowFpsCounter,
+            )
+        }
+        Text(
+            text = "Backend: $presentationBackend",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color(0xFFE6ECF2),
+        )
+        Text(
+            text = "Render scale: $renderScaleProfile",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color(0xFFE6ECF2),
+        )
+        Text(
+            text = "Input mapping e altre opzioni live arriveranno in una fase successiva.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFAFC0CF),
+            lineHeight = 18.sp,
+        )
+        OutlinedButton(
+            onClick = onBack,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Torna al menu pausa")
         }
     }
 }

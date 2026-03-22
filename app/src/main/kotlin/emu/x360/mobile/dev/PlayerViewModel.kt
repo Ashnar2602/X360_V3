@@ -34,5 +34,14 @@ internal class PlayerViewModel(
 
     fun openPresentationReader(): SharedFramePresentationReader? = PlayerSessionController.openPresentationReader()
 
+    fun pause(): Boolean = PlayerSessionController.pause()
+
+    fun resume(): Boolean = PlayerSessionController.resume()
+
+    fun setShowFpsCounter(enabled: Boolean) {
+        appSettingsStore.update { current -> current.copy(showFpsCounter = enabled) }
+        PlayerSessionController.setShowFpsCounter(enabled)
+    }
+
     fun currentSettings(): AppSettings = appSettingsStore.load()
 }

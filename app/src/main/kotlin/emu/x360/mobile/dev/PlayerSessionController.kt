@@ -129,6 +129,40 @@ internal object PlayerSessionController {
         }
     }
 
+    fun pause(): Boolean {
+        val session = activeSession ?: return false
+        val paused = session.pause()
+        if (paused) {
+            mutableState.update {
+                it.copy(
+                    isPaused = true,
+                    detail = "Game paused",
+                )
+            }
+        }
+        return paused
+    }
+
+    fun resume(): Boolean {
+        val session = activeSession ?: return false
+        val resumed = session.resume()
+        if (resumed) {
+            mutableState.update {
+                it.copy(
+                    isPaused = false,
+                    detail = if (it.frameIndex >= 0L) "Frame ${it.frameIndex}" else "Resuming game",
+                )
+            }
+        }
+        return resumed
+    }
+
+    fun setShowFpsCounter(enabled: Boolean) {
+        mutableState.update {
+            it.copy(showFpsCounter = enabled)
+        }
+    }
+
     fun openPresentationReader(): SharedFramePresentationReader? {
         return activeSession?.openPresentationReader()
     }
@@ -188,6 +222,7 @@ internal object PlayerSessionController {
                 frameFreshnessSeconds = outputPreview.freshnessSeconds,
                 fps = mergedMetrics.visibleFps,
                 showFpsCounter = showFpsCounter,
+                isPaused = session.isPaused(),
                 presentationBackend = currentState.presentationBackend,
                 renderScaleProfile = currentState.renderScaleProfile,
                 internalDisplayResolution = currentState.internalDisplayResolution,
@@ -255,6 +290,7 @@ internal data class PlayerSessionUiState(
     val frameFreshnessSeconds: Long? = null,
     val fps: Float = 0f,
     val showFpsCounter: Boolean = false,
+    val isPaused: Boolean = false,
     val presentationBackend: String = PresentationBackend.FRAMEBUFFER_SHARED_MEMORY.name.lowercase(),
     val renderScaleProfile: String = GuestRenderScaleProfile.ONE.name.lowercase(),
     val internalDisplayResolution: String = "1280x720",

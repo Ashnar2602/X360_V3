@@ -22,4 +22,6 @@ object NativeBridge {
     external fun pollFdReadable(fd: Int, timeoutMs: Int): Int
 
     external fun closeFd(fd: Int): Boolean
+
+    external fun sendSignal(pid: Int, signal: Int): Boolean
 }
