@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import emu.x360.mobile.dev.bootstrap.DiagnosticLaunchProfile
 import emu.x360.mobile.dev.runtime.MesaRuntimeBranch
 
 @Composable
@@ -37,6 +38,7 @@ internal fun DebugScreen(
     onInstall: () -> Unit,
     onImportIso: () -> Unit,
     onLaunchImportedTitle: (String) -> Unit,
+    onLaunchImportedTitleDiagnostic: (String, DiagnosticLaunchProfile) -> Unit,
     onRemoveLibraryEntry: (String) -> Unit,
     onLaunchXeniaBringup: () -> Unit,
     onLaunchTurnipProbe: () -> Unit,
@@ -94,6 +96,7 @@ internal fun DebugScreen(
                 onImportIso = onImportIso,
                 onRefreshLibrary = onRefreshLibrary,
                 onLaunchEntry = onLaunchImportedTitle,
+                onLaunchDiagnostic = onLaunchImportedTitleDiagnostic,
                 onRemoveEntry = onRemoveLibraryEntry,
             )
 
@@ -174,6 +177,22 @@ internal fun DebugScreen(
                     "Cache backend status: ${state.xeniaCacheBackendStatus}",
                     "Cache root: ${state.xeniaCacheRootPath}",
                     "Title metadata seen: ${state.xeniaTitleMetadataSeen}",
+                    "Title ID: ${state.xeniaTitleId}",
+                    "Module hash: ${state.xeniaModuleHash}",
+                    "Patch DB present: ${state.xeniaPatchDatabasePresent}",
+                    "Patch DB revision: ${state.xeniaPatchDatabaseRevision}",
+                    "Patch DB files: ${state.xeniaPatchDatabaseFileCount}",
+                    "Patch DB bundled titles: ${state.xeniaPatchDatabaseBundleTitleCount}",
+                    "Patch DB loaded titles: ${state.xeniaPatchDatabaseLoadedTitleCount}",
+                    "Applied patches: ${state.xeniaAppliedPatches}",
+                    "Last content miss: ${state.xeniaLastContentMiss}",
+                    "Last meaningful guest transition: ${state.xeniaLastMeaningfulGuestTransition}",
+                    "Last content call: ${state.xeniaLastContentCallResult}",
+                    "Last XAM call: ${state.xeniaLastXamCallResult}",
+                    "Last XLive call: ${state.xeniaLastXliveCallResult}",
+                    "Last XNet call: ${state.xeniaLastXnetCallResult}",
+                    "Progression bucket: ${state.xeniaProgressionBucket}",
+                    "Progression reason: ${state.xeniaProgressionReason}",
                     "Presentation backend: ${state.xeniaPresentationBackend}",
                     "Guest render scale: ${state.xeniaGuestRenderScaleProfile}",
                     "Internal display resolution: ${state.xeniaInternalDisplayResolution}",
@@ -182,10 +201,25 @@ internal fun DebugScreen(
                     "Last frame dimensions: ${state.xeniaLastFrameDimensions}",
                     "Last frame index: ${state.xeniaLastFrameIndex}",
                     "Frame freshness (s): ${state.xeniaFrameFreshnessSeconds}",
+                    "Transport frame hash: ${state.xeniaTransportFrameHash}",
+                    "Visible frame hash: ${state.xeniaVisibleFrameHash}",
                     "Last log path: ${state.xeniaLogPath}",
                     "Executable: ${state.xeniaExecutablePath}",
                 ),
                 accent = Color(0xFFFF8B7B),
+            )
+
+            DebugStatusCard(
+                title = "Latest Player Diagnostics Bundle",
+                lines = listOf(
+                    "Session: ${state.latestDiagnosticsSessionId.ifBlank { "none" }}",
+                    "Bucket: ${state.latestDiagnosticsBucket.ifBlank { "unknown" }}",
+                    "Reason: ${state.latestDiagnosticsReason.ifBlank { "n/a" }}",
+                    "Last transition: ${state.latestDiagnosticsLastTransition.ifBlank { "n/a" }}",
+                    "Storage roots: ${state.latestDiagnosticsStorageSummary.ifBlank { "n/a" }}",
+                    "Bundle path: ${state.latestDiagnosticsBundlePath.ifBlank { "n/a" }}",
+                ),
+                accent = Color(0xFFAED0FF),
             )
 
             DebugStatusCard(
@@ -251,6 +285,7 @@ private fun DebugLibraryCard(
     onImportIso: () -> Unit,
     onRefreshLibrary: () -> Unit,
     onLaunchEntry: (String) -> Unit,
+    onLaunchDiagnostic: (String, DiagnosticLaunchProfile) -> Unit,
     onRemoveEntry: (String) -> Unit,
 ) {
     Card(
@@ -325,6 +360,17 @@ private fun DebugLibraryCard(
                                     enabled = !isBusy,
                                 ) {
                                     Text("Launch Visible")
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        onLaunchDiagnostic(
+                                            entry.id,
+                                            DiagnosticLaunchProfile.FRAMEBUFFER_POLLING_DIAGNOSTIC,
+                                        )
+                                    },
+                                    enabled = !isBusy,
+                                ) {
+                                    Text("Diag Polling")
                                 }
                                 OutlinedButton(
                                     onClick = { onRemoveEntry(entry.id) },

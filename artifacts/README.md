@@ -2,31 +2,42 @@
 
 This directory exists so successful milestone outputs do not live only inside `app/build/`.
 
-Current archived milestone:
+Currently archived milestones:
 
 - `phase4a-vulkan-init`
 - `phase5b-visible-player`
 
-Working tree note:
+Those archives preserve:
 
-- the repo has moved forward to the Phase 6A shared-memory display baseline
-- artifact archiving is still intentionally conservative, so the archive set currently stops at the last explicitly preserved milestone above
-
-Contents preserved there:
-
-- built `xenia-canary` binary for the successful Phase 4A bring-up
-- built FEX host binaries used by the same milestone
-- exact source locks and build metadata for Xenia and FEX
+- built `xenia-canary`
+- built FEX host binaries
+- metadata and source locks
 - `app-debug-androidTest.apk`
-- `artifact-manifest.json` with sizes and `sha256` values
+- `artifact-manifest.json` with file size and `sha256`
 
-For `phase5b-visible-player`, the archive preserves the same class of artifacts for the first milestone where:
+## Current live workspace vs archive state
 
-- the product shell exists
-- the fullscreen player exists
-- Dante produces visible frames on both validated devices
+The live workspace is now well beyond the last archived milestone.
+
+What exists in the live workspace but is not yet archived as a dedicated milestone set:
+
+- input bridge into headless Xenia
+- global official patch DB staging
+- title-content UI/pipeline
+- progression diagnostics bundle and stall classification
+- current Xenia patch set `phase10c-triage-v2`
+- current stable product baseline with `FRAMEBUFFER_POLLING` as default player backend
 
 Important note:
 
-- the main `app-debug.apk` from this milestone is larger than GitHub's `100 MB` per-file limit
-- it is therefore not committed directly, but its exact size and `sha256` are captured in the manifest so the successful package state is still pinned and auditable
+- the main `app-debug.apk` is still not committed because it exceeds GitHub's `100 MB` per-file limit
+- when a new milestone is considered stable, archive the binaries plus `artifact-manifest.json` instead of trying to commit the APK directly
+
+## Recommendation for next archive
+
+The next archive should be created only after the current progression-stall milestone is stabilized, so the archived package reflects:
+
+- live visible rendering on both validated devices
+- controller input
+- patch DB presence
+- a trustworthy post-boot progression baseline

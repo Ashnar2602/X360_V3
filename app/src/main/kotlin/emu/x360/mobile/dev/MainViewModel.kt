@@ -52,6 +52,30 @@ class MainViewModel(
         }
     }
 
+    fun importTitleContent(entryId: String, uri: Uri) {
+        runShellMutation {
+            manager.importTitleContent(entryId, uri).lastAction
+        }
+    }
+
+    fun refreshTitleContent(entryId: String) {
+        runShellMutation {
+            manager.refreshTitleContent(entryId).lastAction
+        }
+    }
+
+    fun removeTitleContent(contentEntryId: String) {
+        runShellMutation {
+            manager.removeTitleContent(contentEntryId).lastAction
+        }
+    }
+
+    fun reinstallTitleContent(contentEntryId: String) {
+        runShellMutation {
+            manager.reinstallTitleContent(contentEntryId).lastAction
+        }
+    }
+
     fun setShowFpsCounter(enabled: Boolean) {
         mutableState.update { it.copy(isBusy = true) }
         viewModelScope.launch(Dispatchers.IO) {
@@ -95,7 +119,12 @@ class MainViewModel(
 
     private fun currentGameOptions(shell: ShellSnapshot): Map<String, GameOptionsUi> {
         return shell.libraryEntries.associate { entry ->
-            entry.id to GameOptionsUi.from(entry, gameOptionsStore.optionsFor(entry.id))
+            entry.id to GameOptionsUi.from(
+                entry = entry,
+                options = gameOptionsStore.optionsFor(entry.id),
+                patchDatabase = shell.xeniaPatchDatabase,
+                contentEntries = shell.titleContentEntries.filter { it.libraryEntryId == entry.id },
+            )
         }
     }
 }

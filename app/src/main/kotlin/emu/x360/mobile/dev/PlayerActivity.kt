@@ -4,7 +4,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
+import android.hardware.input.InputManager
 import android.os.Bundle
+import android.view.InputDevice
+import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.ImageView
@@ -70,6 +75,16 @@ import kotlinx.coroutines.withContext
 
 class PlayerActivity : ComponentActivity() {
     private val viewModel by viewModels<PlayerViewModel>()
+    private val controllerMappingStore by lazy { ControllerMappingStore(applicationContext.filesDir.toPath()) }
+    private var controllerInputMapper = AndroidControllerInputMapper()
+    private val inputManager by lazy { getSystemService(InputManager::class.java) }
+    private val inputDeviceListener = object : InputManager.InputDeviceListener {
+        override fun onInputDeviceAdded(deviceId: Int) = refreshConnectedControllers()
+
+        override fun onInputDeviceRemoved(deviceId: Int) = refreshConnectedControllers()
+
+        override fun onInputDeviceChanged(deviceId: Int) = refreshConnectedControllers()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,6 +97,7 @@ class PlayerActivity : ComponentActivity() {
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setImmersiveMode()
+        controllerInputMapper.reloadProfile(controllerMappingStore.load())
         setContent {
             X360RebuildTheme {
                 val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -95,6 +111,9 @@ class PlayerActivity : ComponentActivity() {
                     onPausePlayer = viewModel::pause,
                     onResumePlayer = viewModel::resume,
                     onSetShowFpsCounter = viewModel::setShowFpsCounter,
+                    onOpenControllerMapping = {
+                        startActivity(ControllerMappingActivity.intent(this))
+                    },
                     onExitHome = {
                         viewModel.stop()
                         finish()
@@ -116,11 +135,68 @@ class PlayerActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        controllerInputMapper.reloadProfile(controllerMappingStore.load())
+        inputManager?.registerInputDeviceListener(inputDeviceListener, null)
+        refreshConnectedControllers()
+    }
+
+    override fun onStop() {
+        inputManager?.unregisterInputDeviceListener(inputDeviceListener)
+        super.onStop()
+    }
+
     override fun onDestroy() {
         if (isFinishing) {
             viewModel.stop("activity-destroy")
         }
         super.onDestroy()
+    }
+
+    override fun onKeyDown(
+        keyCode: Int,
+        event: KeyEvent,
+    ): Boolean {
+        if (keyCode != KeyEvent.KEYCODE_BACK) {
+            controllerInputMapper.onKeyDown(event)?.let { update ->
+                viewModel.submitControllerInput(update)
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(
+        keyCode: Int,
+        event: KeyEvent,
+    ): Boolean {
+        if (keyCode != KeyEvent.KEYCODE_BACK) {
+            controllerInputMapper.onKeyUp(event)?.let { update ->
+                viewModel.submitControllerInput(update)
+                return true
+            }
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        controllerInputMapper.onGenericMotionEvent(event)?.let { update ->
+            viewModel.submitControllerInput(update)
+            return true
+        }
+        return super.onGenericMotionEvent(event)
+    }
+
+    private fun refreshConnectedControllers() {
+        val devices = inputManager
+            ?.inputDeviceIds
+            ?.toList()
+            ?.mapNotNull { deviceId -> InputDevice.getDevice(deviceId) }
+            ?: emptyList()
+        controllerInputMapper.onControllerDevicesChanged(devices)?.let { update ->
+            viewModel.submitControllerInput(update)
+        }
     }
 
     private fun setImmersiveMode() {
@@ -149,6 +225,7 @@ private fun PlayerScreen(
     onPausePlayer: () -> Boolean,
     onResumePlayer: () -> Boolean,
     onSetShowFpsCounter: (Boolean) -> Unit,
+    onOpenControllerMapping: () -> Unit,
     onExitHome: () -> Unit,
     onExitAndroid: () -> Unit,
 ) {
@@ -210,19 +287,23 @@ private fun PlayerScreen(
                         )
                     }
                     if (frame != null) {
-                        tracker.onExportObserved(frame.header.frameIndex)
-                        if (!(state.keepLastVisibleFrame && lastBuffer != null && !playerFrameHasVisibleContent(frame.rgbaBytes, frame.header.payloadSize))) {
-                            tracker.onDecoded()
-                            val updatedBuffer = updatePlayerBitmapBufferFromSharedFrame(frame, lastBuffer)
-                            lastBuffer = updatedBuffer
-                            if (imageView.tag !== updatedBuffer.bitmap) {
-                                imageView.setImageBitmap(updatedBuffer.bitmap)
-                                imageView.tag = updatedBuffer.bitmap
-                            }
-                            imageView.postInvalidateOnAnimation()
-                            tracker.onPresented(frame.header.frameIndex)
-                            lastFrameIndex = frame.header.frameIndex
+                        val transportHash = computePlayerFrameHash(frame.rgbaBytes, frame.header.payloadSize)
+                        tracker.onExportObserved(frame.header.frameIndex, transportHash)
+                        tracker.onDecoded()
+                        val updatedBuffer = withContext(Dispatchers.Default) {
+                            updatePlayerBitmapBufferFromSharedFrame(frame, lastBuffer)
                         }
+                        lastBuffer = updatedBuffer
+                        if (imageView.tag !== updatedBuffer.bitmap) {
+                            imageView.setImageBitmap(updatedBuffer.bitmap)
+                            imageView.tag = updatedBuffer.bitmap
+                        }
+                        imageView.postInvalidateOnAnimation()
+                        tracker.onPresented(
+                            frame.header.frameIndex,
+                            computePlayerFrameHash(updatedBuffer.scratchBytes, frame.header.width * frame.header.height * 4),
+                        )
+                        lastFrameIndex = frame.header.frameIndex
                     }
 
                     val nowMillis = System.currentTimeMillis()
@@ -393,7 +474,19 @@ private fun PlayerScreen(
                             showFpsCounter = state.showFpsCounter,
                             presentationBackend = state.presentationBackend,
                             renderScaleProfile = state.renderScaleProfile,
+                            controllerConnected = state.controllerConnected,
+                            controllerName = state.controllerName,
+                            lastInputAgeMs = state.lastInputAgeMs,
+                            titleId = state.titleId,
+                            moduleHash = state.moduleHash,
+                            patchDatabaseLoadedTitleCount = state.patchDatabaseLoadedTitleCount,
+                            progressionBucket = state.progressionBucket,
+                            progressionReason = state.progressionReason,
+                            lastMeaningfulTransition = state.lastMeaningfulTransition,
+                            frameIndex = state.frameIndex,
+                            lastInputSequence = state.lastInputSequence,
                             onSetShowFpsCounter = onSetShowFpsCounter,
+                            onOpenControllerMapping = onOpenControllerMapping,
                             onBack = { pauseOverlay = PlayerPauseOverlay.MENU },
                         )
                         PlayerPauseOverlay.NONE -> Unit
@@ -504,7 +597,19 @@ private fun PauseOptionsCard(
     showFpsCounter: Boolean,
     presentationBackend: String,
     renderScaleProfile: String,
+    controllerConnected: Boolean,
+    controllerName: String?,
+    lastInputAgeMs: Long?,
+    titleId: String?,
+    moduleHash: String?,
+    patchDatabaseLoadedTitleCount: Int,
+    progressionBucket: String,
+    progressionReason: String,
+    lastMeaningfulTransition: String?,
+    frameIndex: Long,
+    lastInputSequence: Long,
     onSetShowFpsCounter: (Boolean) -> Unit,
+    onOpenControllerMapping: () -> Unit,
     onBack: () -> Unit,
 ) {
     Column(
@@ -559,11 +664,77 @@ private fun PauseOptionsCard(
             color = Color(0xFFE6ECF2),
         )
         Text(
-            text = "Input mapping e altre opzioni live arriveranno in una fase successiva.",
+            text = buildString {
+                append("Controller: ")
+                append(if (controllerConnected) "connected" else "not connected")
+                controllerName?.takeIf { it.isNotBlank() }?.let {
+                    append(" (")
+                    append(it)
+                    append(')')
+                }
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color(0xFFE6ECF2),
+        )
+        Text(
+            text = if (lastInputAgeMs != null) {
+                "Last input: ${lastInputAgeMs} ms ago"
+            } else {
+                "Last input: none yet"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFAFC0CF),
+        )
+        Text(
+            text = "Il remap dei tasti digitali apre una schermata dedicata. Gli stick analogici restano su auto-detect in questa fase.",
             style = MaterialTheme.typography.bodySmall,
             color = Color(0xFFAFC0CF),
             lineHeight = 18.sp,
         )
+        Text(
+            text = "Diagnostics",
+            style = MaterialTheme.typography.titleMedium,
+            color = Color(0xFFF4F8FB),
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            text = "Frame index: $frameIndex | Last input seq: $lastInputSequence",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFAFC0CF),
+        )
+        Text(
+            text = "Title ID: ${titleId ?: "unknown"} | Module hash: ${moduleHash ?: "unknown"}",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFAFC0CF),
+        )
+        Text(
+            text = "Patch DB loaded titles: $patchDatabaseLoadedTitleCount",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFAFC0CF),
+        )
+        Text(
+            text = "Progression bucket: $progressionBucket",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFAFC0CF),
+        )
+        Text(
+            text = "Reason: $progressionReason",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFAFC0CF),
+            lineHeight = 18.sp,
+        )
+        Text(
+            text = "Last guest transition: ${lastMeaningfulTransition ?: "none"}",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFAFC0CF),
+            lineHeight = 18.sp,
+        )
+        OutlinedButton(
+            onClick = onOpenControllerMapping,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Controller Mapping")
+        }
         OutlinedButton(
             onClick = onBack,
             modifier = Modifier.fillMaxWidth(),
@@ -573,12 +744,28 @@ private fun PauseOptionsCard(
     }
 }
 
-private data class PlayerBitmapBuffer(
-    val bitmap: Bitmap,
+private class PlayerBitmapBuffer(
+    primaryBitmap: Bitmap,
+    secondaryBitmap: Bitmap,
     val sourceBytes: ByteArray,
     val scratchBytes: ByteArray,
     val scratchBuffer: ByteBuffer,
-)
+) {
+    private val bitmaps = arrayOf(primaryBitmap, secondaryBitmap)
+    private var nextBitmapIndex = 0
+
+    var bitmap: Bitmap = bitmaps[0]
+        private set
+
+    fun commitScratchBufferToBitmap() {
+        val targetBitmap = bitmaps[nextBitmapIndex]
+        scratchBuffer.rewind()
+        targetBitmap.copyPixelsFromBuffer(scratchBuffer)
+        scratchBuffer.rewind()
+        bitmap = targetBitmap
+        nextBitmapIndex = (nextBitmapIndex + 1) % bitmaps.size
+    }
+}
 
 private data class PlayerFramebufferSample(
     val header: XeniaFramebufferHeader,
@@ -650,7 +837,8 @@ private fun readPlayerFrameState(
         )
     }
 
-    tracker.onExportObserved(sample.header.frameIndex)
+    val transportHash = computePlayerFrameHash(sample.buffer.sourceBytes, sample.header.minimumPayloadSize)
+    tracker.onExportObserved(sample.header.frameIndex, transportHash)
 
     if (keepLastVisibleFrame &&
         lastBuffer != null &&
@@ -667,7 +855,10 @@ private fun readPlayerFrameState(
 
     tracker.onDecoded()
     val updatedBuffer = updatePlayerBitmapBuffer(sample)
-    tracker.onPresented(sample.header.frameIndex)
+    tracker.onPresented(
+        sample.header.frameIndex,
+        computePlayerFrameHash(updatedBuffer.scratchBytes, sample.header.width * sample.header.height * 4),
+    )
     return PlayerFrameState(
         buffer = updatedBuffer,
         frameIndex = sample.header.frameIndex,
@@ -723,7 +914,8 @@ private fun createPlayerBitmapBuffer(
 ): PlayerBitmapBuffer {
     val scratchBytes = ByteArray(width * height * 4)
     return PlayerBitmapBuffer(
-        bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888),
+        primaryBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888),
+        secondaryBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888),
         sourceBytes = ByteArray(payloadSize),
         scratchBytes = scratchBytes,
         scratchBuffer = ByteBuffer.wrap(scratchBytes),
@@ -751,9 +943,7 @@ private fun updatePlayerBitmapBuffer(
             destinationIndex += rowByteCount
         }
     }
-    buffer.scratchBuffer.rewind()
-    buffer.bitmap.copyPixelsFromBuffer(buffer.scratchBuffer)
-    buffer.scratchBuffer.rewind()
+    buffer.commitScratchBufferToBitmap()
     return buffer
 }
 
@@ -785,9 +975,7 @@ private fun updatePlayerBitmapBufferFromSharedFrame(
         height = header.height,
         stride = header.stride,
     )
-    buffer.scratchBuffer.rewind()
-    buffer.bitmap.copyPixelsFromBuffer(buffer.scratchBuffer)
-    buffer.scratchBuffer.rewind()
+    buffer.commitScratchBufferToBitmap()
     return buffer
 }
 
@@ -829,6 +1017,25 @@ private fun playerFrameHasVisibleContent(
     return false
 }
 
+private fun computePlayerFrameHash(
+    bytes: ByteArray,
+    byteCount: Int,
+): String {
+    if (byteCount <= 0 || bytes.isEmpty()) {
+        return ""
+    }
+    var hash = 0x811C9DC5.toInt()
+    val safeCount = byteCount.coerceAtMost(bytes.size)
+    val step = (safeCount / 1024).coerceAtLeast(1)
+    var index = 0
+    while (index < safeCount) {
+        hash = hash xor (bytes[index].toInt() and 0xFF)
+        hash *= 0x01000193
+        index += step
+    }
+    return Integer.toHexString(hash)
+}
+
 private fun readExactly(
     input: InputStream,
     destination: ByteArray,
@@ -855,6 +1062,9 @@ private fun rememberPlayerImageView(context: Context): ImageView {
             scaleType = ImageView.ScaleType.FIT_CENTER
             adjustViewBounds = true
             setBackgroundColor(android.graphics.Color.BLACK)
+            // Keep the player presenter on a software layer so mutable frame bitmaps
+            // don't depend on device-specific HWUI texture refresh behavior.
+            setLayerType(View.LAYER_TYPE_SOFTWARE, null)
         }
     }
 }

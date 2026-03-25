@@ -9,6 +9,7 @@ val fexAndroidApi = 33
 val guestRuntimeLockManifestPath = "fixtures/guest-runtime/ubuntu-24.04-amd64-lvp.lock.json"
 val mesaRuntimeLockManifestPath = "fixtures/mesa-runtime/mesa-turnip-source-lock.json"
 val xeniaSourceLockManifestPath = "fixtures/xenia-runtime/xenia-source-lock.json"
+val xeniaGamePatchesLockManifestPath = "fixtures/xenia-runtime/xenia-game-patches-lock.json"
 val androidSdkDirValue = providers.environmentVariable("ANDROID_HOME")
     .orElse(providers.environmentVariable("ANDROID_SDK_ROOT"))
     .orNull
@@ -148,9 +149,11 @@ androidComponents.onVariants(androidComponents.selector().all()) { variant ->
 
     val generateXeniaBringupAssetsTask = tasks.register<GenerateXeniaBringupAssetsTask>("generate${variantName}XeniaBringupAssets") {
         xeniaSourceLockManifest.set(rootProject.layout.projectDirectory.file(xeniaSourceLockManifestPath))
+        xeniaGamePatchesLockManifest.set(rootProject.layout.projectDirectory.file(xeniaGamePatchesLockManifestPath))
         patchesDir.set(rootProject.layout.projectDirectory.dir("third_party/xenia-patches"))
         buildMode.set(if (variant.buildType == "debug") "incremental" else "full")
         sourceCacheDir.set(layout.buildDirectory.dir("xeniaSourceCache/${variant.name}"))
+        gamePatchesCacheDir.set(layout.buildDirectory.dir("xeniaGamePatchesCache/${variant.name}"))
         workspaceCacheDir.set(layout.buildDirectory.dir("xeniaDevWorkspaces/${variant.name}"))
         outputDir.set(layout.buildDirectory.dir("generated/xeniaBringupAssets/${variant.name}"))
     }

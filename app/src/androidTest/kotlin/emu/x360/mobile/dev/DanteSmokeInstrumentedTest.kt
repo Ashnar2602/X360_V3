@@ -60,8 +60,8 @@ class DanteSmokeInstrumentedTest {
         val backendOverride = arguments.getString("dante_presentation_backend")
         val presentationSettings = when (backendOverride) {
             "headless_only" -> XeniaPresentationSettings.HeadlessBringup
-            "framebuffer_polling" -> XeniaPresentationSettings.FramebufferPollingPerformance
-            else -> XeniaPresentationSettings.FramebufferSharedMemory
+            "framebuffer_shared_memory" -> XeniaPresentationSettings.FramebufferSharedMemory
+            else -> XeniaPresentationSettings.FramebufferPollingPerformance
         }
         val useHeadlessOnly = presentationSettings.presentationBackend == PresentationBackend.HEADLESS_ONLY
         val requiredStage = if (useHeadlessOnly) {

@@ -54,15 +54,21 @@ internal class RollingPresentationMetricsTracker(
     private var exportFrameCount: Long = 0L
     private var decodedFrameCount: Long = 0L
     private var presentedFrameCount: Long = 0L
+    private var lastTransportFrameHash: String = ""
+    private var lastVisibleFrameHash: String = ""
 
     fun onExportObserved(
         frameIndex: Long,
+        frameHash: String = "",
         nowMillis: Long = System.currentTimeMillis(),
     ) {
         if (frameIndex < 0L) {
             return
         }
         exportFrameCount = frameIndex
+        if (frameHash.isNotBlank()) {
+            lastTransportFrameHash = frameHash
+        }
         exportCounter.record(frameIndex, nowMillis)
     }
 
@@ -73,10 +79,14 @@ internal class RollingPresentationMetricsTracker(
 
     fun onPresented(
         frameIndex: Long,
+        visibleFrameHash: String = "",
         nowMillis: Long = System.currentTimeMillis(),
     ) {
         presentedFrameCount += 1L
         presentCounter.record(nowMillis)
+        if (visibleFrameHash.isNotBlank()) {
+            lastVisibleFrameHash = visibleFrameHash
+        }
         visibleCounter.record(frameIndex, nowMillis)
     }
 
@@ -90,6 +100,8 @@ internal class RollingPresentationMetricsTracker(
             presentFps = presentCounter.fps,
             visibleFps = visibleCounter.fps,
             frameSourceStatus = frameSourceStatus,
+            transportFrameHash = lastTransportFrameHash,
+            visibleFrameHash = lastVisibleFrameHash,
         )
     }
 }

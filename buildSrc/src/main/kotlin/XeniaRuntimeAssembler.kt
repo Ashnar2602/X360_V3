@@ -108,12 +108,14 @@ class XeniaRuntimeAssembler(
 
     fun buildAndStage(
         lock: XeniaSourceBuildLock,
+        gamePatchesLock: XeniaGamePatchesLock,
         sourceCacheDir: Path,
+        gamePatchesCacheDir: Path,
         workingRootBase: Path,
         outputRoot: Path,
         patchesRoot: Path,
         buildMode: XeniaBuildMode,
-    ): GeneratedXeniaBuildMetadata {
+    ): XeniaRuntimeStageResult {
         deleteRecursively(outputRoot)
         outputRoot.createDirectories()
 
@@ -127,42 +129,51 @@ class XeniaRuntimeAssembler(
         workingRoot.createDirectories()
         val checkoutDir = workingRoot.resolve("checkout")
         prepareSourceCheckout(lock, sourceCacheDir, checkoutDir, patchFiles, buildMode, workspaceKey)
-        val executable = buildXenia(lock, checkoutDir, vulkanSdkOverride, buildMode)
-        val dependencyResolution = resolveGuestDependencies(executable, workingRoot.resolve("downloads"))
+        val builtArtifacts = buildXenia(lock, checkoutDir, vulkanSdkOverride, buildMode)
+        val dependencyResolution = resolveGuestDependencies(builtArtifacts.executable, workingRoot.resolve("downloads"))
 
         stageRuntimeTree(
-            executable = executable,
+            builtArtifacts = builtArtifacts,
             dependencyResolution = dependencyResolution,
             outputRoot = outputRoot,
             extractionRoot = workingRoot.resolve("xenia-package-extraction"),
             lock = lock,
         )
 
-        return GeneratedXeniaBuildMetadata(
-            sourceUrl = lock.sourceUrl,
-            sourceRef = lock.sourceRef,
-            sourceRevision = lock.sourceRevision,
-            buildProfile = lock.buildProfile,
-            patchSetId = lock.patchSetId,
-            executableName = "xenia-canary",
-            executableSha256 = sha256(outputRoot.resolve("rootfs/opt/x360-v3/xenia/bin/xenia-canary")),
-            runtimeLibraries = dependencyResolution.libraries.map { library ->
-                GeneratedXeniaRuntimeLibrary(
-                    soname = library.soname,
-                    sourcePath = library.sourcePath,
-                    installPath = library.installPath,
-                    packageName = library.packageName,
-                    packageVersion = library.packageVersion,
-                )
-            },
-            requiredPackages = dependencyResolution.packages.map { pkg ->
-                GeneratedXeniaGuestPackage(
-                    packageName = pkg.packageName,
-                    packageVersion = pkg.packageVersion,
-                    archiveName = pkg.archivePath.fileName.toString(),
-                    archiveSha256 = sha256(pkg.archivePath),
-                )
-            },
+        val gamePatchesMetadata = stageOfficialGamePatches(
+            lock = gamePatchesLock,
+            sourceCacheDir = gamePatchesCacheDir,
+            destinationRoot = outputRoot.resolve("rootfs/tmp/x360-v3/xenia/storage/patches"),
+        )
+
+        return XeniaRuntimeStageResult(
+            buildMetadata = GeneratedXeniaBuildMetadata(
+                sourceUrl = lock.sourceUrl,
+                sourceRef = lock.sourceRef,
+                sourceRevision = lock.sourceRevision,
+                buildProfile = lock.buildProfile,
+                patchSetId = lock.patchSetId,
+                executableName = "xenia-canary",
+                executableSha256 = sha256(outputRoot.resolve("rootfs/opt/x360-v3/xenia/bin/xenia-canary")),
+                runtimeLibraries = dependencyResolution.libraries.map { library ->
+                    GeneratedXeniaRuntimeLibrary(
+                        soname = library.soname,
+                        sourcePath = library.sourcePath,
+                        installPath = library.installPath,
+                        packageName = library.packageName,
+                        packageVersion = library.packageVersion,
+                    )
+                },
+                requiredPackages = dependencyResolution.packages.map { pkg ->
+                    GeneratedXeniaGuestPackage(
+                        packageName = pkg.packageName,
+                        packageVersion = pkg.packageVersion,
+                        archiveName = pkg.archivePath.fileName.toString(),
+                        archiveSha256 = sha256(pkg.archivePath),
+                    )
+                },
+            ),
+            gamePatchesMetadata = gamePatchesMetadata,
         )
     }
 
@@ -171,6 +182,13 @@ class XeniaRuntimeAssembler(
         outputPath: Path,
     ) {
         writeUtf8(outputPath, XeniaRuntimeLockCodec.encodeMetadata(metadata))
+    }
+
+    fun writeGamePatchesMetadata(
+        metadata: GeneratedXeniaGamePatchesMetadata,
+        outputPath: Path,
+    ) {
+        writeUtf8(outputPath, XeniaRuntimeLockCodec.encodeGamePatchesMetadata(metadata))
     }
 
     private fun prepareSourceCheckout(
@@ -235,6 +253,20 @@ class XeniaRuntimeAssembler(
         lock: XeniaSourceBuildLock,
         sourceCacheDir: Path,
     ) {
+        ensureGitSourceCache(
+            sourceUrl = lock.sourceUrl,
+            sourceRef = lock.sourceRef,
+            sourceRevision = lock.sourceRevision,
+            sourceCacheDir = sourceCacheDir,
+        )
+    }
+
+    private fun ensureGitSourceCache(
+        sourceUrl: String,
+        sourceRef: String,
+        sourceRevision: String,
+        sourceCacheDir: Path,
+    ) {
         val gitDir = sourceCacheDir.resolve(".git")
         if (!gitDir.exists()) {
             deleteRecursively(sourceCacheDir)
@@ -243,17 +275,17 @@ class XeniaRuntimeAssembler(
                     "git",
                     "clone",
                     "--branch",
-                    lock.sourceRef,
+                    sourceRef,
                     "--single-branch",
                     "--filter=blob:none",
-                    lock.sourceUrl,
+                    sourceUrl,
                     sourceCacheDir.toString(),
                 ),
                 workingDirectory = null,
             )
         }
         runProcess(
-            command = listOf("git", "-C", sourceCacheDir.toString(), "remote", "set-url", "origin", lock.sourceUrl),
+            command = listOf("git", "-C", sourceCacheDir.toString(), "remote", "set-url", "origin", sourceUrl),
             workingDirectory = null,
             failOnError = false,
         )
@@ -265,7 +297,7 @@ class XeniaRuntimeAssembler(
                 "fetch",
                 "--filter=blob:none",
                 "origin",
-                lock.sourceRef,
+                sourceRef,
             ),
             workingDirectory = null,
         )
@@ -277,7 +309,7 @@ class XeniaRuntimeAssembler(
                 "fetch",
                 "--filter=blob:none",
                 "origin",
-                lock.sourceRevision,
+                sourceRevision,
             ),
             workingDirectory = null,
         )
@@ -289,7 +321,7 @@ class XeniaRuntimeAssembler(
                 "checkout",
                 "--force",
                 "--detach",
-                lock.sourceRevision,
+                sourceRevision,
             ),
             workingDirectory = null,
         )
@@ -324,7 +356,7 @@ class XeniaRuntimeAssembler(
         checkoutDir: Path,
         vulkanSdkOverride: String?,
         buildMode: XeniaBuildMode,
-    ): Path {
+    ): XeniaBuiltArtifacts {
         val buildConfig = resolveBuildConfig(lock.buildProfile)
         val resultPath = checkoutDir.resolve("xenia-build-result.txt")
         val sourceDirWsl = toWslPath(checkoutDir)
@@ -340,10 +372,13 @@ class XeniaRuntimeAssembler(
             export PATH="${'$'}VULKAN_SDK/bin:${'$'}PATH"
             """.trimIndent()
         }
+        val configureAndBuildCommand =
+            "python3 xenia-build.py build --cc clang --config ${buildConfig.cliName} " +
+                "--cmake-define XENIA_BUILD_MISC=ON --target xenia-app --target xenia-content-tool"
         val buildCommand = when (buildMode) {
-            XeniaBuildMode.FULL -> "python3 xenia-build.py build --cc clang --config ${buildConfig.cliName} --target xenia-app"
+            XeniaBuildMode.FULL -> configureAndBuildCommand
             XeniaBuildMode.INCREMENTAL ->
-                "cmake --build build --config ${buildConfig.outputDirectoryName} --target xenia-app"
+                "cmake --build build --config ${buildConfig.outputDirectoryName} --target xenia-app --target xenia-content-tool"
         }
         val script = """
             set -euo pipefail
@@ -351,6 +386,8 @@ class XeniaRuntimeAssembler(
             find . -type f \( -name "*.py" -o -name "*.sh" -o -name "*.lua" \) -exec sed -i 's/\r$//' {} +
             git config core.autocrlf false
             git config core.eol lf
+            git submodule sync --recursive
+            git submodule update --init --recursive --jobs ${'$'}{X360_XENIA_SUBMODULE_JOBS:-4}
             export CC=clang
             export CXX=clang++
             export CMAKE_BUILD_PARALLEL_LEVEL=${'$'}{X360_XENIA_BUILD_JOBS:-2}
@@ -364,18 +401,20 @@ class XeniaRuntimeAssembler(
             fi
             if [ "${'$'}SETUP_REQUIRED" = "1" ]; then
               rm -rf build
-              python3 xenia-build.py setup
-              mkdir -p ${shellQuote(toWslPath(checkoutDir.resolve("build")))}
+              $configureAndBuildCommand
               printf '%s\n' ${shellQuote(setupSignature)} > ${shellQuote(setupSignatureFileWsl)}
+            else
+              $buildCommand
             fi
-            $buildCommand
             BIN_PATH=${'$'}(find "${'$'}PWD/build/bin/Linux/${buildConfig.outputDirectoryName}" -maxdepth 1 -type f \( -name xenia_canary -o -name xenia-app \) -perm -111 | head -n 1)
-            if [ -z "${'$'}BIN_PATH" ]; then
-                echo "Unable to locate built xenia_canary binary" >&2
+            TOOL_PATH=${'$'}(find "${'$'}PWD/build/bin/Linux/${buildConfig.outputDirectoryName}" -maxdepth 1 -type f -name xenia-content-tool -perm -111 | head -n 1)
+            if [ -z "${'$'}BIN_PATH" ] || [ -z "${'$'}TOOL_PATH" ]; then
+                echo "Unable to locate built Xenia runtime binaries" >&2
               exit 3
             fi
             BIN_PATH=${'$'}(readlink -f "${'$'}BIN_PATH")
-            printf '%s\n' "${'$'}BIN_PATH" > ${shellQuote(resultPathWsl)}
+            TOOL_PATH=${'$'}(readlink -f "${'$'}TOOL_PATH")
+            printf 'main=%s\ntool=%s\n' "${'$'}BIN_PATH" "${'$'}TOOL_PATH" > ${shellQuote(resultPathWsl)}
         """.trimIndent()
         val scriptPath = checkoutDir.resolve("build-xenia.sh")
         writeUtf8(scriptPath, "$script\n")
@@ -383,9 +422,19 @@ class XeniaRuntimeAssembler(
             command = listOf("wsl", "bash", toWslPath(scriptPath)),
             workingDirectory = null,
         )
-        val builtBinaryWsl = resultPath.readText().trim()
+        val resultLines = resultPath.readText()
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() && it.contains('=') }
+            .associate { line -> line.substringBefore('=') to line.substringAfter('=') }
+        val builtBinaryWsl = resultLines["main"].orEmpty()
+        val contentToolWsl = resultLines["tool"].orEmpty()
         require(builtBinaryWsl.isNotBlank()) { "Xenia build did not report an output binary" }
-        return fromWslPath(builtBinaryWsl)
+        require(contentToolWsl.isNotBlank()) { "Xenia build did not report the xenia-content-tool binary" }
+        return XeniaBuiltArtifacts(
+            executable = fromWslPath(builtBinaryWsl),
+            contentTool = fromWslPath(contentToolWsl),
+        )
     }
 
     private fun resolveGuestDependencies(
@@ -501,7 +550,7 @@ class XeniaRuntimeAssembler(
     }
 
     private fun stageRuntimeTree(
-        executable: Path,
+        builtArtifacts: XeniaBuiltArtifacts,
         dependencyResolution: XeniaDependencyResolution,
         outputRoot: Path,
         extractionRoot: Path,
@@ -541,8 +590,10 @@ class XeniaRuntimeAssembler(
         xeniaWritableCacheShadersShareableDir.createDirectories()
         xeniaWritableStorageDir.createDirectories()
 
-        Files.copy(executable, xeniaBinDir.resolve("xenia-canary"), StandardCopyOption.REPLACE_EXISTING)
+        Files.copy(builtArtifacts.executable, xeniaBinDir.resolve("xenia-canary"), StandardCopyOption.REPLACE_EXISTING)
         xeniaBinDir.resolve("xenia-canary").toFile().setExecutable(true, false)
+        Files.copy(builtArtifacts.contentTool, xeniaBinDir.resolve("xenia-content-tool"), StandardCopyOption.REPLACE_EXISTING)
+        xeniaBinDir.resolve("xenia-content-tool").toFile().setExecutable(true, false)
         writeUtf8(xeniaBinDir.resolve("portable.txt"), "portable-mode\n")
         writeUtf8(
             xeniaBinDir.resolve("xenia-canary.config.toml"),
@@ -567,6 +618,57 @@ class XeniaRuntimeAssembler(
         writeUtf8(
             rootfsOutput.resolve("usr").resolve("share").resolve("x360-v3").resolve("xenia-bringup.txt"),
             "Phase 4A Xenia bring-up runtime staged from a pinned source build\n",
+        )
+    }
+
+    private fun stageOfficialGamePatches(
+        lock: XeniaGamePatchesLock,
+        sourceCacheDir: Path,
+        destinationRoot: Path,
+    ): GeneratedXeniaGamePatchesMetadata {
+        ensureGitSourceCache(
+            sourceUrl = lock.sourceUrl,
+            sourceRef = lock.sourceRef,
+            sourceRevision = lock.sourceRevision,
+            sourceCacheDir = sourceCacheDir,
+        )
+        val sourcePatchesRoot = sourceCacheDir.resolve("patches")
+        deleteRecursively(destinationRoot)
+        copyTree(sourcePatchesRoot, destinationRoot)
+        val files = if (destinationRoot.exists()) {
+            Files.walk(destinationRoot).use { stream ->
+                stream
+                    .filter { Files.isRegularFile(it) }
+                    .sorted()
+                    .map { file ->
+                        GeneratedXeniaGamePatchFile(
+                            relativePath = destinationRoot.relativize(file).toString().replace('\\', '/'),
+                            sha256 = sha256(file),
+                        )
+                    }
+                    .toList()
+            }
+        } else {
+            emptyList()
+        }
+        val titleCount = files
+            .mapNotNull { file ->
+                val raw = runCatching { destinationRoot.resolve(file.relativePath).readText() }.getOrNull() ?: return@mapNotNull null
+                Regex("title_id\\s*=\\s*\"([0-9A-Fa-f]{8})\"")
+                    .find(raw)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                    ?.uppercase()
+            }
+            .distinct()
+            .size
+        return GeneratedXeniaGamePatchesMetadata(
+            sourceUrl = lock.sourceUrl,
+            sourceRef = lock.sourceRef,
+            sourceRevision = lock.sourceRevision,
+            fileCount = files.size,
+            titleCount = titleCount,
+            files = files,
         )
     }
 
@@ -979,4 +1081,14 @@ private data class XeniaProcessResult(
 private data class XeniaBuildConfig(
     val cliName: String,
     val outputDirectoryName: String,
+)
+
+private data class XeniaBuiltArtifacts(
+    val executable: Path,
+    val contentTool: Path,
+)
+
+data class XeniaRuntimeStageResult(
+    val buildMetadata: GeneratedXeniaBuildMetadata,
+    val gamePatchesMetadata: GeneratedXeniaGamePatchesMetadata,
 )

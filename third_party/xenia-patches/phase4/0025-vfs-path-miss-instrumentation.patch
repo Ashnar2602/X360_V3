@@ -1,0 +1,47 @@
+diff --git a/src/xenia/vfs/devices/disc_image_device.cc b/src/xenia/vfs/devices/disc_image_device.cc
+index 101e37c..a35932b 100644
+--- a/src/xenia/vfs/devices/disc_image_device.cc
++++ b/src/xenia/vfs/devices/disc_image_device.cc
+@@ -82,7 +82,17 @@ Entry* DiscImageDevice::ResolvePath(const std::string_view path) {
+   // be in the form:
+   // some\PATH.foo
+   XELOGFS("DiscImageDevice::ResolvePath({})", path);
+-  return root_entry_->ResolvePath(path);
++  auto entry = root_entry_->ResolvePath(path);
++  if (!entry && !path.empty()) {
++    XELOGW("X360_VFS_DISC_MISS path={} image={}", path,
++           xe::path_to_utf8(host_path_));
++  } else if (path.empty() ||
++             path.find("default.xex") != std::string_view::npos ||
++             path.find("content") != std::string_view::npos) {
++    XELOGD("X360_VFS_DISC_RESOLVE path={} image={}", path,
++           xe::path_to_utf8(host_path_));
++  }
++  return entry;
+ }
+ 
+ DiscImageDevice::Error DiscImageDevice::Verify(ParseState* state) {
+diff --git a/src/xenia/vfs/devices/host_path_device.cc b/src/xenia/vfs/devices/host_path_device.cc
+index 33aee1b..22bf6c1 100644
+--- a/src/xenia/vfs/devices/host_path_device.cc
++++ b/src/xenia/vfs/devices/host_path_device.cc
+@@ -57,7 +57,18 @@ Entry* HostPathDevice::ResolvePath(const std::string_view path) {
+   // be in the form:
+   // some\PATH.foo
+   XELOGFS("HostPathDevice::ResolvePath({})", path);
+-  return root_entry_->ResolvePath(path);
++  auto entry = root_entry_->ResolvePath(path);
++  if (!entry && !path.empty()) {
++    XELOGW("X360_VFS_HOST_MISS path={} host_root={}", path,
++           xe::path_to_utf8(host_path_));
++  } else if (path.empty() ||
++             path.find("content") != std::string_view::npos ||
++             path.find("save") != std::string_view::npos ||
++             path.find("profile") != std::string_view::npos) {
++    XELOGD("X360_VFS_HOST_RESOLVE path={} host_root={}", path,
++           xe::path_to_utf8(host_path_));
++  }
++  return entry;
+ }
+ 
+ void HostPathDevice::PopulateEntry(HostPathEntry* parent_entry) {

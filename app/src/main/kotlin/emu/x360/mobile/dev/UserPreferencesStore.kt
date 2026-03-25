@@ -5,6 +5,7 @@ import emu.x360.mobile.dev.runtime.AppSettingsCodec
 import emu.x360.mobile.dev.runtime.GameOptionsDatabase
 import emu.x360.mobile.dev.runtime.GameOptionsDatabaseCodec
 import emu.x360.mobile.dev.runtime.GameOptionsEntry
+import emu.x360.mobile.dev.runtime.PresentationBackend
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
 import kotlin.io.path.exists
@@ -21,8 +22,13 @@ internal class AppSettingsStore(
         if (!settingsFile.exists()) {
             return AppSettings()
         }
-        return runCatching { AppSettingsCodec.decode(settingsFile.readText()) }
+        val decoded = runCatching { AppSettingsCodec.decode(settingsFile.readText()) }
             .getOrDefault(AppSettings())
+        return if (decoded.defaultPresentationBackend == PresentationBackend.FRAMEBUFFER_SHARED_MEMORY) {
+            decoded.copy(defaultPresentationBackend = PresentationBackend.FRAMEBUFFER_POLLING).also(::save)
+        } else {
+            decoded
+        }
     }
 
     fun save(settings: AppSettings) {

@@ -84,6 +84,7 @@ data class RuntimeDirectories(
     val presentationRoot: Path = baseDir.resolve("presentation")
     val libraryRoot: Path = baseDir.resolve("library")
     val libraryDatabase: Path = libraryRoot.resolve("game-library.json")
+    val titleContentDatabase: Path = libraryRoot.resolve("title-content.json")
     val rootfs: Path = baseDir.resolve("rootfs")
     val rootfsLib: Path = rootfs.resolve("lib")
     val rootfsLib64: Path = rootfs.resolve("lib64")
@@ -113,6 +114,7 @@ data class RuntimeDirectories(
     val xeniaShaderCacheShareableRoot: Path = xeniaShaderCacheRoot.resolve("shareable")
     val xeniaShaderCacheLocalRoot: Path = xeniaShaderCacheRoot.resolve("local")
     val xeniaBinary: Path = rootfsXeniaBin.resolve("xenia-canary")
+    val xeniaContentToolBinary: Path = rootfsXeniaBin.resolve("xenia-content-tool")
     val xeniaConfigFile: Path = rootfsXeniaBin.resolve("xenia-canary.config.toml")
     val xeniaPortableMarker: Path = rootfsXeniaBin.resolve("portable.txt")
     val xeniaLogsRoot: Path = rootfsXeniaBin.resolve("logs")
@@ -122,6 +124,7 @@ data class RuntimeDirectories(
     val xeniaScratchRoot: Path = rootfsXeniaBin.resolve("scratch")
     val rootfsTmpX360V3: Path = rootfsTmp.resolve("x360-v3")
     val rootfsTmpXeniaRoot: Path = rootfsTmpX360V3.resolve("xenia")
+    val rootfsTmpXeniaInputRoot: Path = rootfsTmpXeniaRoot.resolve("input")
     val xeniaWritableContentRoot: Path = rootfsTmpXeniaRoot.resolve("content")
     val xeniaWritableCacheHostRoot: Path = rootfsTmpXeniaRoot.resolve("cache-host")
     val xeniaWritableModuleCacheRoot: Path = xeniaWritableCacheHostRoot.resolve("modules")
@@ -129,6 +132,7 @@ data class RuntimeDirectories(
     val xeniaWritableShaderCacheShareableRoot: Path = xeniaWritableShaderCacheRoot.resolve("shareable")
     val xeniaWritableShaderCacheLocalRoot: Path = xeniaWritableShaderCacheRoot.resolve("local")
     val xeniaWritableStorageRoot: Path = rootfsTmpXeniaRoot.resolve("storage")
+    val xeniaWritableStoragePatchesRoot: Path = xeniaWritableStorageRoot.resolve("patches")
     val mesa25Root: Path = rootfsMesaRoot.resolve("mesa25")
     val mesa25LibRoot: Path = mesa25Root.resolve("lib")
     val mesa25IcdRoot: Path = mesa25Root.resolve("icd")
@@ -155,6 +159,8 @@ data class RuntimeDirectories(
     val mesaRuntimeLockManifest: Path = payloadConfig.resolve("mesa-turnip-source-lock.json")
     val xeniaSourceLock: Path = payloadConfig.resolve("xenia-source-lock.json")
     val xeniaBuildMetadata: Path = payloadConfig.resolve("xenia-build-metadata.json")
+    val xeniaGamePatchesLock: Path = payloadConfig.resolve("xenia-game-patches-lock.json")
+    val xeniaGamePatchesMetadata: Path = payloadConfig.resolve("xenia-game-patches-metadata.json")
     val glibcLoader: Path = rootfsLib64.resolve("ld-linux-x86-64.so.2")
     val guestVulkanLoader: Path = rootfsUsrLibX86_64LinuxGnu.resolve("libvulkan.so.1")
     val guestLavapipeDriver: Path = rootfsUsrLibX86_64LinuxGnu.resolve("libvulkan_lvp.so")
@@ -163,6 +169,7 @@ data class RuntimeDirectories(
     val appLogs: Path = logs.resolve("app")
     val fexLogs: Path = logs.resolve("fex")
     val guestLogs: Path = logs.resolve("guest")
+    val diagnosticsLogs: Path = logs.resolve("diagnostics")
     val fexHelloSentinel: Path = rootfsTmp.resolve("fex_hello_ok.json")
     val dynamicHelloSentinel: Path = rootfsTmp.resolve("fex_dyn_hello_ok.json")
     val vulkanProbeSentinel: Path = rootfsTmp.resolve("fex_vulkan_probe.json")
@@ -181,6 +188,7 @@ data class RuntimeDirectories(
         rootfsTmp,
         rootfsTmpX360V3,
         rootfsTmpXeniaRoot,
+        rootfsTmpXeniaInputRoot,
         rootfsProc,
         rootfsDev,
         rootfsEtc,
@@ -213,6 +221,7 @@ data class RuntimeDirectories(
         xeniaWritableShaderCacheShareableRoot,
         xeniaWritableShaderCacheLocalRoot,
         xeniaWritableStorageRoot,
+        xeniaWritableStoragePatchesRoot,
         rootfsMesaRoot,
         mesa25Root,
         mesa25LibRoot,
@@ -230,6 +239,7 @@ data class RuntimeDirectories(
         appLogs,
         fexLogs,
         guestLogs,
+        diagnosticsLogs,
     )
 }
 
@@ -314,6 +324,8 @@ data class PresentationPerformanceMetrics(
     val presentFps: Float = 0f,
     val visibleFps: Float = 0f,
     val frameSourceStatus: String = "idle",
+    val transportFrameHash: String = "",
+    val visibleFrameHash: String = "",
 ) {
     companion object {
         val Empty = PresentationPerformanceMetrics()

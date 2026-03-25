@@ -12,6 +12,13 @@ data class XeniaSourceBuildLock(
 )
 
 @Serializable
+data class XeniaGamePatchesLock(
+    val sourceUrl: String,
+    val sourceRef: String,
+    val sourceRevision: String,
+)
+
+@Serializable
 data class GeneratedXeniaBuildMetadata(
     val sourceUrl: String,
     val sourceRef: String,
@@ -22,6 +29,16 @@ data class GeneratedXeniaBuildMetadata(
     val executableSha256: String,
     val runtimeLibraries: List<GeneratedXeniaRuntimeLibrary>,
     val requiredPackages: List<GeneratedXeniaGuestPackage>,
+)
+
+@Serializable
+data class GeneratedXeniaGamePatchesMetadata(
+    val sourceUrl: String,
+    val sourceRef: String,
+    val sourceRevision: String,
+    val fileCount: Int,
+    val titleCount: Int,
+    val files: List<GeneratedXeniaGamePatchFile>,
 )
 
 @Serializable
@@ -41,6 +58,12 @@ data class GeneratedXeniaGuestPackage(
     val archiveSha256: String,
 )
 
+@Serializable
+data class GeneratedXeniaGamePatchFile(
+    val relativePath: String,
+    val sha256: String,
+)
+
 object XeniaRuntimeLockCodec {
     private val json = Json {
         ignoreUnknownKeys = false
@@ -52,5 +75,12 @@ object XeniaRuntimeLockCodec {
 
     fun encode(lock: XeniaSourceBuildLock): String = json.encodeToString(lock)
 
+    fun decodeGamePatchesLock(raw: String): XeniaGamePatchesLock = json.decodeFromString(raw)
+
+    fun encodeGamePatchesLock(lock: XeniaGamePatchesLock): String = json.encodeToString(lock)
+
     fun encodeMetadata(metadata: GeneratedXeniaBuildMetadata): String = json.encodeToString(metadata)
+
+    fun encodeGamePatchesMetadata(metadata: GeneratedXeniaGamePatchesMetadata): String =
+        json.encodeToString(metadata)
 }

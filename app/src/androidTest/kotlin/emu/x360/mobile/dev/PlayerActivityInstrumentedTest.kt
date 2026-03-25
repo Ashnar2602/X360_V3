@@ -80,7 +80,7 @@ class PlayerActivityInstrumentedTest {
     }
 
     @Test
-    fun playerActivityUsesSharedMemoryBackendForVisibleFrames() {
+    fun playerActivityUsesDefaultPollingBackendForVisibleFrames() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val arguments = InstrumentationRegistry.getArguments()
         assumeTrue(
@@ -113,7 +113,7 @@ class PlayerActivityInstrumentedTest {
             )
             assertWithMessage(
                 buildString {
-                    appendLine("Expected the normal player path to use the shared-memory presentation backend.")
+                    appendLine("Expected the normal player path to use the framebuffer-polling presentation backend.")
                     appendLine("isoPath=$resolvedIsoPath")
                     appendLine("presentationBackend=${diagnostics.presentationBackend}")
                     appendLine("framebufferPath=${diagnostics.framebufferPath}")
@@ -126,8 +126,8 @@ class PlayerActivityInstrumentedTest {
                     appendLine("detail=${diagnostics.lastStartupDetail}")
                 },
             ).that(diagnostics.presentationBackend)
-                .isEqualTo(PresentationBackend.FRAMEBUFFER_SHARED_MEMORY.name.lowercase())
-            assertThat(diagnostics.framebufferPath).contains("/presentation/session-")
+                .isEqualTo(PresentationBackend.FRAMEBUFFER_POLLING.name.lowercase())
+            assertThat(diagnostics.framebufferPath).contains("/rootfs/tmp/xenia_fb")
             assertThat(diagnostics.frameStreamStatus).isEqualTo("active")
             assertThat(diagnostics.visibleFps).isGreaterThan(0f)
         } finally {

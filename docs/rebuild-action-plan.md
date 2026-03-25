@@ -2,465 +2,183 @@
 
 ## Current status
 
-This repo is no longer "docs only".
+This repo is a real Android wrapper project, not a docs-only reconstruction.
 
-Phase 0, Phase 1, Phase 2, Phase 3A, Phase 3B, Phase 4A, Phase 4B, Phase 4C, Phase 5A, Phase 5B, and Phase 6A are now implemented to the point where the Android wrapper can:
+Today it can:
 
-- build a real FEX host baseline from vendored source
-- install a deterministic runtime under `filesDir`
-- launch a real Linux `x86_64` guest ELF on Android arm64
-- launch a dynamic Linux `x86_64` guest ELF with guest glibc and loader resolution
-- launch a guest Vulkan probe that links `libvulkan.so.1`, creates a Vulkan instance, and enumerates physical devices through `lavapipe`
-- build dual guest Mesa trees from pinned upstream source snapshots through repo-owned WSL tasks
-- launch the same guest Vulkan probe through a Turnip guest path with branch-aware ICD selection
-- surface a verified hardware Turnip pass on `AYN Odin2 Mini`
-- surface a verified hardware Turnip pass on `Odin3` after a real Mesa-side UBWC `5.0` / `6.0` fix in `mesa26`
-- build a pinned-source Linux `x86_64` `Xenia Canary` binary inside this repo
-- stage Xenia into the guest runtime with deterministic config, logs, and metadata
-- launch Xenia through FEX on both devices and reach `VULKAN_INITIALIZED` without requiring a game image
-- persist a no-copy ISO library under app-owned metadata
-- import and resolve filesystem-backed ISO paths into `rootfs/mnt/library`
-- launch `Dante's Inferno` from ISO and reach `TITLE_MODULE_LOADING`
-- keep `Dante's Inferno` alive headless for the fixed observation window without fatal aborts on both devices
-- export visible frames through a session-scoped shared-memory transport
-- keep `rootfs/tmp/xenia_fb` as a debug/regression fallback instead of the normal player path
-- display visible Dante frames in the Android app on both devices through the same shared-memory backend
-- run a product-facing shell with splash, library home, options, debug screen, and fullscreen player
+- build and package a real FEX host baseline from vendored source
+- install a deterministic runtime payload under `filesDir`
+- launch Linux `x86_64` guest processes on Android arm64
+- stage dual Mesa guest trees and route devices branch-aware
+- build and package pinned-source Linux `x86_64` Xenia Canary
+- boot titles from no-copy ISO references
+- render visible fullscreen frames in the product player
+- pass controller input into headless Xenia
+- load the official global game patch DB
+- persist title-content metadata and progression diagnostics
 
-The immediate blocker is no longer "make Turnip exist at all", no longer "make Xenia start at all", no longer "make a title survive module load", and no longer "make any visible frames appear". The next milestone is interaction and player hardening on top of the visible path.
+## Active operational baseline
 
-## What is implemented
+### Stable product-side choices right now
 
-### Repo structure
+- app package: `emu.x360.mobile.dev`
+- default player backend: `FRAMEBUFFER_POLLING`
+- alternate backend still present for research/debug: `FRAMEBUFFER_SHARED_MEMORY`
+- Xenia source pin: `c50b036178108f87cb0acaf3691a7c3caf07820f`
+- Xenia patch set: `phase10c-triage-v2`
 
-- `app`
-- `runtime-core`
-- `native-bridge`
-- `buildSrc`
-- `fixtures/guest-tests`
-- `fixtures/guest-runtime`
-- `fixtures/mesa-runtime`
-- `fixtures/xenia-runtime`
-- `third_party/FEX`
-- `third_party/fex-patches/android`
-- `third_party/mesa-patches`
+### Why polling is the default again
+
+The shared-memory path is still implemented, but the current stable live-player baseline has been moved back to polling while progression work continues. That is intentional and should be reflected in any future debugging.
+
+### Important recent fix
+
+The polling exporter previously froze after the first frame because the guest-side export dedupe logic incorrectly treated later frames as duplicates.
+
+That symptom is now fixed in the active runtime payload:
+
+- `export_duplicate_skip` no longer dominates guest logs
+- `FRAME_STREAM_ACTIVE` is reached again on both validated devices
+- `exportFrameCount` and `lastFrameIndex` advance in app logs
+
+## Runtime payload model
+
+The APK packages `assets/runtime-payload/...`.
+
+The app installer:
+
+1. reads `runtime-manifest.json`
+2. filters assets by runtime phase
+3. copies them into `filesDir`
+4. verifies per-file checksums
+5. writes an install marker with a manifest fingerprint
+
+Operational consequence:
+
+- editing the runtime under `filesDir` is not durable by itself
+- if the APK payload still contains old bits, the app can later reinstall them
+- durable fixes must reach the packaged runtime payload
+
+## Generated asset pipeline
+
+The runtime overlay order is:
+
+1. `app/src/main/mock-runtime`
+2. generated FEX guest assets
+3. generated Vulkan guest assets
+4. generated Turnip guest assets
+5. generated Xenia assets
+6. optional `_local/runtime-drop/` overlay for debug builds only
+
+Key tasks:
+
+```powershell
+.\gradlew.bat --no-daemon --max-workers=1 :runtime-core:test :app:testDebugUnitTest
+.\gradlew.bat --no-daemon --max-workers=1 :app:assembleDebug :app:installDebug :app:installDebugAndroidTest
+.\gradlew.bat --no-daemon --max-workers=1 :app:generateDebugXeniaBringupAssets
+```
+
+## Xenia build workflow
+
+### Normal path
+
+`GenerateXeniaBringupAssetsTask` uses:
+
+- `fixtures/xenia-runtime/xenia-source-lock.json`
+- `fixtures/xenia-runtime/xenia-game-patches-lock.json`
 - `third_party/xenia-patches/phase4`
-- `artifacts/phase4a-vulkan-init`
-
-### FEX baseline
-
-- vendored as a git submodule under `third_party/FEX`
-- pinned to `49a37c7d6fec7d94923507e5ce10d55c2920e380`
-- built from source inside this repo
-- Android fixes kept as repo-owned patches, not ad-hoc edits in the submodule checkout
-
-### Guest runtime and Vulkan baseline
-
-- generated runtime assets for guest-side files
-- generated `jniLibs` for FEX host artifacts
-- generated Turnip Mesa guest trees from pinned source snapshots
-- generated Xenia bring-up guest runtime from a pinned source build
-- deterministic overlay flow:
-  - repo payload
-  - generated FEX guest assets
-  - generated Vulkan-baseline guest assets
-  - generated Turnip-baseline guest assets
-  - generated Xenia bring-up assets
-  - optional `_local/runtime-drop/` for debug builds
-
-### Mesa / Turnip baseline
-
-- `mesa25` guest tree from `25.3` branch snapshot `7f1ccad77883be68e7750ab30b99b16df02e679d`
-- `mesa26` guest tree from `main` snapshot `44669146808b74024b9befeb59266db18ae5e165`
-- repo-owned Mesa patch queue under `third_party/mesa-patches`
-- `mesa26` patch set `ubwc5-a830-v1`
-- branch-aware Vulkan launch environment
-- KGSL preflight
-- measured AUTO/manual branch policy:
-  - `kalama` / `QCS8550` -> `mesa26`
-  - `sun` / `CQ8725S` -> `mesa26`
-  - unknown Qualcomm -> `mesa25`
-  - non-Qualcomm -> `lavapipe`
-
-### Xenia bring-up baseline
-
-- Xenia source lock under `fixtures/xenia-runtime/xenia-source-lock.json`
-- active pin:
-  - `sourceRef = canary_experimental`
-  - `sourceRevision = c50b036178108f87cb0acaf3691a7c3caf07820f`
-  - `patchSetId = phase6a-shared-frame-v2`
-- repo-owned Xenia patch queue under `third_party/xenia-patches/phase4`
-- generated Xenia runtime tree:
-  - `rootfs/opt/x360-v3/xenia/bin/xenia-canary`
-  - `rootfs/opt/x360-v3/xenia/bin/xenia-canary.config.toml`
-  - `rootfs/opt/x360-v3/xenia/bin/portable.txt`
-  - `rootfs/opt/x360-v3/xenia/bin/logs`
-  - `rootfs/opt/x360-v3/xenia/bin/cache`
-  - `rootfs/opt/x360-v3/xenia/bin/cache0`
-  - `rootfs/opt/x360-v3/xenia/bin/cache1`
-  - `rootfs/opt/x360-v3/xenia/bin/scratch`
-  - `rootfs/opt/x360-v3/xenia/cache-host`
-  - `rootfs/opt/x360-v3/xenia/cache-host/modules`
-  - `rootfs/opt/x360-v3/xenia/cache-host/shaders/shareable`
-  - `rootfs/opt/x360-v3/xenia/content`
-  - `rootfs/mnt/library`
-- generated metadata:
-  - `payload/config/xenia-source-lock.json`
-  - `payload/config/xenia-build-metadata.json`
-- headless POSIX bring-up fixes delivered by the patch queue:
-  - GTK-independent headless app context
-  - `memfd_create`-first POSIX memory mapping
-  - null-safe headless path when no ImGui drawer exists
-  - non-fatal module cache initialization for headless title boot
-  - framebuffer-polling export path for debug/regression
-  - shared-memory frame transport for the normal Android player path
-  - duplicate-content publication kept for shared-memory so static scenes still render
-- persistent incremental build workspace for local Xenia development
-- JSON-backed no-copy ISO library with title-aware launch
-
-### Archived outputs
-
-The current successful bring-up binaries are archived under:
-
-- `artifacts/phase4a-vulkan-init/`
-- `artifacts/phase5b-visible-player/`
-
-The main `app-debug.apk` is not committed because it exceeds GitHub's `100 MB` per-file limit, but its exact `sha256` and size are captured in `artifact-manifest.json`.
-
-## Runtime contract
-
-Fixed runtime paths now include:
-
-- `<filesDir>/rootfs/lib64/ld-linux-x86-64.so.2`
-- `<filesDir>/rootfs/usr/lib/x86_64-linux-gnu/libvulkan.so.1`
-- `<filesDir>/rootfs/usr/lib/x86_64-linux-gnu/libvulkan_lvp.so`
-- `<filesDir>/rootfs/usr/share/vulkan/icd.d/lvp_icd.json`
-- `<filesDir>/rootfs/opt/x360-v3/mesa/mesa25/lib/libvulkan_freedreno.so`
-- `<filesDir>/rootfs/opt/x360-v3/mesa/mesa25/icd/turnip_icd.json`
-- `<filesDir>/rootfs/opt/x360-v3/mesa/mesa26/lib/libvulkan_freedreno.so`
-- `<filesDir>/rootfs/opt/x360-v3/mesa/mesa26/icd/turnip_icd.json`
-- `<filesDir>/rootfs/opt/x360-v3/xenia/bin/xenia-canary`
-- `<filesDir>/rootfs/opt/x360-v3/xenia/bin/xenia-canary.config.toml`
-- `<filesDir>/payload/config/fex-build-metadata.json`
-- `<filesDir>/payload/config/guest-runtime-metadata.json`
-- `<filesDir>/payload/config/mesa-runtime-metadata.json`
-- `<filesDir>/payload/config/mesa-turnip-source-lock.json`
-- `<filesDir>/payload/config/xenia-source-lock.json`
-- `<filesDir>/payload/config/xenia-build-metadata.json`
-- `<filesDir>/logs/app`
-- `<filesDir>/logs/fex`
-- `<filesDir>/logs/guest`
 
-Reserved future placeholder:
+It clones/prepares a workspace under:
 
-- `rootfs/tmp/anative_window.ptr`
+- `app/build/xeniaDevWorkspaces/debug/<workspace-key>/checkout`
 
-Default shared-memory presentation transport:
+Then it builds and stages the guest runtime under:
 
-- `rootfs/tmp/x360-v3/xenia/presentation/session-<session-id>/frame-transport.bin`
+- `app/build/generated/xeniaBringupAssets/debug/`
 
-Debug framebuffer export path:
+### Persistent incremental workspaces
 
-- `rootfs/tmp/xenia_fb`
+Debug builds default to incremental mode. The workspace key depends on:
 
-## Phase status
+- source revision
+- patch set
+- build profile
+- relevant build defines / environment
 
-### Phase 0: Reconstruction contract
+This is the preferred path for day-to-day Xenia iteration.
 
-Status: complete
+### Current known pitfall
 
-### Phase 1: Wrapper skeleton
+Fresh `generateDebugXeniaBringupAssets` can currently fail in a newly prepared workspace because of unrelated Xenia build issues, including:
 
-Status: complete
+- submodule oddities in a fresh checkout
+- shader-generation failure around `guest_output_ffx_cas_resample.ps.xesl`
 
-Delivered:
+This does not invalidate the whole repo. It means the "clean new Xenia workspace" path is currently less reliable than the already-proven persistent workspace path.
 
-- Android app shell
-- runtime installer
-- runtime manifest contract
-- separated logging
-- stub fallback launcher
+### Current practical workaround
 
-### Phase 2: FEX baseline to hello ELF
+If a known-good incremental Xenia workspace already exists and contains the wanted binary:
 
-Status: complete
+1. rebuild there incrementally
+2. inject that binary into the runtime payload used by the APK
+3. rebuild/install the app without rerunning the failing Xenia generator
 
-Delivered:
+The safer long-lived version of this workflow is:
 
-- vendored FEX baseline
-- Android patch queue
-- generated FEX host artifacts
-- real FEX launcher
-- micro-rootfs
-- static guest fixture
-- connected-device verification
+- place the override under `_local/runtime-drop/`
 
-### Phase 3A: Dynamic guest userspace plus Vulkan loader baseline
+The short-term emergency version is:
 
-Status: complete
+- patch the already-generated `app/build/generated/runtimePayload/...` payload and its manifest checksums
 
-Delivered:
+## Device workflow
 
-- Ubuntu 24.04 guest-runtime lock manifest
-- generated guest rootfs slice
-- guest dynamic loader and glibc path
-- guest Vulkan loader path
-- guest `lavapipe` ICD path
-- dynamic hello probe
-- Vulkan probe
-- connected-device verification
+### Install/update app
 
-### Phase 3B: Turnip guest Vulkan baseline
+```powershell
+.\gradlew.bat --no-daemon --max-workers=1 :app:assembleDebug :app:installDebug :app:installDebugAndroidTest
+```
 
-Status: complete
+### Force-stop and relaunch
 
-Delivered:
+```powershell
+adb -s <serial> shell am force-stop emu.x360.mobile.dev
+adb -s <serial> shell monkey -p emu.x360.mobile.dev -c android.intent.category.LAUNCHER 1
+```
 
-- dual-Mesa build pipeline through WSL
-- `mesa25` and `mesa26` staged runtime trees
-- branch-aware Vulkan launch environment
-- KGSL preflight
-- AUTO/manual branch selection policy
-- hardware Turnip pass on `AYN Odin2 Mini`
-- repo-owned `mesa26` UBWC `5.0` / `6.0` fix
-- hardware Turnip pass on `Odin3`
+### Read logs from app-private storage
 
-### Phase 4A: Pinned-source Xenia bring-up to Vulkan init
+```powershell
+adb -s <serial> exec-out run-as emu.x360.mobile.dev sh -c "ls -1t /data/user/0/emu.x360.mobile.dev/files/logs/guest | sed -n 1p"
+adb -s <serial> exec-out run-as emu.x360.mobile.dev cat /data/user/0/emu.x360.mobile.dev/files/logs/app/<session>.app.log
+adb -s <serial> exec-out run-as emu.x360.mobile.dev cat /data/user/0/emu.x360.mobile.dev/files/logs/guest/<session>.guest.log
+adb -s <serial> exec-out run-as emu.x360.mobile.dev cat /data/user/0/emu.x360.mobile.dev/files/logs/fex/<session>.fex.log
+```
 
-Status: complete
+### Verify installed Xenia binary hash
 
-Delivered:
+```powershell
+adb -s <serial> exec-out run-as emu.x360.mobile.dev sha256sum /data/user/0/emu.x360.mobile.dev/files/rootfs/opt/x360-v3/xenia/bin/xenia-canary
+```
 
-- pinned-source Xenia build pipeline through WSL
-- repo-owned Xenia patch queue
-- generated Xenia runtime slice under `rootfs/opt/x360-v3/xenia`
-- Xenia config and metadata staging
-- headless POSIX bring-up path without GTK window creation
-- `memfd_create`-first POSIX memory reservation path
-- Xenia startup-stage parsing
-- connected-device verification that `Launch Xenia Bring-up` reaches `VULKAN_INITIALIZED`
+## Current investigation focus
 
-## Verified Phase 4A result
+The next real work item is progression recovery, not initial rendering.
 
-Phase 4A is considered complete in this repo because all of the following are now true:
+Areas already instrumented and worth checking first:
 
-- the Vulkan probe still passes with `lavapipe`
-- the Turnip hardware probe still passes on `AYN Odin2 Mini`
-- the Turnip hardware probe still passes on `Odin3`
-- Xenia is built from pinned source inside this repo
-- Xenia is staged into the runtime with deterministic config and metadata
-- Xenia reaches `VULKAN_INITIALIZED` through FEX on both connected devices
+- content root resolution
+- profile/save root resolution
+- XAM content APIs
+- XLive/XNet offline stubs
+- patch DB match/apply state
+- live player session diagnostics bundle
 
-### Verified devices
+## Guardrails for future work
 
-- `AYN Odin2 Mini` / Android 13 / API 33
-- `Odin3` / Android 15 / API 35
-
-### Verified per-device outcome
-
-`AYN Odin2 Mini`:
-
-- AUTO branch resolves to `mesa26`
-- Turnip probe passes
-- Xenia bring-up reaches `VULKAN_INITIALIZED`
-- guest log confirms `Turnip Adreno (TM) 740`
-
-`Odin3`:
-
-- AUTO branch resolves to `mesa26`
-- Turnip probe passes
-- `KgslPropertiesInstrumentedTest` confirms `ubwc_mode = 5`
-- Xenia bring-up reaches `VULKAN_INITIALIZED`
-- guest log confirms `Adreno (TM) 830`
-
-### Phase 4B: ISO-first title boot
-
-Status: complete
-
-Delivered:
-
-- JSON-backed game library under `filesDir/library/game-library.json`
-- no-copy ISO import and persistence
-- filesystem-backed resolver for `file://` and supported `content://` paths
-- guest content portal under `rootfs/mnt/library/<entry-id>.iso`
-- title-aware Xenia launch path
-- startup stages:
-  - `DISC_IMAGE_ACCEPTED`
-  - `TITLE_MODULE_LOADING`
-  - `TITLE_METADATA_AVAILABLE`
-- `Dante's Inferno` smoke path validated to title boot from ISO on both devices
-
-### Phase 4C: Steady-state headless title run
-
-Status: complete
-
-Delivered:
-
-- Xenia cache root moved to `rootfs/opt/x360-v3/xenia/cache-host`
-- guest-writable cache and scratch directories created deterministically before launch
-- repo-owned Xenia patch to make module cache initialization non-fatal
-- startup stage `TITLE_RUNNING_HEADLESS`
-- steady-state success policy for imported titles
-- diagnostic capture for:
-  - alive-after-module-load seconds
-  - cache backend status
-  - cache root path
-  - title metadata seen
-- persistent incremental Xenia build path for local debug rebuilds
-
-## Verified Phase 4C result
-
-Phase 4C is considered complete in this repo because all of the following are now true:
-
-- the Vulkan probe still passes with `lavapipe`
-- the Turnip hardware probe still passes on `AYN Odin2 Mini`
-- the Turnip hardware probe still passes on `Odin3`
-- Xenia is still built from pinned source inside this repo
-- imported ISO titles still pass through deterministic no-copy portalization
-- `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS` on both connected devices
-- the process survives the observation window without the previous `std::filesystem::filesystem_error` abort
-
-### Verified per-device outcome
-
-`AYN Odin2 Mini`:
-
-- AUTO branch resolves to `mesa26`
-- Turnip probe passes
-- Xenia bring-up reaches `VULKAN_INITIALIZED`
-- `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
-
-`Odin3`:
-
-- AUTO branch resolves to `mesa26`
-- Turnip probe passes
-- `KgslPropertiesInstrumentedTest` confirms `ubwc_mode = 5`
-- Xenia bring-up reaches `VULKAN_INITIALIZED`
-- `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
-
-### Phase 5A: First visible frames through framebuffer polling
-
-Status: complete
-
-Delivered:
-
-- repo-owned Xenia framebuffer-polling export path
-- versioned `xenia_fb` contract
-- Android-side framebuffer reader and preview pipeline
-- startup stages:
-  - `FIRST_FRAME_CAPTURED`
-  - `FRAME_STREAM_ACTIVE`
-- future-ready guest render-scale contract with:
-  - `HALF`
-  - `ONE`
-  - `ONE_AND_HALF`
-  - `TWO`
-
-### Phase 5B: Product UI restructure and fullscreen player shell
-
-Status: complete
-
-Delivered:
-
-- `SplashActivity` launcher flow
-- library-first `MainActivity`
-- `Options` path with preserved `Debug` screen
-- per-game `Play` and `Options` actions
-- dedicated fullscreen `PlayerActivity`
-- FPS overlay setting and player session controller
-- in-player pause menu opened by Android back
-- quick in-player options overlay for live-safe player settings
-- `X360 Mobile` `0.2.1 alpha` visible product shell
-
-### Phase 6A: Universal Android display baseline
-
-Status: complete
-
-Delivered:
-
-- `FRAMEBUFFER_SHARED_MEMORY` presentation backend
-- app-owned shared-memory presentation session under `rootfs/tmp/x360-v3/xenia/presentation`
-- Android player transport reader decoupled from file polling
-- descriptor-backed normal title portal flow, so ISO location does not control the display backend
-- `FRAMEBUFFER_POLLING` retained only as debug/regression fallback
-- presentation diagnostics for:
-  - `swapFps`
-  - `captureFps`
-  - `exportFps`
-  - `decodeFps`
-  - `presentFps`
-  - `visibleFps`
-- shared-memory stabilization fixes:
-  - force `readback_resolve=full` for the shared-memory backend
-  - Android-side color correction by removing the local `R/B` swap assumption
-
-## Verified Phase 6A result
-
-Phase 6A is considered complete in this repo because all of the following are now true:
-
-- the Vulkan probe still passes with `lavapipe`
-- the Turnip hardware probe still passes on `AYN Odin2 Mini`
-- the Turnip hardware probe still passes on `Odin3`
-- Xenia is still built from pinned source inside this repo
-- imported ISO titles still pass through deterministic no-copy portalization
-- `Dante's Inferno` still reaches `TITLE_RUNNING_HEADLESS` on both connected devices
-- the normal fullscreen player uses `FRAMEBUFFER_SHARED_MEMORY` on both connected devices
-- visible Dante frames are confirmed on both connected devices through the shared-memory player path
-- the app launches into a product shell and plays titles in a dedicated fullscreen player
-- the player now supports a semitransparent pause dialog with:
-  - resume
-  - options
-  - exit to home
-  - exit Android
-
-### Verified per-device outcome
-
-`AYN Odin2 Mini`:
-
-- AUTO branch resolves to `mesa26`
-- Turnip probe passes
-- Xenia bring-up reaches `VULKAN_INITIALIZED`
-- `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
-- visible Dante frames confirmed in the fullscreen player through `FRAMEBUFFER_SHARED_MEMORY`
-
-`Odin3`:
-
-- AUTO branch resolves to `mesa26`
-- Turnip probe passes
-- `KgslPropertiesInstrumentedTest` confirms `ubwc_mode = 5`
-- Xenia bring-up reaches `VULKAN_INITIALIZED`
-- `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
-- visible Dante frames confirmed in the fullscreen player through `FRAMEBUFFER_SHARED_MEMORY`
-
-Note:
-
-- `FRAMEBUFFER_POLLING` is no longer the normal user-facing path
-- `xenia_fb` remains intentionally available for debug comparison and fallback analysis
-- the current universal-baseline work is limited to the display method; Android 16 `openat2` seccomp issues in FEX remain a separate future track
-
-## Next milestone: Interaction and audio recovery
-
-### Goal
-
-Move from visible passive playback to usable interaction while keeping the validated FEX, Turnip, title-boot, and shared-memory visible baseline green on both devices.
-
-### Scope
-
-- keep the current FEX and Turnip regression matrix intact
-- keep the stable no-copy title launch path intact
-- keep the shared-memory player path intact
-- recover input and audio only after the visible path stays stable
-
-### Pass criteria
-
-- the Vulkan probe still passes with `lavapipe`
-- the Turnip probe still passes on both devices
-- Xenia still reaches `VULKAN_INITIALIZED`
-- `Dante's Inferno` still reaches `TITLE_RUNNING_HEADLESS`
-- visible output remains real and diagnosable
-- later failures, if any, are inside interaction/audio recovery rather than FEX, Turnip, title boot, or first-frame presentation
-
-## Main risks from here
-
-- the historical repo mixed multiple graphics experiments at once, so later recovery work must stay single-threaded by subsystem
-- even after visible presentation works, input and audio can still expose separate timing, sync, and lifecycle issues
-- preserving exact artifact provenance matters now because the stack is finally crossing from synthetic probes into emulator startup
+1. Use `emu.x360.mobile.dev` only.
+2. Prefer low-RAM Gradle invocations with `--no-daemon --max-workers=1`.
+3. Do not assume `filesDir` edits are durable if the APK payload is still older.
+4. Do not delete `_tmp*` evidence casually.
+5. Prefer small, isolated changes and verify with real device logs after each one.

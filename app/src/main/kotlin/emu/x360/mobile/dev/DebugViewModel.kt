@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import emu.x360.mobile.dev.bootstrap.AppRuntimeManager
+import emu.x360.mobile.dev.bootstrap.DiagnosticLaunchProfile
 import emu.x360.mobile.dev.bootstrap.RuntimeSnapshot
 import emu.x360.mobile.dev.runtime.MesaRuntimeBranch
 import emu.x360.mobile.dev.runtime.RuntimeInstallState
@@ -56,6 +57,13 @@ class DebugViewModel(
 
     fun launchImportedTitle(entryId: String) {
         runAction { manager.launchImportedTitle(entryId) }
+    }
+
+    internal fun launchImportedTitleDiagnostic(
+        entryId: String,
+        diagnosticProfile: DiagnosticLaunchProfile,
+    ) {
+        runAction { manager.launchImportedTitleDiagnostic(entryId, diagnosticProfile) }
     }
 
     fun launchLavapipeProbe() {
@@ -143,6 +151,22 @@ data class DebugUiState(
     val xeniaCacheBackendStatus: String = "",
     val xeniaCacheRootPath: String = "",
     val xeniaTitleMetadataSeen: String = "",
+    val xeniaTitleId: String = "",
+    val xeniaModuleHash: String = "",
+    val xeniaPatchDatabasePresent: String = "",
+    val xeniaPatchDatabaseRevision: String = "",
+    val xeniaPatchDatabaseFileCount: String = "",
+    val xeniaPatchDatabaseBundleTitleCount: String = "",
+    val xeniaPatchDatabaseLoadedTitleCount: String = "",
+    val xeniaAppliedPatches: String = "",
+    val xeniaLastContentMiss: String = "",
+    val xeniaLastMeaningfulGuestTransition: String = "",
+    val xeniaLastContentCallResult: String = "",
+    val xeniaLastXamCallResult: String = "",
+    val xeniaLastXliveCallResult: String = "",
+    val xeniaLastXnetCallResult: String = "",
+    val xeniaProgressionBucket: String = "",
+    val xeniaProgressionReason: String = "",
     val xeniaPresentationBackend: String = "",
     val xeniaGuestRenderScaleProfile: String = "",
     val xeniaInternalDisplayResolution: String = "",
@@ -151,8 +175,16 @@ data class DebugUiState(
     val xeniaLastFrameDimensions: String = "",
     val xeniaLastFrameIndex: String = "",
     val xeniaFrameFreshnessSeconds: String = "",
+    val xeniaTransportFrameHash: String = "",
+    val xeniaVisibleFrameHash: String = "",
     val xeniaLogPath: String = "",
     val xeniaExecutablePath: String = "",
+    val latestDiagnosticsSessionId: String = "",
+    val latestDiagnosticsBucket: String = "",
+    val latestDiagnosticsReason: String = "",
+    val latestDiagnosticsLastTransition: String = "",
+    val latestDiagnosticsStorageSummary: String = "",
+    val latestDiagnosticsBundlePath: String = "",
     val libraryEntries: List<GameLibraryEntryUi> = emptyList(),
     val lastLaunchBackend: String = "",
     val lastLaunchResult: String = "",
@@ -222,6 +254,22 @@ data class DebugUiState(
                 xeniaCacheBackendStatus = snapshot.xeniaDiagnostics.cacheBackendStatus,
                 xeniaCacheRootPath = snapshot.xeniaDiagnostics.cacheRootPath,
                 xeniaTitleMetadataSeen = snapshot.xeniaDiagnostics.titleMetadataSeen.toString(),
+                xeniaTitleId = snapshot.xeniaDiagnostics.titleId,
+                xeniaModuleHash = snapshot.xeniaDiagnostics.moduleHash,
+                xeniaPatchDatabasePresent = snapshot.xeniaDiagnostics.patchDatabasePresent.toString(),
+                xeniaPatchDatabaseRevision = snapshot.xeniaDiagnostics.patchDatabaseRevision,
+                xeniaPatchDatabaseFileCount = snapshot.xeniaDiagnostics.patchDatabaseFileCount.toString(),
+                xeniaPatchDatabaseBundleTitleCount = snapshot.xeniaDiagnostics.patchDatabaseBundleTitleCount.toString(),
+                xeniaPatchDatabaseLoadedTitleCount = snapshot.xeniaDiagnostics.patchDatabaseLoadedTitleCount.toString(),
+                xeniaAppliedPatches = snapshot.xeniaDiagnostics.lastAppliedPatches.joinToString(" | ").ifBlank { "none" },
+                xeniaLastContentMiss = snapshot.xeniaDiagnostics.lastContentMiss,
+                xeniaLastMeaningfulGuestTransition = snapshot.xeniaDiagnostics.lastMeaningfulGuestTransition,
+                xeniaLastContentCallResult = snapshot.xeniaDiagnostics.lastContentCallResult,
+                xeniaLastXamCallResult = snapshot.xeniaDiagnostics.lastXamCallResult,
+                xeniaLastXliveCallResult = snapshot.xeniaDiagnostics.lastXliveCallResult,
+                xeniaLastXnetCallResult = snapshot.xeniaDiagnostics.lastXnetCallResult,
+                xeniaProgressionBucket = snapshot.xeniaDiagnostics.progressionBucket,
+                xeniaProgressionReason = snapshot.xeniaDiagnostics.progressionReason,
                 xeniaPresentationBackend = snapshot.xeniaDiagnostics.presentationBackend,
                 xeniaGuestRenderScaleProfile = snapshot.xeniaDiagnostics.guestRenderScaleProfile,
                 xeniaInternalDisplayResolution = snapshot.xeniaDiagnostics.internalDisplayResolution,
@@ -234,8 +282,23 @@ data class DebugUiState(
                 },
                 xeniaLastFrameIndex = snapshot.xeniaDiagnostics.lastFrameIndex.toString(),
                 xeniaFrameFreshnessSeconds = snapshot.xeniaDiagnostics.frameFreshnessSeconds?.toString() ?: "n/a",
+                xeniaTransportFrameHash = snapshot.xeniaDiagnostics.transportFrameHash.ifBlank { "none" },
+                xeniaVisibleFrameHash = snapshot.xeniaDiagnostics.visibleFrameHash.ifBlank { "none" },
                 xeniaLogPath = snapshot.xeniaDiagnostics.lastLogPath,
                 xeniaExecutablePath = snapshot.xeniaDiagnostics.executablePath,
+                latestDiagnosticsSessionId = snapshot.latestPlayerSessionDiagnostics?.sessionId.orEmpty(),
+                latestDiagnosticsBucket = snapshot.latestPlayerSessionDiagnostics?.progressionBucket?.name?.lowercase().orEmpty(),
+                latestDiagnosticsReason = snapshot.latestPlayerSessionDiagnostics?.progressionReason.orEmpty(),
+                latestDiagnosticsLastTransition = snapshot.latestPlayerSessionDiagnostics?.lastMeaningfulGuestTransition.orEmpty(),
+                latestDiagnosticsStorageSummary = snapshot.latestPlayerSessionDiagnostics
+                    ?.storageRoots
+                    ?.joinToString(" | ") { root ->
+                        "${root.label}:${if (root.exists && root.readable && (root.writable || root.label == "title-portal" || root.label == "patches-root")) "ok" else "blocked"}"
+                    }
+                    .orEmpty(),
+                latestDiagnosticsBundlePath = snapshot.latestPlayerSessionDiagnostics
+                    ?.let { "${snapshot.directories.diagnosticsLogs}/session-${it.sessionId}.bundle.json" }
+                    .orEmpty(),
                 libraryEntries = snapshot.gameLibraryEntries.map(GameLibraryEntryUi::from),
                 lastLaunchBackend = snapshot.fexDiagnostics.lastLaunchBackend,
                 lastLaunchResult = snapshot.fexDiagnostics.lastLaunchResult,

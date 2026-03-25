@@ -12,6 +12,16 @@ internal data class XeniaStartupAnalysis(
     val stage: XeniaStartupStage,
     val detail: String,
     val titleName: String? = null,
+    val titleId: String? = null,
+    val moduleHash: String? = null,
+    val patchDatabaseLoadedTitleCount: Int? = null,
+    val appliedPatches: List<String> = emptyList(),
+    val lastContentMiss: String? = null,
+    val lastMeaningfulTransition: String? = null,
+    val lastContentCallResult: String? = null,
+    val lastXamCallResult: String? = null,
+    val lastXliveCallResult: String? = null,
+    val lastXnetCallResult: String? = null,
 )
 
 internal sealed interface XeniaLaunchMode {
@@ -92,6 +102,13 @@ internal enum class XeniaReadbackResolveMode(
     NONE("none"),
 }
 
+internal enum class XeniaHidBackend(
+    val cliValue: String,
+) {
+    NOP("nop"),
+    ANDROID_SHARED_MEMORY("android_shared_memory"),
+}
+
 internal fun XeniaPresentationSettings.resolveForMesaBranch(
     mesaRuntimeBranch: MesaRuntimeBranch,
 ): XeniaPresentationSettings {
@@ -117,6 +134,62 @@ internal fun XeniaPresentationSettings.resolveForMesaBranch(
 internal object XeniaStartupStageParser {
     fun analyze(logContent: String): XeniaStartupAnalysis {
         val lines = logContent.lineSequence().toList()
+        fun lastMatching(pattern: (String) -> Boolean): String? =
+            lines.lastOrNull(pattern)?.trim()
+        val titleName = lines.firstNotNullOfOrNull { line ->
+            if (!line.contains("Title name: ")) {
+                null
+            } else {
+                line.substringAfter("Title name: ").trim().ifBlank { null }
+            }
+        }
+        val titleId = lines.firstNotNullOfOrNull { line ->
+            Regex("""Title ID:\s*([0-9A-Fa-f]{8})""").find(line)?.groupValues?.getOrNull(1)?.uppercase()
+        }
+        val moduleHash = lines.firstNotNullOfOrNull { line ->
+            Regex("""Module hash:\s*([0-9A-Fa-f]+)""").find(line)?.groupValues?.getOrNull(1)?.uppercase()
+        }
+        val patchDatabaseLoadedTitleCount = lines.firstNotNullOfOrNull { line ->
+            Regex("""PatchDB:\s+Loaded patches for\s+(\d+)\s+titles""").find(line)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        }
+        val appliedPatches = lines
+            .filter { it.contains("Patcher: Applying patch") }
+            .map { it.trim() }
+        val lastContentMiss = lastMatching { line ->
+            line.contains("X360_CONTENT_MISS=") ||
+                line.contains("""\content\""", ignoreCase = true) ||
+                line.contains("ResolvePath(", ignoreCase = true) ||
+                line.contains("XamContentOpenFile", ignoreCase = true)
+        }
+        val lastContentCallResult = lastMatching { line ->
+            line.contains("ContentManager::", ignoreCase = true) ||
+                line.contains("XamContentOpenFile", ignoreCase = true) ||
+                line.contains("X360_VFS_", ignoreCase = true)
+        }
+        val lastXamCallResult = lastMatching { line ->
+            line.contains("Xam", ignoreCase = true)
+        }
+        val lastXliveCallResult = lastMatching { line ->
+            line.contains("XLIVEBASE", ignoreCase = true) ||
+                line.contains("XLive", ignoreCase = true)
+        }
+        val lastXnetCallResult = lastMatching { line ->
+            line.contains("XNetLogon", ignoreCase = true) ||
+                line.contains("XNet", ignoreCase = true)
+        }
+        val lastMeaningfulTransition = lastMatching { line ->
+            line.contains("CompleteLaunch:", ignoreCase = true) ||
+                line.contains("Loading module ", ignoreCase = true) ||
+                line.contains("Title name: ", ignoreCase = true) ||
+                line.contains("MoviePlayer", ignoreCase = true) ||
+                line.contains("CreateThread(", ignoreCase = true) ||
+                line.contains("ContentManager::", ignoreCase = true) ||
+                line.contains("XamContentOpenFile", ignoreCase = true) ||
+                line.contains("X360_VFS_", ignoreCase = true) ||
+                line.contains("XNetLogon", ignoreCase = true) ||
+                line.contains("XLive", ignoreCase = true) ||
+                line.contains("XLIVEBASE", ignoreCase = true)
+        }
         val failureLine = lines.firstOrNull { line ->
             line.contains("Failed to create a Vulkan instance") ||
                 line.contains("No Vulkan physical devices available") ||
@@ -133,6 +206,17 @@ internal object XeniaStartupStageParser {
             return XeniaStartupAnalysis(
                 stage = XeniaStartupStage.FAILED,
                 detail = failureLine.trim(),
+                titleName = titleName,
+                titleId = titleId,
+                moduleHash = moduleHash,
+                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
+                appliedPatches = appliedPatches,
+                lastContentMiss = lastContentMiss,
+                lastMeaningfulTransition = lastMeaningfulTransition,
+                lastContentCallResult = lastContentCallResult,
+                lastXamCallResult = lastXamCallResult,
+                lastXliveCallResult = lastXliveCallResult,
+                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
@@ -141,10 +225,17 @@ internal object XeniaStartupStageParser {
             return XeniaStartupAnalysis(
                 stage = XeniaStartupStage.FRAME_STREAM_ACTIVE,
                 detail = frameStreamActiveLine.trim(),
-                titleName = lines.firstOrNull { it.contains("Title name: ") }
-                    ?.substringAfter("Title name: ")
-                    ?.trim()
-                    ?.ifBlank { null },
+                titleName = titleName,
+                titleId = titleId,
+                moduleHash = moduleHash,
+                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
+                appliedPatches = appliedPatches,
+                lastContentMiss = lastContentMiss,
+                lastMeaningfulTransition = lastMeaningfulTransition,
+                lastContentCallResult = lastContentCallResult,
+                lastXamCallResult = lastXamCallResult,
+                lastXliveCallResult = lastXliveCallResult,
+                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
@@ -153,10 +244,17 @@ internal object XeniaStartupStageParser {
             return XeniaStartupAnalysis(
                 stage = XeniaStartupStage.FIRST_FRAME_CAPTURED,
                 detail = firstFrameLine.trim(),
-                titleName = lines.firstOrNull { it.contains("Title name: ") }
-                    ?.substringAfter("Title name: ")
-                    ?.trim()
-                    ?.ifBlank { null },
+                titleName = titleName,
+                titleId = titleId,
+                moduleHash = moduleHash,
+                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
+                appliedPatches = appliedPatches,
+                lastContentMiss = lastContentMiss,
+                lastMeaningfulTransition = lastMeaningfulTransition,
+                lastContentCallResult = lastContentCallResult,
+                lastXamCallResult = lastXamCallResult,
+                lastXliveCallResult = lastXliveCallResult,
+                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
@@ -165,19 +263,35 @@ internal object XeniaStartupStageParser {
             return XeniaStartupAnalysis(
                 stage = XeniaStartupStage.TITLE_RUNNING_HEADLESS,
                 detail = runningHeadlessLine.trim(),
-                titleName = lines.firstOrNull { it.contains("Title name: ") }
-                    ?.substringAfter("Title name: ")
-                    ?.trim()
-                    ?.ifBlank { null },
+                titleName = titleName,
+                titleId = titleId,
+                moduleHash = moduleHash,
+                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
+                appliedPatches = appliedPatches,
+                lastContentMiss = lastContentMiss,
+                lastMeaningfulTransition = lastMeaningfulTransition,
+                lastContentCallResult = lastContentCallResult,
+                lastXamCallResult = lastXamCallResult,
+                lastXliveCallResult = lastXliveCallResult,
+                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
-        val titleNameLine = lines.firstOrNull { it.contains("Title name: ") }
-        if (titleNameLine != null) {
+        if (titleName != null) {
             return XeniaStartupAnalysis(
                 stage = XeniaStartupStage.TITLE_METADATA_AVAILABLE,
-                detail = titleNameLine.trim(),
-                titleName = titleNameLine.substringAfter("Title name: ").trim().ifBlank { null },
+                detail = lines.firstOrNull { it.contains("Title name: ") }?.trim() ?: "Title name discovered",
+                titleName = titleName,
+                titleId = titleId,
+                moduleHash = moduleHash,
+                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
+                appliedPatches = appliedPatches,
+                lastContentMiss = lastContentMiss,
+                lastMeaningfulTransition = lastMeaningfulTransition,
+                lastContentCallResult = lastContentCallResult,
+                lastXamCallResult = lastXamCallResult,
+                lastXliveCallResult = lastXliveCallResult,
+                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
@@ -186,6 +300,17 @@ internal object XeniaStartupStageParser {
             return XeniaStartupAnalysis(
                 stage = XeniaStartupStage.TITLE_MODULE_LOADING,
                 detail = titleModuleLine.trim(),
+                titleName = titleName,
+                titleId = titleId,
+                moduleHash = moduleHash,
+                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
+                appliedPatches = appliedPatches,
+                lastContentMiss = lastContentMiss,
+                lastMeaningfulTransition = lastMeaningfulTransition,
+                lastContentCallResult = lastContentCallResult,
+                lastXamCallResult = lastXamCallResult,
+                lastXliveCallResult = lastXliveCallResult,
+                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
@@ -194,6 +319,17 @@ internal object XeniaStartupStageParser {
             return XeniaStartupAnalysis(
                 stage = XeniaStartupStage.DISC_IMAGE_ACCEPTED,
                 detail = discImageLine.trim(),
+                titleName = titleName,
+                titleId = titleId,
+                moduleHash = moduleHash,
+                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
+                appliedPatches = appliedPatches,
+                lastContentMiss = lastContentMiss,
+                lastMeaningfulTransition = lastMeaningfulTransition,
+                lastContentCallResult = lastContentCallResult,
+                lastXamCallResult = lastXamCallResult,
+                lastXliveCallResult = lastXliveCallResult,
+                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
@@ -202,6 +338,17 @@ internal object XeniaStartupStageParser {
             return XeniaStartupAnalysis(
                 stage = XeniaStartupStage.VULKAN_INITIALIZED,
                 detail = initializedLine.trim(),
+                titleName = titleName,
+                titleId = titleId,
+                moduleHash = moduleHash,
+                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
+                appliedPatches = appliedPatches,
+                lastContentMiss = lastContentMiss,
+                lastMeaningfulTransition = lastMeaningfulTransition,
+                lastContentCallResult = lastContentCallResult,
+                lastXamCallResult = lastXamCallResult,
+                lastXliveCallResult = lastXliveCallResult,
+                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
@@ -213,6 +360,17 @@ internal object XeniaStartupStageParser {
             return XeniaStartupAnalysis(
                 stage = XeniaStartupStage.VULKAN_BACKEND_SELECTED,
                 detail = backendLine.trim(),
+                titleName = titleName,
+                titleId = titleId,
+                moduleHash = moduleHash,
+                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
+                appliedPatches = appliedPatches,
+                lastContentMiss = lastContentMiss,
+                lastMeaningfulTransition = lastMeaningfulTransition,
+                lastContentCallResult = lastContentCallResult,
+                lastXamCallResult = lastXamCallResult,
+                lastXliveCallResult = lastXliveCallResult,
+                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
@@ -224,6 +382,17 @@ internal object XeniaStartupStageParser {
             return XeniaStartupAnalysis(
                 stage = XeniaStartupStage.CONFIG_READY,
                 detail = configLine.trim(),
+                titleName = titleName,
+                titleId = titleId,
+                moduleHash = moduleHash,
+                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
+                appliedPatches = appliedPatches,
+                lastContentMiss = lastContentMiss,
+                lastMeaningfulTransition = lastMeaningfulTransition,
+                lastContentCallResult = lastContentCallResult,
+                lastXamCallResult = lastXamCallResult,
+                lastXliveCallResult = lastXliveCallResult,
+                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
@@ -234,6 +403,17 @@ internal object XeniaStartupStageParser {
             } else {
                 lines.lastOrNull().orEmpty().ifBlank { "xenia process started" }
             },
+            titleName = titleName,
+            titleId = titleId,
+            moduleHash = moduleHash,
+            patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
+            appliedPatches = appliedPatches,
+            lastContentMiss = lastContentMiss,
+            lastMeaningfulTransition = lastMeaningfulTransition,
+            lastContentCallResult = lastContentCallResult,
+            lastXamCallResult = lastXamCallResult,
+            lastXliveCallResult = lastXliveCallResult,
+            lastXnetCallResult = lastXnetCallResult,
         )
     }
 }
@@ -258,6 +438,7 @@ internal fun buildXeniaBringupArgs(
         XeniaLaunchMode.NoTitleBringup -> null
         is XeniaLaunchMode.TitleBoot -> presentationSettings.readbackResolveMode?.cliValue
     }
+    val hidBackend = resolveXeniaHidBackend(launchMode)
     val baseArgs = buildList {
         addAll(
             listOf(
@@ -266,7 +447,7 @@ internal fun buildXeniaBringupArgs(
                 "--portable=true",
                 "--gpu=vulkan",
                 "--apu=${presentationSettings.apuBackend.cliValue}",
-                "--hid=nop",
+                "--hid=${hidBackend.cliValue}",
                 "--discord=false",
                 "--log_file=stdout",
                 "--mount_cache=$mountCache",
@@ -306,6 +487,7 @@ internal fun buildXeniaConfigText(
     },
 ): String {
     val mountCache = launchMode is XeniaLaunchMode.TitleBoot
+    val hidBackend = resolveXeniaHidBackend(launchMode)
     val contentRoot = directories.xeniaWritableContentRoot.toXeniaGuestPath(directories.rootfs)
     val cacheRoot = directories.xeniaWritableCacheHostRoot.toXeniaGuestPath(directories.rootfs)
     val storageRoot = directories.xeniaWritableStorageRoot.toXeniaGuestPath(directories.rootfs)
@@ -321,7 +503,7 @@ internal fun buildXeniaConfigText(
         apu = "${presentationSettings.apuBackend.cliValue}"
         
         [HID]
-        hid = "nop"
+        hid = "${hidBackend.cliValue}"
         
         [Kernel]
         headless = true
@@ -369,5 +551,14 @@ private fun java.nio.file.Path.toXeniaGuestPath(rootfs: java.nio.file.Path): Str
         normalizedPath == normalizedRoot -> "/"
         normalizedPath.startsWith("$normalizedRoot/") -> "/" + normalizedPath.removePrefix("$normalizedRoot/")
         else -> "/" + normalizedPath.trimStart('/')
+    }
+}
+
+private fun resolveXeniaHidBackend(
+    launchMode: XeniaLaunchMode,
+): XeniaHidBackend {
+    return when (launchMode) {
+        XeniaLaunchMode.NoTitleBringup -> XeniaHidBackend.NOP
+        is XeniaLaunchMode.TitleBoot -> XeniaHidBackend.ANDROID_SHARED_MEMORY
     }
 }

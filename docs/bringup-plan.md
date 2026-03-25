@@ -2,11 +2,11 @@
 
 ## Goal
 
-Reconstruct the previously working pipeline in a controlled order, so each stage proves one layer of the stack before the next layer is introduced.
+Reconstruct the Android + FEX + Linux `x86_64` + Xenia stack in a controlled order, so each phase proves one layer before the next is trusted.
 
-## Completed phases
+## Completed and implemented phases
 
-### Phase 1: Re-establish the architecture contract
+### Phase 1: Architecture contract
 
 Status: complete
 
@@ -16,17 +16,16 @@ Locked outcomes:
 - FEX-first Android wrapper design
 - headless/offscreen-first recovery strategy
 
-### Phase 2: Rebuild the runtime skeleton without Xenia
+### Phase 2: Runtime skeleton without Xenia
 
 Status: complete
 
 Pass outcome:
 
 - translated Linux `x86_64` guest processes start deterministically through FEX
-- repeated runs stay stable
-- logging is split cleanly across app, FEX, and guest layers
+- logs are split cleanly across app, FEX, and guest layers
 
-### Phase 3: Rebuild the Vulkan userspace path
+### Phase 3: Vulkan userspace path
 
 Status: complete
 
@@ -38,7 +37,7 @@ Pass outcome:
 - physical device enumeration succeeds
 - `lavapipe` remains available as a regression fallback
 
-### Phase 4: Rebuild the hardware Turnip path
+### Phase 4: Hardware Turnip path
 
 Status: complete
 
@@ -51,16 +50,15 @@ Pass outcome:
   - `AYN Odin2 Mini`
   - `Odin3`
 
-### Phase 5: Introduce Xenia Canary
+### Phase 5: Xenia bring-up
 
-Status: complete for bring-up to Vulkan init
+Status: complete
 
 Pass outcome:
 
 - pinned-source Linux `x86_64` Xenia Canary is built in-repo
 - Xenia is staged into the guest runtime
-- headless bring-up through FEX is real
-- Xenia reaches `VULKAN_INITIALIZED` on both validated devices without requiring a game image
+- Xenia reaches `VULKAN_INITIALIZED` on both validated devices
 
 ### Phase 6: Title-aware boot and steady-state headless run
 
@@ -69,23 +67,18 @@ Status: complete
 Pass outcome:
 
 - no-copy ISO launch path is real
-- imported titles resolve through the guest portal under `rootfs/mnt/library`
-- `Dante's Inferno` reaches `TITLE_MODULE_LOADING`
-- `Dante's Inferno` survives a fixed observation window without fatal aborts
-- final launch stage reaches `TITLE_RUNNING_HEADLESS` on both validated devices
+- imported titles resolve through `rootfs/mnt/library/<entry-id>.iso`
+- `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
 
-### Phase 7: Recover visible presentation
+### Phase 7: First visible presentation
 
-Status: complete for the framebuffer-polling path
+Status: complete
 
 Pass outcome:
 
-- Xenia exports frames through `xenia_fb`
-- the Android app consumes the framebuffer stream
-- `Dante's Inferno` shows visible frames on:
-  - `AYN Odin2 Mini`
-  - `Odin3`
-- final visible stream stage reaches `FRAME_STREAM_ACTIVE`
+- Xenia exports visible frames
+- the Android app presents them fullscreen
+- `Dante's Inferno` reaches `FRAME_STREAM_ACTIVE`
 
 ### Phase 8: Product shell and fullscreen player
 
@@ -93,94 +86,104 @@ Status: complete
 
 Pass outcome:
 
-- branded splash routes into a library-first shell
-- debug tooling survives behind `Options -> Debug`
-- titles launch into a dedicated fullscreen `PlayerActivity`
-- FPS overlay support exists and is user-configurable
-- Android back in the player opens a pause menu instead of hard-exiting immediately
-- the pause menu offers resume, quick options, exit to home, and exit to Android
-- the visible framebuffer path is usable from the product shell, not only from the debug harness
+- splash -> library home flow
+- debug UI preserved behind options
+- dedicated `PlayerActivity`
+- pause menu on Android back
+- quick in-player options
 
 ### Phase 9: Universal Android display baseline
 
-Status: complete
+Status: implemented, but not the current product default
+
+What exists:
+
+- app-owned shared-memory presentation backend
+- Surface/Image-based player plumbing for experimentation
+
+Current practical note:
+
+- the current stable default player backend has been moved back to `FRAMEBUFFER_POLLING`
+- shared-memory remains in the repo as an alternate/debug path while progression work continues
+
+### Phase 10A: Universal Android input baseline
+
+Status: implemented
 
 Pass outcome:
 
-- the normal player path uses `FRAMEBUFFER_SHARED_MEMORY`
-- visible rendering no longer depends on file polling cadence
-- the fullscreen player consumes the app-owned shared-memory transport on:
-  - `AYN Odin2 Mini`
-  - `Odin3`
-- title display is no longer coupled to ISO location; descriptor-backed title portals remain the normal path
-- `FRAMEBUFFER_POLLING` survives only as a debug/regression backend
+- Android controller input is captured in the player
+- input is bridged into headless Xenia
+- controller navigation works in-app and controller events reach the emulator
 
-## Next phases
+### Phase 10B: Global patch DB + title content UI
 
-### Phase 10: Rebuild interaction layers
+Status: implemented, progression fix still incomplete
 
-Test objective:
+What exists:
 
-- recover input and audio only after visible playback is stable and diagnosable
+- official `xenia-canary/game-patches` snapshot bundled into runtime
+- patch DB metadata exposed in app/runtime diagnostics
+- title content UI and store
+- helper pipeline for XContent container inspection/install
 
-Pass criteria:
+### Phase 10C: Progression-stall triage
 
-- input and audio attach without destabilizing the running title
-- regressions can still be attributed cleanly by subsystem
+Status: implemented, investigation ongoing
 
-### Phase 11: Revalidate historical game cases
+What exists:
 
-Priority titles:
+- live player session is the canonical diagnostic path
+- session-scoped diagnostics bundle keyed by `sessionId`
+- progression-stall classification model
+- storage/content/profile preflight diagnostics
+- guest-side instrumentation for content/XAM/XLive/XNet paths
 
-- Dante's Inferno
-- Forza Horizon
+## Current blocker
 
-Pass criteria:
+The current blocker is not "make frames appear" and not "make input reach Xenia".
 
-- game boot reaches the same rough milestones previously observed
-- frame pacing is stable enough to compare against historical memory
-- any regression is recorded by layer: FEX, Mesa/Turnip, Xenia, or Android glue
+The blocker is:
+
+- titles can boot, render, and accept input
+- but some titles still stall during gameplay/load transitions
+
+Important current note:
+
+- the old polling regression where only the first frame was exported has been fixed in the active runtime payload
+- this closed a real display-side freeze class on both validated devices
+- remaining stalls must now be treated as real progression problems unless logs prove otherwise
 
 ## Current test matrix
 
 ### Devices
 
-- Ayn Odin 2 Mini
-- Odin3
-
-### Hardware profile
-
 - `AYN Odin2 Mini`
-  - Snapdragon 8 Gen 2
-  - Adreno 740
-  - 12 GB RAM
 - `Odin3`
-  - Snapdragon 8 Elite class platform
-  - Adreno 830
 
-### Stability checks
+### Core checks
 
 - cold start
 - repeated relaunch
-- connected-test bring-up for probes and Xenia startup
-- opt-in Dante steady-state title smoke
-- recovery after app data clear
-- fullscreen player smoke on real devices
+- connected Xenia/Vulkan bring-up
+- visible player smoke
+- controller-input smoke
+- live player diagnostics bundle generation
 
-### Rendering and startup checks
+### Rendering and launch checks
 
 - Vulkan probe still passes
 - Turnip hardware path still passes
 - Xenia reaches `VULKAN_INITIALIZED`
-- `Dante's Inferno` reaches `TITLE_RUNNING_HEADLESS`
-- `Dante's Inferno` reaches `FRAME_STREAM_ACTIVE`
-- visible Dante frames are confirmed in the player on both devices
-- no regression in the separated `app`, `fex`, and `guest` log contract
+- imported ISO launches still work
+- player reaches `FRAME_STREAM_ACTIVE`
+- controller events still reach the player session
+- patch DB loads for more than zero titles
 
-## Reconstruction priorities from here
+## Near-term priorities
 
-1. Preserve the working Phase 6A baseline and its artifacts.
-2. Keep the shared-memory player path stable on both devices.
-3. Add interaction layers only after visible output is diagnosable.
-4. Keep exact observations separate from guesses.
-5. Only then chase performance tuning.
+1. Preserve the current live player baseline on both devices.
+2. Keep the official patch DB and title-content subsystem working.
+3. Use the live player diagnostics bundle, not one-shot smoke, to classify stalls.
+4. Fix progression blockers without rewriting the rendering stack again.
+5. Only after progression is trustworthy, return to audio and performance work.

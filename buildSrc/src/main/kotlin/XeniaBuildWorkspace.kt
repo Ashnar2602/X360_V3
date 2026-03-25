@@ -43,5 +43,6 @@ fun computeXeniaSetupSignature(
     digest.update("sourceRevision=${lock.sourceRevision}\n".toByteArray())
     digest.update("buildProfile=${lock.buildProfile}\n".toByteArray())
     digest.update("vulkanSdk=${vulkanSdkOverride ?: "system"}\n".toByteArray())
+    digest.update("xeniaContentTool=enabled\n".toByteArray())
     return digest.digest().joinToString("") { "%02x".format(it) }
 }

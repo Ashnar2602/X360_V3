@@ -1,0 +1,94 @@
+diff --git a/src/xenia/kernel/xam/apps/xlivebase_app.cc b/src/xenia/kernel/xam/apps/xlivebase_app.cc
+index a457266c..ab9be68e 100644
+--- a/src/xenia/kernel/xam/apps/xlivebase_app.cc
++++ b/src/xenia/kernel/xam/apps/xlivebase_app.cc
+@@ -10,12 +10,33 @@
+ #include "xenia/kernel/xam/apps/xlivebase_app.h"
+ 
+ #include "xenia/base/logging.h"
++#include "xenia/base/memory.h"
++
++#include <cstring>
+ 
+ namespace xe {
+ namespace kernel {
+ namespace xam {
+ namespace apps {
+ 
++namespace {
++
++void InitializeOfflineMessage5000E(void* buffer, uint32_t buffer_length,
++                                   uint32_t title_id) {
++  if (!buffer || buffer_length < 0x28) {
++    return;
++  }
++
++  std::memset(buffer, 0, buffer_length);
++  xe::store_and_swap<uint32_t>(reinterpret_cast<uint8_t*>(buffer) + 0x00, 1u);
++  xe::store_and_swap<uint32_t>(reinterpret_cast<uint8_t*>(buffer) + 0x04,
++                               title_id);
++  xe::store_and_swap<uint32_t>(reinterpret_cast<uint8_t*>(buffer) + 0x08,
++                               0x58453630u);
++}
++
++}  // namespace
++
+ XLiveBaseApp::XLiveBaseApp(KernelState* kernel_state)
+     : App(kernel_state, 0xFC) {}
+ 
+@@ -37,6 +58,14 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message,
+       XELOGD("XLiveBaseUnk50094, unimplemented");
+       return X_E_FAIL;
+     }
++    case 0x0005000E: {
++      assert_true(!buffer_length || buffer_length == 0x28);
++      XELOGD("XLiveBaseOfflineLogonState({:08X}, {:08X})", buffer_ptr,
++             buffer_length);
++      InitializeOfflineMessage5000E(buffer, buffer_length,
++                                    kernel_state_->title_id());
++      return X_E_SUCCESS;
++    }
+     case 0x00058003: {
+       /* Notes:
+          - Called on startup of dashboard (netplay build)
+diff --git a/src/xenia/kernel/xam/xam_net.cc b/src/xenia/kernel/xam/xam_net.cc
+index d05f39a0..75865a20 100644
+--- a/src/xenia/kernel/xam/xam_net.cc
++++ b/src/xenia/kernel/xam/xam_net.cc
+@@ -34,6 +34,12 @@ namespace xe {
+ namespace kernel {
+ namespace xam {
+ 
++namespace {
++
++constexpr uint32_t kOfflineMachineId = 0x58453630u;
++
++}  // namespace
++
+ // https://github.com/G91/TitanOffLine/blob/1e692d9bb9dfac386d08045ccdadf4ae3227bb5e/xkelib/xam/xamNet.h
+ enum {
+   XNCALLER_INVALID = 0x0,
+@@ -1095,6 +1101,23 @@ dword_result_t NetDll_XNetUnregisterKey_entry(dword_t caller,
+ }
+ DECLARE_XAM_EXPORT1(NetDll_XNetUnregisterKey, kNetworking, kStub);
+ 
++dword_result_t XNetLogonGetMachineID_entry(dword_t caller, lpvoid_t params) {
++  (void)caller;
++  XELOGD("XNetLogonGetMachineID({:08X}) -> {:08X}", params.guest_address(),
++         kOfflineMachineId);
++  return kOfflineMachineId;
++}
++DECLARE_XAM_EXPORT1(XNetLogonGetMachineID, kNetworking, kImplemented);
++
++dword_result_t XNetLogonGetTitleID_entry(dword_t caller, lpvoid_t params) {
++  (void)caller;
++  const uint32_t title_id = kernel_state()->title_id();
++  XELOGD("XNetLogonGetTitleID({:08X}) -> {:08X}", params.guest_address(),
++         title_id);
++  return title_id;
++}
++DECLARE_XAM_EXPORT1(XNetLogonGetTitleID, kNetworking, kImplemented);
++
+ }  // namespace xam
+ }  // namespace kernel
+ }  // namespace xe

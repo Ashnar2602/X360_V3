@@ -66,6 +66,14 @@ class MainActivity : ComponentActivity() {
                             viewModel.importIso(uri)
                         }
                     }
+                    var pendingContentImportEntryId by rememberSaveable { mutableStateOf<String?>(null) }
+                    val contentPicker = rememberLauncherForActivityResult(OpenDocument()) { uri ->
+                        val targetEntryId = pendingContentImportEntryId
+                        pendingContentImportEntryId = null
+                        if (uri != null && targetEntryId != null) {
+                            viewModel.importTitleContent(targetEntryId, uri)
+                        }
+                    }
                     if (importFromIntent != null) {
                         LaunchedEffect(importFromIntent) {
                             viewModel.importIso(importFromIntent)
@@ -76,9 +84,17 @@ class MainActivity : ComponentActivity() {
                         state = state,
                         onRefresh = viewModel::refresh,
                         onImportIso = { isoPicker.launch(arrayOf("*/*")) },
+                        onImportTitleContent = { entryId ->
+                            pendingContentImportEntryId = entryId
+                            contentPicker.launch(arrayOf("*/*"))
+                        },
                         onRefreshLibrary = viewModel::refreshLibrary,
                         onRemoveLibraryEntry = viewModel::removeLibraryEntry,
+                        onRefreshTitleContent = viewModel::refreshTitleContent,
+                        onRemoveTitleContent = viewModel::removeTitleContent,
+                        onReinstallTitleContent = viewModel::reinstallTitleContent,
                         onSetShowFpsCounter = viewModel::setShowFpsCounter,
+                        onOpenControllerMapping = { startActivity(ControllerMappingActivity.intent(this)) },
                         onLaunchPlayer = { entryId ->
                             startActivity(PlayerActivity.intent(this, entryId))
                         },
@@ -122,9 +138,14 @@ private fun MainShell(
     state: MainUiState,
     onRefresh: () -> Unit,
     onImportIso: () -> Unit,
+    onImportTitleContent: (String) -> Unit,
     onRefreshLibrary: () -> Unit,
     onRemoveLibraryEntry: (String) -> Unit,
+    onRefreshTitleContent: (String) -> Unit,
+    onRemoveTitleContent: (String) -> Unit,
+    onReinstallTitleContent: (String) -> Unit,
     onSetShowFpsCounter: (Boolean) -> Unit,
+    onOpenControllerMapping: () -> Unit,
     onLaunchPlayer: (String) -> Unit,
 ) {
     var destination by rememberSaveable { mutableStateOf(MainDestination.LIBRARY) }
@@ -148,6 +169,7 @@ private fun MainShell(
             onInstall = debugViewModel::installRuntime,
             onImportIso = { isoPicker.launch(arrayOf("*/*")) },
             onLaunchImportedTitle = debugViewModel::launchImportedTitle,
+            onLaunchImportedTitleDiagnostic = debugViewModel::launchImportedTitleDiagnostic,
             onRemoveLibraryEntry = debugViewModel::removeLibraryEntry,
             onLaunchXeniaBringup = debugViewModel::launchXeniaBringup,
             onLaunchTurnipProbe = debugViewModel::launchTurnipProbe,
@@ -188,6 +210,7 @@ private fun MainShell(
                 onBack = { destination = MainDestination.LIBRARY },
                 onRefresh = onRefresh,
                 onSetShowFpsCounter = onSetShowFpsCounter,
+                onOpenControllerMapping = onOpenControllerMapping,
                 onOpenDebug = { destination = MainDestination.DEBUG },
             )
 
@@ -196,6 +219,10 @@ private fun MainShell(
                 options = selectedOptions,
                 onBack = { destination = MainDestination.LIBRARY },
                 onPlay = selectedEntry?.id?.let { id -> { onLaunchPlayer(id) } } ?: {},
+                onImportContent = selectedEntry?.id?.let { id -> { onImportTitleContent(id) } } ?: {},
+                onRefreshContent = selectedEntry?.id?.let { id -> { onRefreshTitleContent(id) } } ?: {},
+                onRemoveContent = onRemoveTitleContent,
+                onReinstallContent = onReinstallTitleContent,
             )
 
             MainDestination.DEBUG -> Unit
@@ -330,6 +357,7 @@ private fun OptionsScreen(
     onBack: () -> Unit,
     onRefresh: () -> Unit,
     onSetShowFpsCounter: (Boolean) -> Unit,
+    onOpenControllerMapping: () -> Unit,
     onOpenDebug: () -> Unit,
 ) {
     Column(
@@ -415,6 +443,20 @@ private fun OptionsScreen(
         }
 
         ProductCard(
+            title = "Controller Mapping",
+            accent = Color(0xFFAED0FF),
+        ) {
+            Text(
+                text = "Configura Start, A/B/X/Y, D-pad, LB/RB, LT/RT e click stick. Gli assi analogici restano su auto-detect.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFE6ECF2),
+            )
+            Button(onClick = onOpenControllerMapping, enabled = !state.isBusy) {
+                Text("Open Controller Mapping")
+            }
+        }
+
+        ProductCard(
             title = "Debug",
             accent = Color(0xFFFF8B7B),
         ) {
@@ -436,6 +478,10 @@ private fun GameOptionsScreen(
     options: GameOptionsUi?,
     onBack: () -> Unit,
     onPlay: () -> Unit,
+    onImportContent: () -> Unit,
+    onRefreshContent: () -> Unit,
+    onRemoveContent: (String) -> Unit,
+    onReinstallContent: (String) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -474,6 +520,26 @@ private fun GameOptionsScreen(
                 color = Color(0xFFE6ECF2),
             )
             Text(
+                text = "Title ID: ${options.titleId}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFE6ECF2),
+            )
+            Text(
+                text = "Module hash: ${options.moduleHash}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFE6ECF2),
+            )
+            Text(
+                text = "Patch DB: ${options.patchDatabaseStatus} | loaded titles: ${options.patchDatabaseLoadedCount}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFE6ECF2),
+            )
+            Text(
+                text = "Last content miss: ${options.lastContentMiss}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFAFC0CF),
+            )
+            Text(
                 text = "Render scale override: ${options.renderScaleOverrideLabel}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color(0xFFE6ECF2),
@@ -499,6 +565,80 @@ private fun GameOptionsScreen(
                 }
                 OutlinedButton(onClick = {}, enabled = false) {
                     Text("Coming Soon")
+                }
+            }
+        }
+
+        ProductCard(title = "Content", accent = Color(0xFFAED0FF)) {
+            Text(
+                text = options.contentHint,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFE6ECF2),
+            )
+            if (options.appliedPatches.isNotEmpty()) {
+                Text(
+                    text = "Applied patches:",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color(0xFFF5F7FA),
+                )
+                options.appliedPatches.forEach { patchLine ->
+                    Text(
+                        text = patchLine,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFAFC0CF),
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = onImportContent, enabled = options.canImportContent) {
+                    Text("Import Content Package")
+                }
+                OutlinedButton(onClick = onRefreshContent) {
+                    Text("Refresh")
+                }
+            }
+            if (options.contentEntries.isEmpty()) {
+                Text(
+                    text = "No title-specific content installed yet.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFAFC0CF),
+                )
+            } else {
+                options.contentEntries.forEach { content ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xB3122230)),
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = content.displayName,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = Color(0xFFF0F4F8),
+                            )
+                            Text(
+                                text = "${content.contentTypeLabel} | ${content.packageSignature} | ${content.installStatus}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFC7D2DC),
+                            )
+                            Text(
+                                text = content.lastInstallSummary,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFAFC0CF),
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                OutlinedButton(onClick = { onReinstallContent(content.id) }) {
+                                    Text("Reinstall")
+                                }
+                                OutlinedButton(onClick = { onRemoveContent(content.id) }) {
+                                    Text("Remove")
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

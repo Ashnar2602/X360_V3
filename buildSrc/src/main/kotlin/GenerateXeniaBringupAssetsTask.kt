@@ -16,6 +16,9 @@ abstract class GenerateXeniaBringupAssetsTask : DefaultTask() {
     @get:InputFile
     abstract val xeniaSourceLockManifest: RegularFileProperty
 
+    @get:InputFile
+    abstract val xeniaGamePatchesLockManifest: RegularFileProperty
+
     @get:InputDirectory
     abstract val patchesDir: DirectoryProperty
 
@@ -24,6 +27,9 @@ abstract class GenerateXeniaBringupAssetsTask : DefaultTask() {
 
     @get:LocalState
     abstract val sourceCacheDir: DirectoryProperty
+
+    @get:LocalState
+    abstract val gamePatchesCacheDir: DirectoryProperty
 
     @get:LocalState
     abstract val workspaceCacheDir: DirectoryProperty
@@ -40,14 +46,19 @@ abstract class GenerateXeniaBringupAssetsTask : DefaultTask() {
         val assembler = XeniaRuntimeAssembler()
         assembler.assertPrerequisites()
         val lock = XeniaRuntimeLockCodec.decode(xeniaSourceLockManifest.get().asFile.toPath().readText())
+        val gamePatchesLock = XeniaRuntimeLockCodec.decodeGamePatchesLock(
+            xeniaGamePatchesLockManifest.get().asFile.toPath().readText(),
+        )
         val resolvedBuildMode = XeniaBuildMode.parse(buildMode.get())
         val workingRootBase = when (resolvedBuildMode) {
             XeniaBuildMode.FULL -> temporaryDir.toPath().resolve("workspaces")
             XeniaBuildMode.INCREMENTAL -> workspaceCacheDir.get().asFile.toPath()
         }
-        val metadata = assembler.buildAndStage(
+        val stageResult = assembler.buildAndStage(
             lock = lock,
+            gamePatchesLock = gamePatchesLock,
             sourceCacheDir = sourceCacheDir.get().asFile.toPath(),
+            gamePatchesCacheDir = gamePatchesCacheDir.get().asFile.toPath(),
             workingRootBase = workingRootBase,
             outputRoot = output,
             patchesRoot = patchesDir.get().asFile.toPath(),
@@ -60,9 +71,17 @@ abstract class GenerateXeniaBringupAssetsTask : DefaultTask() {
             payloadConfigDir.resolve("xenia-source-lock.json"),
             overwrite = true,
         )
+        xeniaGamePatchesLockManifest.get().asFile.toPath().copyTo(
+            payloadConfigDir.resolve("xenia-game-patches-lock.json"),
+            overwrite = true,
+        )
         assembler.writeMetadata(
-            metadata = metadata,
+            metadata = stageResult.buildMetadata,
             outputPath = payloadConfigDir.resolve("xenia-build-metadata.json"),
+        )
+        assembler.writeGamePatchesMetadata(
+            metadata = stageResult.gamePatchesMetadata,
+            outputPath = payloadConfigDir.resolve("xenia-game-patches-metadata.json"),
         )
     }
 }

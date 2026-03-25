@@ -14,6 +14,9 @@ import emu.x360.mobile.dev.runtime.GameLibraryEntry
 import emu.x360.mobile.dev.runtime.GameLibraryEntryStatus
 import emu.x360.mobile.dev.runtime.GameLibrarySourceKind
 import emu.x360.mobile.dev.runtime.RuntimeDirectories
+import emu.x360.mobile.dev.runtime.TitleContentDatabase
+import emu.x360.mobile.dev.runtime.TitleContentDatabaseCodec
+import emu.x360.mobile.dev.runtime.TitleContentEntry
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
@@ -70,6 +73,50 @@ internal class GameLibraryStore(
 
     private fun GameLibraryDatabase.sorted(): GameLibraryDatabase {
         return copy(entries = entries.sortedByDescending { it.importedAt })
+    }
+}
+
+internal class TitleContentStore(
+    private val directories: RuntimeDirectories,
+) {
+    fun load(): TitleContentDatabase {
+        if (!directories.titleContentDatabase.exists()) {
+            return TitleContentDatabase()
+        }
+        return runCatching { TitleContentDatabaseCodec.decode(directories.titleContentDatabase.readText()) }
+            .getOrDefault(TitleContentDatabase())
+            .sorted()
+    }
+
+    fun save(database: TitleContentDatabase) {
+        directories.libraryRoot.createDirectories()
+        directories.titleContentDatabase.writeText(TitleContentDatabaseCodec.encode(database.sorted()))
+    }
+
+    fun upsert(entry: TitleContentEntry): TitleContentDatabase {
+        val current = load()
+        val updated = current.entries.filterNot { it.id == entry.id } + entry
+        return TitleContentDatabase(
+            version = current.version,
+            entries = updated.sortedWith(compareBy<TitleContentEntry> { it.libraryEntryId }.thenBy { it.displayName.lowercase() }),
+        ).also(::save)
+    }
+
+    fun remove(entryId: String): TitleContentDatabase {
+        val current = load()
+        return TitleContentDatabase(
+            version = current.version,
+            entries = current.entries.filterNot { it.id == entryId },
+        ).also(::save)
+    }
+
+    fun find(entryId: String): TitleContentEntry? = load().entries.firstOrNull { it.id == entryId }
+
+    fun forLibraryEntry(libraryEntryId: String): List<TitleContentEntry> =
+        load().entries.filter { it.libraryEntryId == libraryEntryId }
+
+    private fun TitleContentDatabase.sorted(): TitleContentDatabase {
+        return copy(entries = entries.sortedWith(compareBy<TitleContentEntry> { it.libraryEntryId }.thenBy { it.displayName.lowercase() }))
     }
 }
 
@@ -436,42 +483,46 @@ internal class GuestContentPortalManager(
     private val directories: RuntimeDirectories,
 ) {
     fun materializeIsoPortal(entry: GameLibraryEntry, hostPath: Path): Path {
+        return materializeHostPathPortal(entry.id, ".iso", hostPath)
+    }
+
+    fun materializeHostPathPortal(entryId: String, suffix: String, hostPath: Path): Path {
         directories.rootfsMntLibrary.createDirectories()
-        val portalPath = portalPathFor(entry.id)
+        val portalPath = portalPathFor(entryId, suffix)
         Files.deleteIfExists(portalPath)
         Files.createSymbolicLink(portalPath, hostPath.toAbsolutePath().normalize())
         return portalPath
     }
 
     fun materializeProcFdPortal(entryId: String, inheritedFd: Int): Path {
-        return materializeDescriptorPortal(entryId, "/proc/self/fd/$inheritedFd")
+        return materializeDescriptorPortal(entryId, ".iso", "/proc/self/fd/$inheritedFd")
     }
 
-    fun materializeDescriptorPortal(entryId: String, descriptorPath: String): Path {
+    fun materializeDescriptorPortal(entryId: String, suffix: String, descriptorPath: String): Path {
         directories.rootfsMntLibrary.createDirectories()
-        val portalPath = portalPathFor(entryId)
+        val portalPath = portalPathFor(entryId, suffix)
         Files.deleteIfExists(portalPath)
         Files.createSymbolicLink(portalPath, File(descriptorPath).toPath())
         return portalPath
     }
 
-    fun materializeFdBackedPortal(entryId: String): Path {
+    fun materializeFdBackedPortal(entryId: String, suffix: String = ".iso"): Path {
         directories.rootfsMntLibrary.createDirectories()
-        val portalPath = portalPathFor(entryId)
+        val portalPath = portalPathFor(entryId, suffix)
         Files.deleteIfExists(portalPath)
         Files.write(portalPath, byteArrayOf())
         return portalPath
     }
 
-    fun clearPortal(entryId: String) {
-        Files.deleteIfExists(portalPathFor(entryId))
+    fun clearPortal(entryId: String, suffix: String = ".iso") {
+        Files.deleteIfExists(portalPathFor(entryId, suffix))
     }
 
-    fun portalGuestPath(entryId: String): String {
-        return portalPathFor(entryId).toGuestPath(directories.rootfs)
+    fun portalGuestPath(entryId: String, suffix: String = ".iso"): String {
+        return portalPathFor(entryId, suffix).toGuestPath(directories.rootfs)
     }
 
-    private fun portalPathFor(entryId: String): Path = directories.rootfsMntLibrary.resolve("$entryId.iso")
+    private fun portalPathFor(entryId: String, suffix: String): Path = directories.rootfsMntLibrary.resolve("$entryId$suffix")
 }
 
 internal fun stableEntryId(raw: String): String {

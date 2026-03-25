@@ -47,6 +47,7 @@ class XeniaBringupModelTest {
 
         assertThat(args.last()).isEqualTo("/mnt/library/dante.iso")
         assertThat(args).contains("--apu=sdl")
+        assertThat(args).contains("--hid=android_shared_memory")
         assertThat(args).contains("--readback_resolve=fast")
         assertThat(args).contains("--x360_framebuffer_fps=60")
         assertThat(args).contains("--x360_presentation_backend=framebuffer_shared_memory")
@@ -84,7 +85,7 @@ class XeniaBringupModelTest {
     }
 
     @Test
-    fun `xenia title boot config switches to sdl audio and cache mount`() {
+    fun `xenia title boot config uses sdl audio and cache mount`() {
         val config = buildXeniaConfigText(
             directories = directories,
             launchMode = XeniaLaunchMode.TitleBoot(
@@ -94,6 +95,7 @@ class XeniaBringupModelTest {
         )
 
         assertThat(config).contains("apu = \"sdl\"")
+        assertThat(config).contains("hid = \"android_shared_memory\"")
         assertThat(config).contains("mount_cache = true")
         assertThat(config).contains("content_root = \"/tmp/x360-v3/xenia/content\"")
         assertThat(config).contains("cache_root = \"/tmp/x360-v3/xenia/cache-host\"")
@@ -112,6 +114,7 @@ class XeniaBringupModelTest {
         )
 
         assertThat(config).contains("apu = \"sdl\"")
+        assertThat(config).contains("hid = \"android_shared_memory\"")
         assertThat(config).contains("mount_cache = true")
     }
 
@@ -221,6 +224,34 @@ class XeniaBringupModelTest {
 
         assertThat(analysis.stage).isEqualTo(XeniaStartupStage.FRAME_STREAM_ACTIVE)
         assertThat(analysis.detail).contains("frame_index=3")
+    }
+
+    @Test
+    fun `startup parser captures patch db title count module hash and content miss`() {
+        val analysis = XeniaStartupStageParser.analyze(
+            """
+            PatchDB: Loaded patches for 482 titles
+            Title ID: 454108CF
+            Module hash: 8b5ce7c2f1ab44de
+            Patcher: Applying patch for: Dante's Inferno(454108CF) - Disable broken post FX
+            X360_CONTENT_MISS=OpenContent request=[device=00000001 title=454108CF type=00000002 xuid=0000000000000000 file=TU0001] caller_xuid=0000000000000000 path=/tmp/x360-v3/xenia/content/0000000000000000/454108CF/00000002/TU0001
+            XNetLogonGetTitleID offline stub success title_id=454108CF
+            XLIVEBASE message 0005000E offline response size=0x28
+            X360_VFS_DISC_MISS path=content\\0000000000000000\\454108CF\\00000002 image=/storage/roms/Dante.iso
+            Loading module game:\default.xex
+            """.trimIndent(),
+        )
+
+        assertThat(analysis.stage).isEqualTo(XeniaStartupStage.TITLE_MODULE_LOADING)
+        assertThat(analysis.titleId).isEqualTo("454108CF")
+        assertThat(analysis.moduleHash).isEqualTo("8B5CE7C2F1AB44DE")
+        assertThat(analysis.patchDatabaseLoadedTitleCount).isEqualTo(482)
+        assertThat(analysis.appliedPatches).hasSize(1)
+        assertThat(analysis.lastContentMiss).contains("X360_CONTENT_MISS=OpenContent")
+        assertThat(analysis.lastContentCallResult).contains("X360_VFS_DISC_MISS")
+        assertThat(analysis.lastXliveCallResult).contains("XLIVEBASE")
+        assertThat(analysis.lastXnetCallResult).contains("XNetLogonGetTitleID")
+        assertThat(analysis.lastMeaningfulTransition).contains("Loading module")
     }
 
     @Test

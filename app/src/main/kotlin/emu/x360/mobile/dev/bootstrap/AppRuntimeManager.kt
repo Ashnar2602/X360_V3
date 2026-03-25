@@ -14,11 +14,15 @@ import emu.x360.mobile.dev.runtime.GuestLaunchRequest
 import emu.x360.mobile.dev.runtime.GuestLaunchResult
 import emu.x360.mobile.dev.runtime.GuestLogDestinations
 import emu.x360.mobile.dev.runtime.InheritedFileDescriptor
+import emu.x360.mobile.dev.runtime.DiagnosticRootAccessState
 import emu.x360.mobile.dev.runtime.MesaRuntimeBranch
 import emu.x360.mobile.dev.runtime.PresentationBackend
 import emu.x360.mobile.dev.runtime.PresentationPerformanceMetrics
+import emu.x360.mobile.dev.runtime.PlayerSessionDiagnosticsBundle
+import emu.x360.mobile.dev.runtime.PlayerSessionPatchState
 import emu.x360.mobile.dev.runtime.MesaRuntimeMetadata
 import emu.x360.mobile.dev.runtime.MesaRuntimeMetadataCodec
+import emu.x360.mobile.dev.runtime.ProgressionStallClassification
 import emu.x360.mobile.dev.runtime.RuntimeAssetSource
 import emu.x360.mobile.dev.runtime.RuntimeDirectories
 import emu.x360.mobile.dev.runtime.RuntimeInstallState
@@ -27,9 +31,15 @@ import emu.x360.mobile.dev.runtime.RuntimeManifest
 import emu.x360.mobile.dev.runtime.RuntimeManifestCodec
 import emu.x360.mobile.dev.runtime.RuntimePhase
 import emu.x360.mobile.dev.runtime.SharedFrameTransportFrame
+import emu.x360.mobile.dev.runtime.TitleContentEntry
+import emu.x360.mobile.dev.runtime.TitleContentInstallStatus
 import emu.x360.mobile.dev.runtime.XeniaFramebufferCodec
 import emu.x360.mobile.dev.runtime.XeniaBuildMetadata
 import emu.x360.mobile.dev.runtime.XeniaBuildMetadataCodec
+import emu.x360.mobile.dev.runtime.XeniaGamePatchesLock
+import emu.x360.mobile.dev.runtime.XeniaGamePatchesLockCodec
+import emu.x360.mobile.dev.runtime.XeniaGamePatchesMetadata
+import emu.x360.mobile.dev.runtime.XeniaGamePatchesMetadataCodec
 import emu.x360.mobile.dev.runtime.XeniaSourceLock
 import emu.x360.mobile.dev.runtime.XeniaSourceLockCodec
 import emu.x360.mobile.dev.runtime.XeniaStartupStage
@@ -62,13 +72,17 @@ class AppRuntimeManager(
     private val manifestLoader = RuntimeAssetManifestLoader(context)
     private val assetSource = AndroidRuntimeAssetSource(context)
     private val logStore = SessionLogStore(directories)
+    private val diagnosticsStore = PlayerSessionDiagnosticsStore(directories)
     private val metadataLoader = FexMetadataLoader(assetSource, directories)
     private val guestRuntimeMetadataLoader = GuestRuntimeMetadataLoader(assetSource, directories)
     private val mesaRuntimeMetadataLoader = MesaRuntimeMetadataLoader(assetSource, directories)
     private val xeniaSourceLockLoader = XeniaSourceLockLoader(assetSource, directories)
     private val xeniaBuildMetadataLoader = XeniaBuildMetadataLoader(assetSource, directories)
+    private val xeniaGamePatchesLockLoader = XeniaGamePatchesLockLoader(assetSource, directories)
+    private val xeniaGamePatchesMetadataLoader = XeniaGamePatchesMetadataLoader(assetSource, directories)
     private val mesaOverrideStore = MesaRuntimeOverrideStore(context)
     private val gameLibraryStore = GameLibraryStore(directories)
+    private val titleContentStore = TitleContentStore(directories)
     private val titleContentResolver = TitleContentResolver(context, directories)
     private val guestContentPortalManager = GuestContentPortalManager(directories)
     private val stubGuestLauncher = StubGuestLauncher(logStore)
@@ -85,9 +99,19 @@ class AppRuntimeManager(
         } else {
             installer.inspect(manifest, targetPhase)
         }
+        val latestLogs = logStore.latestLogs()
+        val startupAnalysis = XeniaStartupStageParser.analyze(latestLogs.guestLog)
+        val patchLock = xeniaGamePatchesLockLoader.load()
+        val patchMetadata = xeniaGamePatchesMetadataLoader.load()
         return ShellSnapshot(
             installState = installState,
             libraryEntries = refreshLibraryEntries(),
+            titleContentEntries = refreshTitleContentEntries(),
+            xeniaPatchDatabase = buildPatchDatabaseSummary(
+                lock = patchLock,
+                metadata = patchMetadata,
+                startupAnalysis = startupAnalysis,
+            ),
             lastAction = lastAction,
         )
     }
@@ -103,7 +127,10 @@ class AppRuntimeManager(
         val mesaRuntimeMetadata = mesaRuntimeMetadataLoader.load()
         val xeniaSourceLock = xeniaSourceLockLoader.load()
         val xeniaBuildMetadata = xeniaBuildMetadataLoader.load()
+        val xeniaGamePatchesLock = xeniaGamePatchesLockLoader.load()
+        val xeniaGamePatchesMetadata = xeniaGamePatchesMetadataLoader.load()
         val libraryEntries = refreshLibraryEntries()
+        val titleContentEntries = refreshTitleContentEntries()
         val hostArtifacts = HostArtifactsStatus.from(context)
         val deviceProperties = DeviceProperties.read()
         val overrideMode = mesaOverrideStore.read()
@@ -115,6 +142,7 @@ class AppRuntimeManager(
             latestLogs = latestLogs,
             startupAnalysis = xeniaStartupAnalysis,
         )
+        val latestDiagnostics = diagnosticsStore.latest()
         return RuntimeSnapshot(
             manifest = manifest,
             installState = installState,
@@ -125,6 +153,7 @@ class AppRuntimeManager(
             }.getOrElse { "surface-hook:error:${it.message}" },
             latestLogs = latestLogs,
             outputPreview = outputPreview,
+            latestPlayerSessionDiagnostics = latestDiagnostics,
             fexDiagnostics = buildFexDiagnostics(
                 metadata = metadata,
                 guestRuntimeMetadata = guestRuntimeMetadata,
@@ -139,12 +168,15 @@ class AppRuntimeManager(
             xeniaDiagnostics = buildXeniaDiagnostics(
                 sourceLock = xeniaSourceLock,
                 buildMetadata = xeniaBuildMetadata,
+                gamePatchesLock = xeniaGamePatchesLock,
+                gamePatchesMetadata = xeniaGamePatchesMetadata,
                 installState = installState,
                 latestLogs = latestLogs,
                 startupAnalysis = xeniaStartupAnalysis,
                 outputPreview = outputPreview,
             ),
             gameLibraryEntries = libraryEntries,
+            titleContentEntries = titleContentEntries,
             lastAction = lastAction,
         )
     }
@@ -325,6 +357,106 @@ class AppRuntimeManager(
         )
     }
 
+    fun importTitleContent(entryId: String, uri: Uri): RuntimeSnapshot {
+        val libraryEntry = gameLibraryStore.find(entryId)
+            ?: return snapshot(lastAction = "Import blocked: library entry $entryId was not found")
+        val titleId = libraryEntry.lastKnownTitleId
+            ?: return snapshot(lastAction = "Import blocked: launch ${libraryEntry.displayName} once to identify this title")
+        val manifest = manifestLoader.load()
+        val installState = ensureRuntimeInstalled(manifest)
+        if (installState !is RuntimeInstallState.Installed) {
+            return snapshot(lastAction = "Import blocked: runtime is not installed")
+        }
+        titleContentResolver.persistReadPermission(uri)
+        val contentEntryId = stableContentEntryId(entryId, uri)
+        val inspected = executeXeniaContentTool(
+            contentEntryId = contentEntryId,
+            uri = uri,
+            command = XeniaContentToolCommand.INSPECT,
+        ) ?: return snapshot(lastAction = "Import blocked: could not inspect content package")
+        val inspectedResult = inspected.toolResult
+            ?: return snapshot(lastAction = "Import blocked: content package inspection failed (${inspected.launchResult.detail})")
+        if (inspectedResult.titleId?.uppercase() != titleId.uppercase()) {
+            val mismatchEntry = inspectedResult.toTitleContentEntry(
+                id = contentEntryId,
+                libraryEntryId = entryId,
+                uriString = uri.toString(),
+                directories = directories,
+                fallbackDisplayName = uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { "content package" } ?: "content package",
+            ).copy(
+                installStatus = TitleContentInstallStatus.ERROR,
+                titleId = inspectedResult.titleId?.uppercase() ?: titleId,
+                lastInstallSummary = "Content package title ${inspectedResult.titleId ?: "unknown"} does not match $titleId",
+            )
+            titleContentStore.upsert(mismatchEntry)
+            return snapshot(lastAction = "Import blocked: ${mismatchEntry.displayName} does not match title $titleId")
+        }
+        val installed = executeXeniaContentTool(
+            contentEntryId = contentEntryId,
+            uri = uri,
+            command = XeniaContentToolCommand.INSTALL,
+        ) ?: return snapshot(lastAction = "Import blocked: could not install content package")
+        val contentEntry = (installed.toolResult ?: inspectedResult).toTitleContentEntry(
+            id = contentEntryId,
+            libraryEntryId = entryId,
+            uriString = uri.toString(),
+            directories = directories,
+            fallbackDisplayName = uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { "content package" } ?: "content package",
+        )
+        titleContentStore.upsert(contentEntry)
+        return snapshot(
+            lastAction = buildString {
+                append("Imported content package ${contentEntry.displayName} for ${libraryEntry.displayName}")
+                contentEntry.lastInstallSummary?.takeIf { it.isNotBlank() }?.let { append(" ($it)") }
+            },
+        )
+    }
+
+    fun refreshTitleContent(entryId: String): RuntimeSnapshot {
+        val refreshed = refreshTitleContentEntries(forceSave = true).count { it.libraryEntryId == entryId }
+        return snapshot(lastAction = "Content refreshed ($refreshed package${if (refreshed == 1) "" else "s"})")
+    }
+
+    fun removeTitleContent(contentEntryId: String): RuntimeSnapshot {
+        val contentEntry = titleContentStore.find(contentEntryId)
+        contentEntry?.installedDataPath?.let { Path.of(it).deleteIfExistsRecursively() }
+        contentEntry?.installedHeaderPath?.let { Path.of(it).deleteIfExistsRecursively() }
+        titleContentStore.remove(contentEntryId)
+        return snapshot(lastAction = "Removed content package ${contentEntry?.displayName ?: contentEntryId}")
+    }
+
+    fun reinstallTitleContent(contentEntryId: String): RuntimeSnapshot {
+        val current = titleContentStore.find(contentEntryId)
+            ?: return snapshot(lastAction = "Reinstall blocked: content package $contentEntryId was not found")
+        val libraryEntry = gameLibraryStore.find(current.libraryEntryId)
+            ?: return snapshot(lastAction = "Reinstall blocked: library entry ${current.libraryEntryId} was not found")
+        val uri = Uri.parse(current.uriString)
+        titleContentResolver.persistReadPermission(uri)
+        val installed = executeXeniaContentTool(
+            contentEntryId = current.id,
+            uri = uri,
+            command = XeniaContentToolCommand.INSTALL,
+        ) ?: return snapshot(lastAction = "Reinstall blocked: could not launch content tool for ${current.displayName}")
+        val nextEntry = (installed.toolResult ?: XeniaContentToolResult(
+            displayName = current.displayName,
+            titleId = current.titleId,
+            contentType = current.contentType,
+            contentTypeLabel = current.contentTypeLabel,
+            packageSignature = current.packageSignature,
+            xuid = current.xuid,
+            status = "error",
+            summary = installed.launchResult.detail,
+        )).toTitleContentEntry(
+            id = current.id,
+            libraryEntryId = current.libraryEntryId,
+            uriString = uri.toString(),
+            directories = directories,
+            fallbackDisplayName = current.displayName,
+        )
+        titleContentStore.upsert(nextEntry)
+        return snapshot(lastAction = "Reinstalled ${nextEntry.displayName} for ${libraryEntry.displayName}")
+    }
+
     fun removeLibraryEntry(entryId: String): RuntimeSnapshot {
         guestContentPortalManager.clearPortal(entryId)
         gameLibraryStore.remove(entryId)
@@ -334,6 +466,7 @@ class AppRuntimeManager(
     internal fun startPlayerSession(
         entryId: String,
         presentationSettings: XeniaPresentationSettings = XeniaPresentationSettings.FramebufferSharedMemory,
+        diagnosticProfile: DiagnosticLaunchProfile = DiagnosticLaunchProfile.DEFAULT,
     ): PlayerSessionStartResult {
         val manifest = manifestLoader.load()
         val installState = ensureRuntimeInstalled(manifest)
@@ -386,6 +519,29 @@ class AppRuntimeManager(
             properties = DeviceProperties.read(),
         )
         val effectivePresentationSettings = presentationSettings.resolveForMesaBranch(resolvedMesaRuntime.branch)
+        val storageRoots = buildPlayerStorageRoots(
+            portalPath = portalPath,
+            guestTitlePath = launchMode.guestPath,
+        )
+        val launchContext = PlayerSessionLaunchContext(
+            entryId = currentEntry.id,
+            entryDisplayName = currentEntry.displayName,
+            diagnosticProfile = diagnosticProfile,
+            guestTitlePath = launchMode.guestPath,
+            presentationSettings = effectivePresentationSettings,
+            resolvedMesaRuntime = resolvedMesaRuntime,
+            storageRoots = storageRoots,
+            uriPermissionPresent = hasUriReadPermission(currentEntry.uriString),
+        )
+        val failedStorageRoot = storageRoots.firstOrNull { !it.exists || !it.readable || (!it.writable && it.label != "title-portal") }
+        if (failedStorageRoot != null) {
+            adoptedExecFd.close()
+            guestContentPortalManager.clearPortal(currentEntry.id)
+            return PlayerSessionStartResult(
+                null,
+                "Launch blocked: ${failedStorageRoot.label} preflight failed (${failedStorageRoot.detail})",
+            )
+        }
         val presentationSession = when (effectivePresentationSettings.presentationBackend) {
             PresentationBackend.FRAMEBUFFER_SHARED_MEMORY -> PlayerPresentationSession.create(
                 directories = directories,
@@ -394,11 +550,20 @@ class AppRuntimeManager(
             )
             else -> null
         }
+        val inputSession = PlayerInputSession.create(
+            directories = directories,
+            sessionId = sessionId,
+        )
         if (effectivePresentationSettings.presentationBackend == PresentationBackend.FRAMEBUFFER_SHARED_MEMORY &&
             presentationSession == null
         ) {
             adoptedExecFd.close()
             return PlayerSessionStartResult(null, "Failed to create a shared-memory presentation session")
+        }
+        if (inputSession == null) {
+            adoptedExecFd.close()
+            presentationSession?.close()
+            return PlayerSessionStartResult(null, "Failed to create a shared-memory input session")
         }
         prepareXeniaLaunchConfig(
             launchMode = launchMode,
@@ -406,6 +571,7 @@ class AppRuntimeManager(
         )?.let { detail ->
             adoptedExecFd?.close()
             presentationSession?.close()
+            inputSession.close()
             return PlayerSessionStartResult(null, detail)
         }
         val request = createRequest(
@@ -418,15 +584,17 @@ class AppRuntimeManager(
             ),
             environment = buildVulkanGuestEnvironment(resolvedMesaRuntime.branch, directories) +
                 presentationSession?.launchEnvironment.orEmpty() +
+                inputSession.launchEnvironment +
                 buildMap {
                     if (adoptedExecFd != null) {
                         put("X360_TITLE_SOURCE_FD", "0")
                         put("X360_TITLE_SOURCE_PATH", launchMode.guestPath)
                     }
-                },
+            },
             workingDirectory = directories.rootfsXeniaBin.toString(),
             stdinRedirectFd = adoptedExecFd?.fd,
-            inheritedFileDescriptors = presentationSession?.inheritedFileDescriptors.orEmpty(),
+            inheritedFileDescriptors = presentationSession?.inheritedFileDescriptors.orEmpty() +
+                inputSession.inheritedFileDescriptors,
         )
         val handle = xeniaGuestLauncher.startSession(
             request = request,
@@ -434,10 +602,13 @@ class AppRuntimeManager(
             entryDisplayName = currentEntry.displayName,
             adoptedExecFd = adoptedExecFd,
             presentationSession = presentationSession,
+            inputSession = inputSession,
             presentationSettings = effectivePresentationSettings,
+            launchContext = launchContext,
         ) ?: run {
             adoptedExecFd?.close()
             presentationSession?.close()
+            inputSession.close()
             return PlayerSessionStartResult(null, "Failed to start ${currentEntry.displayName}")
         }
         updateLibraryEntry(
@@ -447,6 +618,7 @@ class AppRuntimeManager(
                 lastLaunchSummary = "Player session starting",
             ),
         )
+        capturePlayerSessionDiagnostics(handle)
         return PlayerSessionStartResult(
             session = handle,
             detail = "Player session started for ${currentEntry.displayName}",
@@ -458,6 +630,8 @@ class AppRuntimeManager(
         detail: String,
         stage: XeniaStartupStage,
         titleName: String?,
+        titleId: String?,
+        moduleHash: String?,
     ) {
         val entry = gameLibraryStore.find(entryId) ?: return
         updateLibraryEntry(
@@ -468,9 +642,14 @@ class AppRuntimeManager(
                 },
                 lastLaunchSummary = detail,
                 lastKnownTitleName = titleName ?: entry.lastKnownTitleName,
+                lastKnownTitleId = titleId ?: entry.lastKnownTitleId,
+                lastKnownModuleHash = moduleHash ?: entry.lastKnownModuleHash,
             ),
         )
     }
+
+    internal fun latestDiagnosticsBundlePath(sessionId: String): String =
+        diagnosticsStore.pathFor(sessionId).toString()
 
     internal fun launchImportedTitle(
         entryId: String,
@@ -637,6 +816,8 @@ class AppRuntimeManager(
                 lastResolvedGuestPath = launchMode.guestPath,
                 lastLaunchSummary = result.detail,
                 lastKnownTitleName = startupAnalysis.titleName ?: currentEntry.lastKnownTitleName,
+                lastKnownTitleId = startupAnalysis.titleId ?: currentEntry.lastKnownTitleId,
+                lastKnownModuleHash = startupAnalysis.moduleHash ?: currentEntry.lastKnownModuleHash,
             ),
         )
         return snapshot(
@@ -683,6 +864,285 @@ class AppRuntimeManager(
         return refreshedEntries
     }
 
+    private fun refreshTitleContentEntries(
+        forceSave: Boolean = false,
+    ): List<TitleContentEntry> {
+        val currentDatabase = titleContentStore.load()
+        val refreshedEntries = currentDatabase.entries.map { it.refreshInstallStatus(directories) }
+        if (forceSave || refreshedEntries != currentDatabase.entries) {
+            refreshedEntries.forEach(titleContentStore::upsert)
+        }
+        return refreshedEntries
+    }
+
+    private fun buildPatchDatabaseSummary(
+        lock: XeniaGamePatchesLock?,
+        metadata: XeniaGamePatchesMetadata?,
+        startupAnalysis: XeniaStartupAnalysis,
+    ): XeniaPatchDatabaseSummary {
+        return XeniaPatchDatabaseSummary(
+            present = metadata != null || directories.xeniaWritableStoragePatchesRoot.exists(),
+            revision = metadata?.sourceRevision ?: lock?.sourceRevision ?: "unavailable",
+            bundledTitleCount = metadata?.titleCount ?: 0,
+            loadedTitleCount = startupAnalysis.patchDatabaseLoadedTitleCount ?: 0,
+            appliedPatches = startupAnalysis.appliedPatches,
+            lastContentMiss = startupAnalysis.lastContentMiss,
+        )
+    }
+
+    internal fun launchImportedTitleDiagnostic(
+        entryId: String,
+        diagnosticProfile: DiagnosticLaunchProfile,
+    ): RuntimeSnapshot {
+        val presentationSettings = when (diagnosticProfile) {
+            DiagnosticLaunchProfile.DEFAULT -> XeniaPresentationSettings.FramebufferSharedMemory
+            DiagnosticLaunchProfile.FRAMEBUFFER_POLLING_DIAGNOSTIC -> XeniaPresentationSettings.FramebufferPollingPerformance.copy(
+                presentationBackend = PresentationBackend.FRAMEBUFFER_POLLING,
+                readbackResolveMode = XeniaReadbackResolveMode.FULL,
+            )
+            DiagnosticLaunchProfile.SHARED_MEMORY_SILENT_AUDIO -> XeniaPresentationSettings.FramebufferSharedMemory.copy(
+                apuBackend = XeniaApuBackend.NOP,
+            )
+        }
+        val snapshot = launchImportedTitle(
+            entryId = entryId,
+            presentationSettings = presentationSettings,
+            requiredStage = XeniaStartupStage.FRAME_STREAM_ACTIVE,
+        )
+        return snapshot.copy(lastAction = "Diagnostic profile ${diagnosticProfile.wireName}: ${snapshot.lastAction}")
+    }
+
+    private val patchMatchCache = mutableMapOf<Pair<String, String>, String>()
+
+    private fun buildPlayerStorageRoots(
+        portalPath: Path,
+        guestTitlePath: String,
+    ): List<DiagnosticRootAccessState> {
+        return listOf(
+            pathGuestAccessState(
+                label = "title-portal",
+                hostPath = portalPath,
+                guestPath = guestTitlePath,
+                requireWritable = false,
+            ),
+            pathGuestAccessState(
+                label = "content-root",
+                hostPath = directories.xeniaWritableContentRoot,
+                guestPath = directories.xeniaWritableContentRoot.toGuestPath(directories.rootfs),
+                requireWritable = true,
+            ),
+            pathGuestAccessState(
+                label = "storage-root",
+                hostPath = directories.xeniaWritableStorageRoot,
+                guestPath = directories.xeniaWritableStorageRoot.toGuestPath(directories.rootfs),
+                requireWritable = true,
+            ),
+            pathGuestAccessState(
+                label = "patches-root",
+                hostPath = directories.xeniaWritableStoragePatchesRoot,
+                guestPath = directories.xeniaWritableStoragePatchesRoot.toGuestPath(directories.rootfs),
+                requireWritable = false,
+            ),
+            pathGuestAccessState(
+                label = "cache-root",
+                hostPath = directories.xeniaWritableCacheHostRoot,
+                guestPath = directories.xeniaWritableCacheHostRoot.toGuestPath(directories.rootfs),
+                requireWritable = true,
+            ),
+            pathGuestAccessState(
+                label = "scratch-root",
+                hostPath = directories.xeniaScratchRoot,
+                guestPath = directories.xeniaScratchRoot.toGuestPath(directories.rootfs),
+                requireWritable = true,
+            ),
+        )
+    }
+
+    private fun hasUriReadPermission(uriString: String): Boolean {
+        val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return false
+        if (uri.scheme != "content") {
+            return true
+        }
+        return context.contentResolver.persistedUriPermissions.any { permission ->
+            permission.uri == uri && permission.isReadPermission
+        }
+    }
+
+    private fun detectPatchMatchState(
+        titleId: String?,
+        moduleHash: String?,
+    ): String {
+        val normalizedTitleId = titleId?.uppercase()?.takeIf { it.length == 8 } ?: return "title-unidentified"
+        val normalizedModuleHash = moduleHash?.uppercase().orEmpty()
+        val cacheKey = normalizedTitleId to normalizedModuleHash
+        synchronized(patchMatchCache) {
+            patchMatchCache[cacheKey]?.let { return it }
+        }
+        val patchesRoot = directories.xeniaWritableStoragePatchesRoot
+        if (!patchesRoot.exists()) {
+            return "patch-db-unavailable"
+        }
+        var titleMatch = false
+        var moduleMatch = false
+        Files.walk(patchesRoot).use { stream ->
+            stream
+                .filter { Files.isRegularFile(it) }
+                .forEach { patchFile ->
+                    val raw = runCatching { patchFile.readText() }.getOrDefault("")
+                    if (raw.isBlank()) {
+                        return@forEach
+                    }
+                    val fileTitleIds = Regex("""title_id\s*=\s*\"([0-9A-Fa-f]{8})\"""")
+                        .findAll(raw)
+                        .map { match -> match.groupValues[1].uppercase() }
+                        .toSet()
+                    if (normalizedTitleId !in fileTitleIds) {
+                        return@forEach
+                    }
+                    titleMatch = true
+                    if (normalizedModuleHash.isNotBlank() && raw.uppercase().contains(normalizedModuleHash)) {
+                        moduleMatch = true
+                    }
+                }
+        }
+        val matchState = when {
+            moduleMatch -> "matching-patch-candidate"
+            titleMatch -> "title-match-no-module-hash"
+            else -> "no-matching-patch"
+        }
+        synchronized(patchMatchCache) {
+            patchMatchCache[cacheKey] = matchState
+        }
+        return matchState
+    }
+
+    internal fun capturePlayerSessionDiagnostics(
+        session: ActivePlayerSessionHandle,
+    ): PlayerSessionDiagnosticsBundle {
+        val startupAnalysis = session.readStartupAnalysis()
+        val outputPreview = session.readOutputPreview()
+        val appFields = parseKeyValueLines(session.readAppLog())
+        val presentationMetrics = collectPresentationMetrics(
+            guestLog = session.readGuestLog(),
+            outputPreview = outputPreview,
+            appFields = appFields + mapOf("xenia.sessionElapsedMillis" to session.elapsedMillis().toString()),
+        )
+        val inputDiagnostics = session.readInputDiagnostics()
+        val storageRoots = buildList {
+            addAll(session.launchContext.storageRoots)
+            add(
+                runCatching {
+                    pathGuestAccessState(
+                        label = "presentation-transport",
+                        hostPath = Path.of(outputPreview.framebufferPath),
+                        guestPath = session.request.environment[PlayerPresentationSession.TransportPathEnvName],
+                        requireWritable = false,
+                    )
+                }.getOrElse {
+                    DiagnosticRootAccessState(
+                        label = "presentation-transport",
+                        hostPath = outputPreview.framebufferPath,
+                        guestPath = null,
+                        exists = false,
+                        readable = false,
+                        writable = false,
+                        detail = "invalid-path:${it.message}",
+                    )
+                },
+            )
+            session.request.environment[PlayerInputSession.TransportPathEnvName]?.let { inputPath ->
+                val hostInputPath = directories.rootfs.resolve(inputPath.removePrefix("/")).normalize()
+                add(
+                    runCatching {
+                        pathGuestAccessState(
+                            label = "input-transport",
+                            hostPath = hostInputPath,
+                            guestPath = inputPath,
+                            requireWritable = false,
+                        )
+                    }.getOrElse {
+                        DiagnosticRootAccessState(
+                            label = "input-transport",
+                            hostPath = inputPath,
+                            guestPath = inputPath,
+                            exists = false,
+                            readable = false,
+                            writable = false,
+                            detail = "invalid-path:${it.message}",
+                        )
+                    },
+                )
+            }
+        }
+        val evidence = PlayerSessionStallEvidence(
+            sessionAlive = session.isAlive(),
+            startupAnalysis = startupAnalysis,
+            outputPreview = outputPreview,
+            presentationMetrics = presentationMetrics,
+            inputDiagnostics = inputDiagnostics,
+            storageRoots = storageRoots,
+        )
+        val (classification, progressionReason) = PlayerSessionStallClassifier.classify(evidence)
+        val patchLock = xeniaGamePatchesLockLoader.load()
+        val patchMetadata = xeniaGamePatchesMetadataLoader.load()
+        val titleContentEntries = refreshTitleContentEntries().filter { it.libraryEntryId == session.entryId }
+        val bundle = PlayerSessionDiagnosticsBundle(
+            sessionId = session.sessionId,
+            capturedAtEpochMillis = System.currentTimeMillis(),
+            startupStage = startupAnalysis.stage.name.lowercase(),
+            startupDetail = startupAnalysis.detail,
+            titleName = startupAnalysis.titleName ?: session.entryDisplayName,
+            titleId = startupAnalysis.titleId,
+            moduleHash = startupAnalysis.moduleHash,
+            progressionBucket = classification,
+            progressionReason = progressionReason,
+            lastMeaningfulGuestTransition = startupAnalysis.lastMeaningfulTransition,
+            lastContentCallResult = startupAnalysis.lastContentCallResult,
+            lastXamCallResult = startupAnalysis.lastXamCallResult,
+            lastXliveCallResult = startupAnalysis.lastXliveCallResult,
+            lastXnetCallResult = startupAnalysis.lastXnetCallResult,
+            appLogPath = session.appLogPath.toString(),
+            fexLogPath = session.fexLogPath.toString(),
+            guestLogPath = session.guestLogPath.toString(),
+            launchSummary = buildLaunchSummary(
+                request = session.request,
+                launchContext = session.launchContext,
+            ),
+            storageRoots = storageRoots,
+            installedContent = installedContentSummaries(titleContentEntries),
+            patchState = PlayerSessionPatchState(
+                databasePresent = patchMetadata != null || directories.xeniaWritableStoragePatchesRoot.exists(),
+                revision = patchMetadata?.sourceRevision ?: patchLock?.sourceRevision ?: "unavailable",
+                fileCount = patchMetadata?.fileCount ?: 0,
+                bundledTitleCount = patchMetadata?.titleCount ?: 0,
+                loadedTitleCount = startupAnalysis.patchDatabaseLoadedTitleCount ?: 0,
+                titleMatchState = detectPatchMatchState(startupAnalysis.titleId, startupAnalysis.moduleHash),
+                appliedPatches = startupAnalysis.appliedPatches,
+            ),
+            presentation = buildPresentationSnapshot(outputPreview, presentationMetrics),
+            input = buildInputSnapshot(inputDiagnostics),
+            host = buildHostSnapshot(
+                deviceProperties = DeviceProperties.read(),
+                resolvedMesaRuntime = session.launchContext.resolvedMesaRuntime,
+                uriPermissionPresent = session.launchContext.uriPermissionPresent,
+                sessionAlive = session.isAlive(),
+                guestProcessPid = session.processPidOrNull(),
+                fexLog = session.readFexLog(),
+                filesDirPath = directories.baseDir,
+            ),
+        )
+        val savedPath = diagnosticsStore.save(bundle)
+        logStore.appendAppFields(
+            session.appLogPath,
+            mapOf(
+                "xenia.progressionBucket" to classification.name.lowercase(),
+                "xenia.progressionReason" to progressionReason,
+                "xenia.diagnosticsBundlePath" to savedPath.toString(),
+            ),
+        )
+        return bundle
+    }
+
     private fun updateLibraryEntry(entry: GameLibraryEntry) {
         gameLibraryStore.upsert(entry)
     }
@@ -697,6 +1157,57 @@ class AppRuntimeManager(
                 origin = "${resolution.origin}-fd",
             )
             else -> null
+        }
+    }
+
+    private fun executeXeniaContentTool(
+        contentEntryId: String,
+        uri: Uri,
+        command: XeniaContentToolCommand,
+    ): XeniaContentToolLaunchOutcome? {
+        if (!directories.xeniaContentToolBinary.exists()) {
+            return null
+        }
+        val resolution = titleContentResolver.resolve(uri)
+        val descriptorResolution = descriptorBackedResolution(resolution) ?: return null
+        val adoptedExecFd = titleContentResolver.adoptDescriptorForExec(descriptorResolution) ?: return null
+        adoptedExecFd.use { adopted ->
+            val suffix = contentPackageSuffix(
+                uri.lastPathSegment?.substringAfterLast('/')?.ifBlank { "content package" } ?: "content package",
+            )
+            val portalPath = guestContentPortalManager.materializeDescriptorPortal(
+                entryId = contentEntryId,
+                suffix = suffix,
+                descriptorPath = "/proc/self/fd/${adopted.fd}",
+            )
+            val sessionId = SessionIdFactory.create()
+            val jsonHostPath = directories.rootfsTmpXeniaRoot.resolve("content-tool-$sessionId.json")
+            runCatching { Files.deleteIfExists(jsonHostPath) }
+            val request = createRequest(
+                sessionId = sessionId,
+                executable = directories.xeniaContentToolBinary.toString(),
+                args = buildList {
+                    add(command.cliValue)
+                    add(portalPath.toGuestPath(directories.rootfs))
+                    add("--json-out")
+                    add(jsonHostPath.toGuestPath(directories.rootfs))
+                    if (command == XeniaContentToolCommand.INSTALL) {
+                        add("--content-root")
+                        add(directories.xeniaWritableContentRoot.toGuestPath(directories.rootfs))
+                    }
+                },
+                environment = buildHeadlessGuestEnvironment(),
+                workingDirectory = directories.rootfsXeniaBin.toString(),
+            )
+            val result = fexGuestLauncher.launch(request)
+            val toolResult = if (jsonHostPath.exists()) {
+                runCatching { XeniaContentToolResultCodec.decode(jsonHostPath.readText()) }.getOrNull()
+            } else {
+                null
+            }
+            runCatching { Files.deleteIfExists(jsonHostPath) }
+            runCatching { guestContentPortalManager.clearPortal(contentEntryId, suffix) }
+            return XeniaContentToolLaunchOutcome(result, toolResult)
         }
     }
 
@@ -842,12 +1353,15 @@ class AppRuntimeManager(
     private fun buildXeniaDiagnostics(
         sourceLock: XeniaSourceLock?,
         buildMetadata: XeniaBuildMetadata?,
+        gamePatchesLock: XeniaGamePatchesLock?,
+        gamePatchesMetadata: XeniaGamePatchesMetadata?,
         installState: RuntimeInstallState,
         latestLogs: LatestSessionLogs,
         startupAnalysis: XeniaStartupAnalysis,
         outputPreview: OutputPreviewState,
     ): XeniaDiagnostics {
         val appFields = parseKeyValueLines(latestLogs.appLog)
+        val latestBundle = latestLogs.sessionId?.let(diagnosticsStore::load) ?: diagnosticsStore.latest()
         val presentationMetrics = collectPresentationMetrics(
             guestLog = latestLogs.guestLog,
             outputPreview = outputPreview,
@@ -871,6 +1385,22 @@ class AppRuntimeManager(
             cacheRootPath = appFields["xenia.cacheRootPath"] ?: directories.xeniaWritableCacheHostRoot.toString(),
             titleMetadataSeen = appFields["xenia.titleMetadataSeen"]?.toBooleanStrictOrNull()
                 ?: latestLogs.guestLog.contains("Title name: "),
+            titleId = startupAnalysis.titleId ?: "unknown",
+            moduleHash = startupAnalysis.moduleHash ?: "unknown",
+            patchDatabasePresent = gamePatchesMetadata != null || directories.xeniaWritableStoragePatchesRoot.exists(),
+            patchDatabaseRevision = gamePatchesMetadata?.sourceRevision ?: gamePatchesLock?.sourceRevision ?: "unavailable",
+            patchDatabaseFileCount = gamePatchesMetadata?.fileCount ?: 0,
+            patchDatabaseBundleTitleCount = gamePatchesMetadata?.titleCount ?: 0,
+            patchDatabaseLoadedTitleCount = startupAnalysis.patchDatabaseLoadedTitleCount ?: 0,
+            lastAppliedPatches = startupAnalysis.appliedPatches,
+            lastContentMiss = startupAnalysis.lastContentMiss ?: "none",
+            lastMeaningfulGuestTransition = startupAnalysis.lastMeaningfulTransition ?: "none",
+            lastContentCallResult = startupAnalysis.lastContentCallResult ?: "none",
+            lastXamCallResult = startupAnalysis.lastXamCallResult ?: "none",
+            lastXliveCallResult = startupAnalysis.lastXliveCallResult ?: "none",
+            lastXnetCallResult = startupAnalysis.lastXnetCallResult ?: "none",
+            progressionBucket = latestBundle?.progressionBucket?.name?.lowercase() ?: ProgressionStallClassification.UNKNOWN.name.lowercase(),
+            progressionReason = latestBundle?.progressionReason ?: "unavailable",
             presentationBackend = appFields["xenia.presentationBackend"] ?: PresentationBackend.HEADLESS_ONLY.name.lowercase(),
             guestRenderScaleProfile = appFields["xenia.guestRenderScaleProfile"] ?: "one",
             internalDisplayResolution = appFields["xenia.internalDisplayResolution"] ?: "1280x720",
@@ -885,6 +1415,8 @@ class AppRuntimeManager(
             decodeFps = presentationMetrics.decodeFps,
             presentFps = presentationMetrics.presentFps,
             visibleFps = presentationMetrics.visibleFps,
+            transportFrameHash = presentationMetrics.transportFrameHash,
+            visibleFrameHash = presentationMetrics.visibleFrameHash,
             framebufferPath = appFields["xenia.framebufferPath"] ?: outputPreview.framebufferPath,
             frameStreamStatus = appFields["xenia.frameSourceStatus"] ?: appFields["xenia.frameStreamStatus"] ?: outputPreview.status,
             lastFrameWidth = appFields["xenia.lastFrameWidth"]?.toIntOrNull() ?: outputPreview.width ?: 0,
@@ -937,15 +1469,19 @@ data class RuntimeSnapshot(
     val surfaceHookReservation: String,
     val latestLogs: LatestSessionLogs,
     val outputPreview: OutputPreviewState,
+    val latestPlayerSessionDiagnostics: PlayerSessionDiagnosticsBundle?,
     val fexDiagnostics: FexDiagnostics,
     val xeniaDiagnostics: XeniaDiagnostics,
     val gameLibraryEntries: List<GameLibraryEntry>,
+    val titleContentEntries: List<TitleContentEntry>,
     val lastAction: String,
 )
 
 data class ShellSnapshot(
     val installState: RuntimeInstallState,
     val libraryEntries: List<GameLibraryEntry>,
+    val titleContentEntries: List<TitleContentEntry>,
+    val xeniaPatchDatabase: XeniaPatchDatabaseSummary,
     val lastAction: String,
 )
 
@@ -1011,6 +1547,22 @@ data class XeniaDiagnostics(
     val cacheBackendStatus: String,
     val cacheRootPath: String,
     val titleMetadataSeen: Boolean,
+    val titleId: String,
+    val moduleHash: String,
+    val patchDatabasePresent: Boolean,
+    val patchDatabaseRevision: String,
+    val patchDatabaseFileCount: Int,
+    val patchDatabaseBundleTitleCount: Int,
+    val patchDatabaseLoadedTitleCount: Int,
+    val lastAppliedPatches: List<String>,
+    val lastContentMiss: String,
+    val lastMeaningfulGuestTransition: String,
+    val lastContentCallResult: String,
+    val lastXamCallResult: String,
+    val lastXliveCallResult: String,
+    val lastXnetCallResult: String,
+    val progressionBucket: String,
+    val progressionReason: String,
     val presentationBackend: String,
     val guestRenderScaleProfile: String,
     val internalDisplayResolution: String,
@@ -1025,6 +1577,8 @@ data class XeniaDiagnostics(
     val decodeFps: Float,
     val presentFps: Float,
     val visibleFps: Float,
+    val transportFrameHash: String,
+    val visibleFrameHash: String,
     val framebufferPath: String,
     val frameStreamStatus: String,
     val lastFrameWidth: Int,
@@ -1055,6 +1609,8 @@ private fun collectPresentationMetrics(
         presentFps = appFields["xenia.presentFps"]?.toFloatOrNull() ?: guestMetrics.presentFps,
         visibleFps = appFields["xenia.visibleFps"]?.toFloatOrNull() ?: guestMetrics.visibleFps,
         frameSourceStatus = appFields["xenia.frameSourceStatus"] ?: guestMetrics.frameSourceStatus,
+        transportFrameHash = appFields["xenia.transportFrameHash"] ?: guestMetrics.transportFrameHash,
+        visibleFrameHash = appFields["xenia.visibleFrameHash"] ?: guestMetrics.visibleFrameHash,
     )
 }
 
@@ -1171,12 +1727,14 @@ internal class ActivePlayerSessionHandle(
     val fexLogPath: Path,
     val guestLogPath: Path,
     private val startedAt: Instant,
-    private val request: GuestLaunchRequest,
+    val request: GuestLaunchRequest,
     private val process: Process,
     private val stdoutPump: Thread,
     private val stderrPump: Thread,
     private val adoptedExecFd: AdoptedExecFd?,
     private val presentationSession: PlayerPresentationSession?,
+    private val inputSession: PlayerInputSession?,
+    val launchContext: PlayerSessionLaunchContext,
     private val logStore: SessionLogStore,
     private val backendName: String,
 ) {
@@ -1193,13 +1751,32 @@ internal class ActivePlayerSessionHandle(
 
     fun readGuestLog(): String = runCatching { guestLogPath.readText() }.getOrDefault("")
 
+    fun readAppLog(): String = runCatching { appLogPath.readText() }.getOrDefault("")
+
+    fun readFexLog(): String = runCatching { fexLogPath.readText() }.getOrDefault("")
+
     fun readStartupAnalysis(): XeniaStartupAnalysis = XeniaStartupStageParser.analyze(readGuestLog())
 
     fun openPresentationReader(): SharedFramePresentationReader? = presentationSession?.openReader()
 
+    fun submitControllerState(
+        controllerState: emu.x360.mobile.dev.runtime.SharedInputControllerState,
+        controllerName: String?,
+    ): PlayerInputDiagnostics {
+        return inputSession?.publish(controllerState, controllerName) ?: PlayerInputDiagnostics.Empty
+    }
+
+    fun clearControllerState(): PlayerInputDiagnostics {
+        return inputSession?.clear() ?: PlayerInputDiagnostics.Empty
+    }
+
+    fun readInputDiagnostics(): PlayerInputDiagnostics {
+        return inputSession?.readDiagnostics() ?: PlayerInputDiagnostics.Empty
+    }
+
     fun readOutputPreview(): OutputPreviewState {
         val startupAnalysis = readStartupAnalysis()
-        val sharedFrame = previewReader?.peekLatestFrame()
+        val sharedFrame = runCatching { previewReader?.peekLatestFrame() }.getOrNull()
         return if (sharedFrame != null || presentationSession != null) {
             OutputPreviewState.fromSharedFrame(
                 transportPath = presentationSession?.transportPath ?: framebufferPath,
@@ -1213,8 +1790,11 @@ internal class ActivePlayerSessionHandle(
 
     fun elapsedMillis(): Long = java.time.Duration.between(startedAt, Instant.now()).toMillis().coerceAtLeast(1L)
 
+    fun processPidOrNull(): Int? = processPid()
+
     fun reportPlayerMetrics(metrics: PresentationPerformanceMetrics) {
         val outputPreview = readOutputPreview()
+        val inputDiagnostics = readInputDiagnostics()
         val presentationBackend = request.args
             .firstOrNull { it.startsWith("--x360_presentation_backend=") }
             ?.substringAfter('=')
@@ -1234,6 +1814,10 @@ internal class ActivePlayerSessionHandle(
                 "xenia.presentFps" to metrics.presentFps.toString(),
                 "xenia.visibleFps" to metrics.visibleFps.toString(),
                 "xenia.frameSourceStatus" to metrics.frameSourceStatus,
+                "xenia.transportFrameHash" to metrics.transportFrameHash,
+                "xenia.visibleFrameHash" to metrics.visibleFrameHash,
+                "xenia.controllerConnected" to inputDiagnostics.controllerConnected.toString(),
+                "xenia.lastInputSequence" to inputDiagnostics.lastInputSequence.toString(),
                 "xenia.lastFrameWidth" to (outputPreview.width ?: 0).toString(),
                 "xenia.lastFrameHeight" to (outputPreview.height ?: 0).toString(),
                 "xenia.lastFrameIndex" to outputPreview.frameIndex.toString(),
@@ -1328,6 +1912,7 @@ internal class ActivePlayerSessionHandle(
 
         val startupAnalysis = readStartupAnalysis()
         val outputPreview = readOutputPreview()
+        val inputDiagnostics = readInputDiagnostics()
         val finishedAt = Instant.now()
         val sessionElapsedMillis = java.time.Duration.between(startedAt, finishedAt).toMillis().coerceAtLeast(1L)
         val existingAppFields = parseKeyValueLines(runCatching { appLogPath.readText() }.getOrDefault(""))
@@ -1382,6 +1967,10 @@ internal class ActivePlayerSessionHandle(
                 "xenia.presentFps" to presentationMetrics.presentFps.toString(),
                 "xenia.visibleFps" to presentationMetrics.visibleFps.toString(),
                 "xenia.frameSourceStatus" to presentationMetrics.frameSourceStatus,
+                "xenia.transportFrameHash" to presentationMetrics.transportFrameHash,
+                "xenia.visibleFrameHash" to presentationMetrics.visibleFrameHash,
+                "xenia.controllerConnected" to inputDiagnostics.controllerConnected.toString(),
+                "xenia.lastInputSequence" to inputDiagnostics.lastInputSequence.toString(),
                 "xenia.lastFrameWidth" to (outputPreview.width ?: 0).toString(),
                 "xenia.lastFrameHeight" to (outputPreview.height ?: 0).toString(),
                 "xenia.lastFrameIndex" to outputPreview.frameIndex.toString(),
@@ -1389,6 +1978,7 @@ internal class ActivePlayerSessionHandle(
         )
         runCatching { previewReader?.close() }
         runCatching { presentationSession?.close() }
+        runCatching { inputSession?.close() }
         return result
     }
 
@@ -1538,6 +2128,46 @@ private class XeniaBuildMetadataLoader(
 
     companion object {
         const val XENIA_BUILD_METADATA_ASSET_PATH = "runtime-payload/files/payload/config/xenia-build-metadata.json"
+    }
+}
+
+private class XeniaGamePatchesLockLoader(
+    private val assetSource: RuntimeAssetSource,
+    private val directories: RuntimeDirectories,
+) {
+    fun load(): XeniaGamePatchesLock? {
+        if (directories.xeniaGamePatchesLock.exists()) {
+            return runCatching { XeniaGamePatchesLockCodec.decode(directories.xeniaGamePatchesLock.readText()) }.getOrNull()
+        }
+
+        val assetStream = assetSource.open(XENIA_GAME_PATCHES_LOCK_ASSET_PATH) ?: return null
+        return assetStream.bufferedReader().use { reader ->
+            runCatching { XeniaGamePatchesLockCodec.decode(reader.readText()) }.getOrNull()
+        }
+    }
+
+    companion object {
+        const val XENIA_GAME_PATCHES_LOCK_ASSET_PATH = "runtime-payload/files/payload/config/xenia-game-patches-lock.json"
+    }
+}
+
+private class XeniaGamePatchesMetadataLoader(
+    private val assetSource: RuntimeAssetSource,
+    private val directories: RuntimeDirectories,
+) {
+    fun load(): XeniaGamePatchesMetadata? {
+        if (directories.xeniaGamePatchesMetadata.exists()) {
+            return runCatching { XeniaGamePatchesMetadataCodec.decode(directories.xeniaGamePatchesMetadata.readText()) }.getOrNull()
+        }
+
+        val assetStream = assetSource.open(XENIA_GAME_PATCHES_METADATA_ASSET_PATH) ?: return null
+        return assetStream.bufferedReader().use { reader ->
+            runCatching { XeniaGamePatchesMetadataCodec.decode(reader.readText()) }.getOrNull()
+        }
+    }
+
+    companion object {
+        const val XENIA_GAME_PATCHES_METADATA_ASSET_PATH = "runtime-payload/files/payload/config/xenia-game-patches-metadata.json"
     }
 }
 
@@ -1727,11 +2357,12 @@ private class FexGuestLauncher(
         val exitCode = process.exitValue()
         val detail = when {
             exitCode != 0 -> "FEX guest exited with code $exitCode"
-            !expectedSentinel.exists() -> "FEX guest exited successfully but did not create $expectedSentinel"
+            expectedSentinel != null && !expectedSentinel.exists() ->
+                "FEX guest exited successfully but did not create $expectedSentinel"
             else -> "FEX guest completed successfully"
         }
         val classification = when {
-            exitCode == 0 && expectedSentinel.exists() -> ExitClassification.SUCCESS
+            exitCode == 0 && (expectedSentinel == null || expectedSentinel.exists()) -> ExitClassification.SUCCESS
             exitCode == 0 -> ExitClassification.VALIDATION_ERROR
             else -> ExitClassification.PROCESS_ERROR
         }
@@ -1747,10 +2378,10 @@ private class FexGuestLauncher(
         return result
     }
 
-    private fun expectedSentinelPath(request: GuestLaunchRequest): Path {
+    private fun expectedSentinelPath(request: GuestLaunchRequest): Path? {
         val sentinelArg = request.args.firstOrNull { it.startsWith("--sentinel=") }
             ?.substringAfter('=')
-            ?: return directories.fexHelloSentinel
+            ?: return null
         return when {
             sentinelArg.startsWith("/") -> directories.rootfs.resolve(sentinelArg.removePrefix("/")).normalize()
             else -> directories.rootfs.resolve(sentinelArg).normalize()
@@ -1779,7 +2410,9 @@ private class XeniaGuestLauncher(
         entryDisplayName: String,
         adoptedExecFd: AdoptedExecFd?,
         presentationSession: PlayerPresentationSession?,
+        inputSession: PlayerInputSession?,
         presentationSettings: XeniaPresentationSettings,
+        launchContext: PlayerSessionLaunchContext,
     ): ActivePlayerSessionHandle? {
         val startedAt = Instant.now()
         val nativeLibraryDir = File(context.applicationInfo.nativeLibraryDir).toPath()
@@ -1832,6 +2465,8 @@ private class XeniaGuestLauncher(
                 "xenia.keepLastVisibleFrame" to presentationSettings.keepLastVisibleFrame.toString(),
                 "xenia.apuBackend" to presentationSettings.apuBackend.cliValue,
                 "xenia.readbackResolveMode" to (presentationSettings.readbackResolveMode?.cliValue ?: "none"),
+                "xenia.diagnosticProfile" to launchContext.diagnosticProfile.wireName,
+                "xenia.uriPermissionPresent" to launchContext.uriPermissionPresent.toString(),
             ),
         )
 
@@ -1882,6 +2517,8 @@ private class XeniaGuestLauncher(
             stderrPump = stderrPump,
             adoptedExecFd = adoptedExecFd,
             presentationSession = presentationSession,
+            inputSession = inputSession,
+            launchContext = launchContext,
             logStore = logStore,
             backendName = backendName,
         )

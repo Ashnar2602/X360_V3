@@ -1,0 +1,347 @@
+diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
+index 52bf885..9db2d2d 100644
+--- a/src/xenia/emulator.cc
++++ b/src/xenia/emulator.cc
+@@ -1660,6 +1660,10 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
+   // Try and load the resource database (xex only).
+   if (module->title_id()) {
+     auto title_id = fmt::format("{:08X}", module->title_id());
++    XELOGI("Title ID: {}", title_id);
++    if (module->hash()) {
++      XELOGI("Module hash: {:016X}", module->hash().value());
++    }
+ 
+     // Load the per-game configuration file and make sure updates are handled
+     // by the callbacks.
+
+diff --git a/src/xenia/vfs/CMakeLists.txt b/src/xenia/vfs/CMakeLists.txt
+index 039453d..f90522f 100644
+--- a/src/xenia/vfs/CMakeLists.txt
++++ b/src/xenia/vfs/CMakeLists.txt
+@@ -24,6 +24,19 @@ if(XENIA_BUILD_MISC)
+   endif()
+   target_link_libraries(xenia-vfs-dump PRIVATE fmt xenia-base xenia-vfs)
+   xe_target_defaults(xenia-vfs-dump)
++
++  add_executable(xenia-content-tool
++    ${CMAKE_CURRENT_SOURCE_DIR}/content_tool.cc
++  )
++  if(WIN32)
++    target_sources(xenia-content-tool PRIVATE
++      ${PROJECT_SOURCE_DIR}/src/xenia/base/console_app_main_win.cc)
++  else()
++    target_sources(xenia-content-tool PRIVATE
++      ${PROJECT_SOURCE_DIR}/src/xenia/base/console_app_main_posix.cc)
++  endif()
++  target_link_libraries(xenia-content-tool PRIVATE fmt xenia-base xenia-vfs)
++  xe_target_defaults(xenia-content-tool)
+ endif()
+ 
+ if(XENIA_BUILD_TESTS)
+
+diff --git a/src/xenia/vfs/content_tool.cc b/src/xenia/vfs/content_tool.cc
+new file mode 100644
+index 00000000..f203c3bf
+--- /dev/null
++++ b/src/xenia/vfs/content_tool.cc
+@@ -0,0 +1,300 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026 Xenia Canary. All rights reserved.                          *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#include "xenia/base/console_app_main.h"
++
++#include <fstream>
++#include <optional>
++
++#include "third_party/fmt/include/fmt/format.h"
++#include "xenia/base/logging.h"
++#include "xenia/base/string_util.h"
++#include "xenia/vfs/devices/xcontent_container_device.h"
++#include "xenia/vfs/virtual_file_system.h"
++
++namespace xe {
++namespace vfs {
++
++namespace {
++
++struct ParsedOptions {
++  std::string command;
++  std::filesystem::path container_path;
++  std::filesystem::path json_out;
++  std::filesystem::path content_root;
++  uint64_t profile_xuid = 0;
++};
++
++struct InstallPaths {
++  std::filesystem::path data_path;
++  std::filesystem::path header_path;
++  std::string data_path_string;
++  std::string header_path_string;
++  uint64_t used_xuid = 0;
++};
++
++std::string JsonEscape(const std::string& value) {
++  std::string escaped;
++  escaped.reserve(value.size());
++  for (const char c : value) {
++    switch (c) {
++      case '\\':
++        escaped += "\\\\";
++        break;
++      case '"':
++        escaped += "\\\"";
++        break;
++      case '\n':
++        escaped += "\\n";
++        break;
++      case '\r':
++        escaped += "\\r";
++        break;
++      case '\t':
++        escaped += "\\t";
++        break;
++      default:
++        escaped += c;
++        break;
++    }
++  }
++  return escaped;
++}
++
++std::string JsonStringField(const std::string& key, const std::string& value,
++                            bool trailing_comma = true) {
++  return fmt::format("  \"{}\": \"{}\"{}", key, JsonEscape(value),
++                     trailing_comma ? "," : "");
++}
++
++std::string JsonNumberField(const std::string& key, uint64_t value,
++                            bool trailing_comma = true) {
++  return fmt::format("  \"{}\": {}{}", key, value,
++                     trailing_comma ? "," : "");
++}
++
++std::string ContentTypeLabel(XContentType content_type) {
++  const auto it = XContentTypeMap.find(content_type);
++  return it != XContentTypeMap.cend() ? it->second : "Unknown";
++}
++
++std::string ContentTypeHex(XContentType content_type) {
++  return fmt::format("{:08X}", static_cast<uint32_t>(content_type));
++}
++
++std::string PackageSignatureLabel(XContentPackageType type) {
++  switch (type) {
++    case XContentPackageType::kCon:
++      return "CON";
++    case XContentPackageType::kLive:
++      return "LIVE";
++    case XContentPackageType::kPirs:
++      return "PIRS";
++    default:
++      return "UNKNOWN";
++  }
++}
++
++uint64_t ResolveInstallXuid(const XContentContainerHeader& header,
++                            uint64_t profile_xuid) {
++  const XContentType content_type = header.content_metadata.content_type;
++  if (content_type == XContentType::kMarketplaceContent) {
++    return 0;
++  }
++  if ((content_type == XContentType::kSavedGame ||
++       content_type == XContentType::kProfile) &&
++      profile_xuid != 0) {
++    return profile_xuid;
++  }
++  return header.content_metadata.profile_id;
++}
++
++InstallPaths BuildInstallPaths(const std::filesystem::path& content_root,
++                               const std::filesystem::path& container_path,
++                               const XContentContainerHeader& header,
++                               uint64_t profile_xuid) {
++  InstallPaths paths;
++  paths.used_xuid = ResolveInstallXuid(header, profile_xuid);
++  const uint32_t title_id = header.content_metadata.execution_info.title_id;
++  const auto content_type = static_cast<uint32_t>(header.content_metadata.content_type.get());
++  const auto file_name = xe::path_to_utf8(container_path.filename());
++  paths.data_path_string = fmt::format("{:016X}/{:08X}/{:08X}/{}",
++                                       paths.used_xuid, title_id, content_type,
++                                       file_name);
++  paths.header_path_string = fmt::format(
++      "{:016X}/{:08X}/Headers/{:08X}/{}", paths.used_xuid, title_id,
++      content_type, file_name);
++  paths.data_path = content_root / std::filesystem::path(paths.data_path_string);
++  paths.header_path =
++      content_root / std::filesystem::path(paths.header_path_string);
++  return paths;
++}
++
++void WriteJson(const std::filesystem::path& path, const std::string& content) {
++  if (path.has_parent_path()) {
++    std::filesystem::create_directories(path.parent_path());
++  }
++  std::ofstream output(path, std::ios::binary | std::ios::trunc);
++  output << content;
++}
++
++std::string BuildPackageJson(const ParsedOptions& options,
++                             const std::filesystem::path& container_path,
++                             const XContentContainerHeader& header,
++                             const InstallPaths& install_paths,
++                             const std::string& status,
++                             const std::string& summary) {
++  const auto display_name = xe::to_utf8(
++      header.content_metadata.display_name(XLanguage::kEnglish));
++  const auto content_type = header.content_metadata.content_type;
++  return fmt::format(
++      "{{\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n}}\n",
++      JsonStringField("displayName",
++                      display_name.empty() ? xe::path_to_utf8(container_path.filename())
++                                           : display_name),
++      JsonStringField(
++          "titleId",
++          fmt::format("{:08X}",
++                      header.content_metadata.execution_info.title_id.get())),
++      JsonStringField("contentType", ContentTypeHex(content_type)),
++      JsonStringField("contentTypeLabel", ContentTypeLabel(content_type)),
++      JsonStringField("packageSignature",
++                      PackageSignatureLabel(header.content_header.magic)),
++      JsonStringField("xuid", fmt::format("{:016X}", install_paths.used_xuid)),
++      JsonStringField("installedDataPath", install_paths.data_path_string),
++      JsonStringField("installedHeaderPath", install_paths.header_path_string),
++      JsonStringField("status", status),
++      JsonStringField("summary", summary),
++      JsonNumberField("profileXuid", options.profile_xuid, false));
++}
++
++bool ParseOptions(const std::vector<std::string>& args, ParsedOptions* out) {
++  if (args.size() < 3) {
++    return false;
++  }
++  out->command = args[1];
++  out->container_path = args[2];
++  for (size_t i = 3; i < args.size(); ++i) {
++    const std::string& arg = args[i];
++    if (arg == "--json-out" && i + 1 < args.size()) {
++      out->json_out = args[++i];
++      continue;
++    }
++    if (arg == "--content-root" && i + 1 < args.size()) {
++      out->content_root = args[++i];
++      continue;
++    }
++    if (arg == "--profile-xuid" && i + 1 < args.size()) {
++      out->profile_xuid =
++          xe::string_util::from_string<uint64_t>(args[++i], true);
++      continue;
++    }
++    return false;
++  }
++  if (out->json_out.empty()) {
++    return false;
++  }
++  if (out->command == "install" && out->content_root.empty()) {
++    return false;
++  }
++  return out->command == "inspect" || out->command == "install";
++}
++
++int InspectOrInstallContent(const ParsedOptions& options) {
++  auto header = XContentContainerDevice::ReadContainerHeader(options.container_path);
++  if (!header || !header->content_header.is_magic_valid()) {
++    XELOGE("Invalid content package: {}", xe::path_to_utf8(options.container_path));
++    WriteJson(options.json_out,
++              "{\n  \"status\": \"error\",\n  \"summary\": \"Invalid content package\"\n}\n");
++    return 1;
++  }
++
++  const InstallPaths install_paths =
++      BuildInstallPaths(options.content_root, options.container_path, *header,
++                        options.profile_xuid);
++
++  if (options.command == "inspect") {
++    WriteJson(options.json_out,
++              BuildPackageJson(options, options.container_path, *header,
++                               install_paths, "inspected",
++                               "Container metadata extracted"));
++    return 0;
++  }
++
++  std::unique_ptr<vfs::Device> device =
++      vfs::XContentContainerDevice::CreateContentDevice("", options.container_path);
++  if (!device || !device->Initialize()) {
++    XELOGE("Failed to initialize content device for {}",
++           xe::path_to_utf8(options.container_path));
++    WriteJson(options.json_out,
++              BuildPackageJson(options, options.container_path, *header,
++                               install_paths, "error",
++                               "Failed to initialize content device"));
++    return 1;
++  }
++
++  std::error_code ec;
++  std::filesystem::create_directories(install_paths.data_path, ec);
++  if (ec) {
++    WriteJson(options.json_out,
++              BuildPackageJson(options, options.container_path, *header,
++                               install_paths, "error", ec.message()));
++    return 1;
++  }
++  if (install_paths.header_path.has_parent_path()) {
++    std::filesystem::create_directories(install_paths.header_path.parent_path(),
++                                        ec);
++    if (ec) {
++      WriteJson(options.json_out,
++                BuildPackageJson(options, options.container_path, *header,
++                                 install_paths, "error", ec.message()));
++      return 1;
++    }
++  }
++
++  vfs::VirtualFileSystem::ExtractContentHeader(device.get(),
++                                               install_paths.header_path);
++  uint64_t progress = 0;
++  const X_STATUS status =
++      vfs::VirtualFileSystem::ExtractContentFiles(device.get(),
++                                                  install_paths.data_path,
++                                                  progress);
++  if (status != X_ERROR_SUCCESS) {
++    WriteJson(options.json_out,
++              BuildPackageJson(options, options.container_path, *header,
++                               install_paths, "error",
++                               fmt::format("ExtractContentFiles failed {:08X}",
++                                           static_cast<uint32_t>(status))));
++    return 1;
++  }
++
++  WriteJson(options.json_out,
++            BuildPackageJson(options, options.container_path, *header,
++                             install_paths, "installed",
++                             "Content package installed"));
++  return 0;
++}
++
++}  // namespace
++
++int content_tool_main(const std::vector<std::string>& args) {
++  ParsedOptions options;
++  if (!ParseOptions(args, &options)) {
++    XELOGE("Usage: {} <inspect|install> <container> --json-out <path> [--content-root <path>] [--profile-xuid <hex>]",
++           args.empty() ? "xenia-content-tool" : args[0]);
++    return 1;
++  }
++  return InspectOrInstallContent(options);
++}
++
++}  // namespace vfs
++}  // namespace xe
++
++XE_DEFINE_CONSOLE_APP_TRANSPARENT("xenia-content-tool",
++                                  xe::vfs::content_tool_main);

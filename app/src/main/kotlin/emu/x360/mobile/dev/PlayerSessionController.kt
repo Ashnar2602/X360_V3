@@ -16,12 +16,15 @@ import emu.x360.mobile.dev.runtime.XeniaStartupStage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -30,10 +33,23 @@ internal object PlayerSessionController {
     private const val DiagnosticsPollIntervalMs = 1_000L
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutableState = MutableStateFlow(PlayerSessionUiState())
+    private val controllerUpdateFlow = MutableSharedFlow<PlayerControllerInputUpdate>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
     private var activeSession: ActivePlayerSessionHandle? = null
     private var monitorJob: Job? = null
+    private var latestControllerUpdate: PlayerControllerInputUpdate? = null
 
     val state: StateFlow<PlayerSessionUiState> = mutableState.asStateFlow()
+
+    init {
+        scope.launch {
+            controllerUpdateFlow.collectLatest { update ->
+                applyControllerUpdate(update)
+            }
+        }
+    }
 
     fun start(
         context: Context,
@@ -51,6 +67,8 @@ internal object PlayerSessionController {
             internalDisplayResolution = "1280x720",
             playerPollIntervalMs = presentationSettings.playerPollIntervalMs,
             keepLastVisibleFrame = presentationSettings.keepLastVisibleFrame,
+            controllerConnected = latestControllerUpdate?.controllerState?.connected ?: false,
+            controllerName = latestControllerUpdate?.controllerName,
             detail = "Starting player session",
         )
         scope.launch {
@@ -77,8 +95,22 @@ internal object PlayerSessionController {
             }
 
             activeSession = session
+            latestControllerUpdate?.let { pendingUpdate ->
+                val diagnostics = session.submitControllerState(
+                    controllerState = pendingUpdate.controllerState,
+                    controllerName = pendingUpdate.controllerName,
+                )
+                mutableState.update { current ->
+                    current.copy(
+                        controllerConnected = diagnostics.controllerConnected,
+                        controllerName = diagnostics.controllerName?.takeIf { diagnostics.controllerConnected },
+                        lastInputSequence = diagnostics.lastInputSequence,
+                        lastInputAgeMs = diagnostics.lastInputAgeMs,
+                    )
+                }
+            }
             monitorJob = launch {
-                monitorSession(manager, session, settings.showFpsCounter)
+                monitorSession(manager, session)
             }
         }
     }
@@ -99,7 +131,10 @@ internal object PlayerSessionController {
             detail = result.detail,
             stage = analysis.stage,
             titleName = analysis.titleName,
+            titleId = analysis.titleId,
+            moduleHash = analysis.moduleHash,
         )
+        manager.capturePlayerSessionDiagnostics(session)
         mutableState.update {
             it.copy(
                 status = PlayerSessionStatus.STOPPED,
@@ -121,12 +156,48 @@ internal object PlayerSessionController {
                     exportFps = metrics.exportFps,
                     decodeFps = metrics.decodeFps,
                     presentFps = metrics.presentFps,
-                    visibleFps = metrics.visibleFps,
-                    frameSourceStatus = metrics.frameSourceStatus,
-                ),
-                fps = metrics.visibleFps,
+                visibleFps = metrics.visibleFps,
+                frameSourceStatus = metrics.frameSourceStatus,
+                transportFrameHash = metrics.transportFrameHash,
+                visibleFrameHash = metrics.visibleFrameHash,
+            ),
+            fps = metrics.visibleFps,
+        )
+        }
+    }
+
+    fun submitControllerInput(
+        update: PlayerControllerInputUpdate,
+    ) {
+        latestControllerUpdate = update
+        mutableState.update { current ->
+            val nextConnected = update.controllerState.connected
+            val nextName = update.controllerName?.takeIf { nextConnected }
+            if (current.controllerConnected == nextConnected && current.controllerName == nextName) {
+                current
+            } else {
+                current.copy(
+                    controllerConnected = nextConnected,
+                    controllerName = nextName,
+                )
+            }
+        }
+        controllerUpdateFlow.tryEmit(update)
+    }
+
+    fun clearControllerInput() {
+        val clearedUpdate = PlayerControllerInputUpdate(
+            controllerState = emu.x360.mobile.dev.runtime.SharedInputControllerState.Disconnected,
+            controllerName = null,
+        )
+        latestControllerUpdate = clearedUpdate
+        mutableState.update { current ->
+            current.copy(
+                controllerConnected = false,
+                controllerName = null,
             )
         }
+        controllerUpdateFlow.tryEmit(clearedUpdate)
     }
 
     fun pause(): Boolean {
@@ -167,14 +238,37 @@ internal object PlayerSessionController {
         return activeSession?.openPresentationReader()
     }
 
+    private fun applyControllerUpdate(
+        update: PlayerControllerInputUpdate,
+    ) {
+        val session = activeSession ?: return
+        val diagnostics = session.submitControllerState(
+            controllerState = update.controllerState,
+            controllerName = update.controllerName,
+        )
+        mutableState.update { current ->
+            val nextConnected = diagnostics.controllerConnected
+            val nextName = diagnostics.controllerName?.takeIf { nextConnected }
+            if (current.controllerConnected == nextConnected && current.controllerName == nextName) {
+                current
+            } else {
+                current.copy(
+                    controllerConnected = nextConnected,
+                    controllerName = nextName,
+                )
+            }
+        }
+    }
+
     private suspend fun monitorSession(
         manager: AppRuntimeManager,
         session: ActivePlayerSessionHandle,
-        showFpsCounter: Boolean,
     ) {
         while (currentCoroutineContext().isActive) {
             val analysis = session.readStartupAnalysis()
             val outputPreview = session.readOutputPreview()
+            val inputDiagnostics = session.readInputDiagnostics()
+            val diagnosticsBundle = manager.capturePlayerSessionDiagnostics(session)
             val guestMetrics = GuestPresentationMetricsParser.parse(
                 logContent = session.readGuestLog(),
                 exportedFrameCount = outputPreview.frameIndex,
@@ -205,6 +299,12 @@ internal object PlayerSessionController {
                 } else {
                     guestMetrics.frameSourceStatus
                 },
+                transportFrameHash = currentState.presentationMetrics.transportFrameHash.ifBlank {
+                    guestMetrics.transportFrameHash
+                },
+                visibleFrameHash = currentState.presentationMetrics.visibleFrameHash.ifBlank {
+                    guestMetrics.visibleFrameHash
+                },
             )
 
             val nextState = PlayerSessionUiState(
@@ -221,7 +321,7 @@ internal object PlayerSessionController {
                 frameHeight = outputPreview.height,
                 frameFreshnessSeconds = outputPreview.freshnessSeconds,
                 fps = mergedMetrics.visibleFps,
-                showFpsCounter = showFpsCounter,
+                showFpsCounter = currentState.showFpsCounter,
                 isPaused = session.isPaused(),
                 presentationBackend = currentState.presentationBackend,
                 renderScaleProfile = currentState.renderScaleProfile,
@@ -229,6 +329,17 @@ internal object PlayerSessionController {
                 playerPollIntervalMs = currentState.playerPollIntervalMs,
                 keepLastVisibleFrame = currentState.keepLastVisibleFrame,
                 presentationMetrics = mergedMetrics,
+                controllerConnected = inputDiagnostics.controllerConnected,
+                controllerName = inputDiagnostics.controllerName?.takeIf { inputDiagnostics.controllerConnected },
+                lastInputSequence = inputDiagnostics.lastInputSequence,
+                lastInputAgeMs = inputDiagnostics.lastInputAgeMs,
+                titleId = diagnosticsBundle.titleId,
+                moduleHash = diagnosticsBundle.moduleHash,
+                patchDatabaseLoadedTitleCount = diagnosticsBundle.patchState.loadedTitleCount,
+                progressionBucket = diagnosticsBundle.progressionBucket.name.lowercase(),
+                progressionReason = diagnosticsBundle.progressionReason,
+                lastMeaningfulTransition = diagnosticsBundle.lastMeaningfulGuestTransition,
+                diagnosticsBundlePath = manager.latestDiagnosticsBundlePath(session.sessionId),
             )
             if (mutableState.value != nextState) {
                 mutableState.value = nextState
@@ -241,7 +352,10 @@ internal object PlayerSessionController {
                     detail = result?.detail ?: "Player session ended",
                     stage = analysis.stage,
                     titleName = analysis.titleName,
+                    titleId = analysis.titleId,
+                    moduleHash = analysis.moduleHash,
                 )
+                manager.capturePlayerSessionDiagnostics(session)
                 mutableState.update {
                     it.copy(
                         status = if (result?.exitClassification == ExitClassification.PROCESS_ERROR || analysis.stage == XeniaStartupStage.FAILED) {
@@ -291,12 +405,23 @@ internal data class PlayerSessionUiState(
     val fps: Float = 0f,
     val showFpsCounter: Boolean = false,
     val isPaused: Boolean = false,
-    val presentationBackend: String = PresentationBackend.FRAMEBUFFER_SHARED_MEMORY.name.lowercase(),
+    val presentationBackend: String = PresentationBackend.FRAMEBUFFER_POLLING.name.lowercase(),
     val renderScaleProfile: String = GuestRenderScaleProfile.ONE.name.lowercase(),
     val internalDisplayResolution: String = "1280x720",
     val playerPollIntervalMs: Long = 120L,
     val keepLastVisibleFrame: Boolean = true,
     val presentationMetrics: PresentationPerformanceMetrics = PresentationPerformanceMetrics.Empty,
+    val controllerConnected: Boolean = false,
+    val controllerName: String? = null,
+    val lastInputSequence: Long = 0L,
+    val lastInputAgeMs: Long? = null,
+    val titleId: String? = null,
+    val moduleHash: String? = null,
+    val patchDatabaseLoadedTitleCount: Int = 0,
+    val progressionBucket: String = "unknown",
+    val progressionReason: String = "insufficient-evidence",
+    val lastMeaningfulTransition: String? = null,
+    val diagnosticsBundlePath: String? = null,
     val errorMessage: String? = null,
 ) {
     val hasFrame: Boolean

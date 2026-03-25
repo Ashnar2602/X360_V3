@@ -12,7 +12,7 @@ class XeniaMetadataCodecTest {
               "sourceRef": "canary_experimental",
               "sourceRevision": "c50b036178108f87cb0acaf3691a7c3caf07820f",
               "buildProfile": "linux-x64-release",
-              "patchSetId": "phase6a-shared-frame-v2"
+              "patchSetId": "phase10c-triage-v1"
             }
         """.trimIndent()
 
@@ -22,7 +22,7 @@ class XeniaMetadataCodecTest {
         assertThat(lock.sourceRef).isEqualTo("canary_experimental")
         assertThat(lock.sourceRevision).isEqualTo("c50b036178108f87cb0acaf3691a7c3caf07820f")
         assertThat(lock.buildProfile).isEqualTo("linux-x64-release")
-        assertThat(lock.patchSetId).isEqualTo("phase6a-shared-frame-v2")
+        assertThat(lock.patchSetId).isEqualTo("phase10c-triage-v1")
     }
 
     @Test
@@ -62,5 +62,54 @@ class XeniaMetadataCodecTest {
         assertThat(metadata.runtimeLibraries).hasSize(1)
         assertThat(metadata.runtimeLibraries.single().soname).isEqualTo("libgtk-3.so.0")
         assertThat(metadata.requiredPackages.single().packageName).isEqualTo("libgtk-3-0")
+    }
+
+    @Test
+    fun `game patches lock codec decodes official bundled database`() {
+        val raw = """
+            {
+              "sourceUrl": "https://github.com/xenia-canary/game-patches.git",
+              "sourceRef": "main",
+              "sourceRevision": "4814fb128ae2ed060569840708196542823547de"
+            }
+        """.trimIndent()
+
+        val lock = XeniaGamePatchesLockCodec.decode(raw)
+
+        assertThat(lock.sourceUrl).isEqualTo("https://github.com/xenia-canary/game-patches.git")
+        assertThat(lock.sourceRef).isEqualTo("main")
+        assertThat(lock.sourceRevision).isEqualTo("4814fb128ae2ed060569840708196542823547de")
+    }
+
+    @Test
+    fun `title content database codec decodes installed package`() {
+        val raw = """
+            {
+              "version": 1,
+              "entries": [
+                {
+                  "id": "content-1",
+                  "libraryEntryId": "dante",
+                  "uriString": "content://test/dante-tu2",
+                  "displayName": "Dante TU2",
+                  "titleId": "454108CF",
+                  "contentType": "00000002",
+                  "contentTypeLabel": "Marketplace Content",
+                  "packageSignature": "LIVE",
+                  "xuid": "0000000000000000",
+                  "installStatus": "installed",
+                  "installedDataPath": "/tmp/x360-v3/xenia/content/0000000000000000/454108CF/00000002/DanteTU2",
+                  "installedHeaderPath": "/tmp/x360-v3/xenia/content/0000000000000000/454108CF/Headers/00000002/DanteTU2",
+                  "lastInstallSummary": "Content package installed"
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val database = TitleContentDatabaseCodec.decode(raw)
+
+        assertThat(database.entries).hasSize(1)
+        assertThat(database.entries.single().titleId).isEqualTo("454108CF")
+        assertThat(database.entries.single().installStatus).isEqualTo(TitleContentInstallStatus.INSTALLED)
     }
 }

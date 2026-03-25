@@ -43,5 +43,13 @@ internal class PlayerViewModel(
         PlayerSessionController.setShowFpsCounter(enabled)
     }
 
+    fun submitControllerInput(update: PlayerControllerInputUpdate) {
+        PlayerSessionController.submitControllerInput(update)
+    }
+
+    fun clearControllerInput() {
+        PlayerSessionController.clearControllerInput()
+    }
+
     fun currentSettings(): AppSettings = appSettingsStore.load()
 }

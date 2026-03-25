@@ -22,6 +22,8 @@ data class GameLibraryEntry(
     val lastResolvedGuestPath: String? = null,
     val lastLaunchSummary: String? = null,
     val lastKnownTitleName: String? = null,
+    val lastKnownTitleId: String? = null,
+    val lastKnownModuleHash: String? = null,
 )
 
 @Serializable

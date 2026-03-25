@@ -1,0 +1,144 @@
+diff --git a/src/xenia/kernel/xam/content_manager.cc b/src/xenia/kernel/xam/content_manager.cc
+index e91608f..fd3dc3d 100644
+--- a/src/xenia/kernel/xam/content_manager.cc
++++ b/src/xenia/kernel/xam/content_manager.cc
+@@ -15,6 +15,7 @@
+ #include "xenia/base/string.h"
+ #include "xenia/emulator.h"
+ #include "xenia/kernel/kernel_state.h"
++#include "xenia/kernel/xam/xam_content_device.h"
+ #include "xenia/kernel/xam/user_profile.h"
+ #include "xenia/kernel/xfile.h"
+ #include "xenia/kernel/xobject.h"
+@@ -26,6 +27,24 @@ namespace xe {
+ namespace kernel {
+ namespace xam {
+ 
++namespace {
++
++std::string DescribeContentRequest(const XCONTENT_AGGREGATE_DATA& data) {
++  return fmt::format("device={:08X} title={:08X} type={:08X} xuid={:016X} file={}",
++                     static_cast<uint32_t>(data.device_id),
++                     static_cast<uint32_t>(data.title_id),
++                     static_cast<uint32_t>(data.content_type.get()),
++                     static_cast<uint64_t>(data.xuid), data.file_name());
++}
++
++void LogContentMiss(const char* stage, const XCONTENT_AGGREGATE_DATA& data,
++                    uint64_t xuid, const std::filesystem::path& path) {
++  XELOGW("X360_CONTENT_MISS={} request=[{}] caller_xuid={:016X} path={}",
++         stage, DescribeContentRequest(data), xuid, xe::path_to_utf8(path));
++}
++
++}  // namespace
++
+ static const char* kThumbnailFileName = "__thumbnail.png";
+ static const char* kGameContentHeaderDirName = "Headers";
+ static const char* kSpaFilename = "spa.bin";
+@@ -137,7 +156,13 @@ std::filesystem::path ContentManager::ResolvePackagePath(
+   }
+ 
+   // Default handling for current title
+-  return get_package_path(data.title_id);
++  auto package_path = get_package_path(data.title_id);
++  if (data.content_type == XContentType::kMarketplaceContent ||
++      data.device_id == static_cast<uint32_t>(DummyDeviceId::ODD)) {
++    XELOGD("ContentManager::ResolvePackagePath({}) -> {}",
++           DescribeContentRequest(data), xe::path_to_utf8(package_path));
++  }
++  return package_path;
+ }
+ 
+ std::filesystem::path ContentManager::ResolvePackageHeaderPath(
+@@ -281,6 +306,7 @@ std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
+     const XCONTENT_AGGREGATE_DATA& data, const uint32_t disc_number) {
+   auto package_path = ResolvePackagePath(xuid, data, disc_number);
+   if (!std::filesystem::exists(package_path)) {
++    LogContentMiss("ResolvePackage", data, xuid, package_path);
+     return nullptr;
+   }
+ 
+@@ -294,7 +320,11 @@ std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
+ bool ContentManager::ContentExists(const uint64_t xuid,
+                                    const XCONTENT_AGGREGATE_DATA& data) {
+   auto path = ResolvePackagePath(xuid, data);
+-  return std::filesystem::exists(path);
++  const bool exists = std::filesystem::exists(path);
++  if (!exists) {
++    LogContentMiss("ContentExists", data, xuid, path);
++  }
++  return exists;
+ }
+ 
+ X_RESULT ContentManager::WriteContentHeaderFile(const uint64_t xuid,
+@@ -405,6 +435,7 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
+   auto package_path = ResolvePackagePath(xuid, data, disc_number);
+   if (!std::filesystem::exists(package_path)) {
+     // Does not exist, must be created.
++    LogContentMiss("OpenContent", data, xuid, package_path);
+     return X_ERROR_FILE_NOT_FOUND;
+   }
+ 
+diff --git a/src/xenia/kernel/xam/xam_content.cc b/src/xenia/kernel/xam/xam_content.cc
+index 10d2726..8082916 100644
+--- a/src/xenia/kernel/xam/xam_content.cc
++++ b/src/xenia/kernel/xam/xam_content.cc
+@@ -407,10 +407,55 @@ dword_result_t XamContentOpenFile_entry(
+     dword_t user_index, lpstring_t root_name, lpstring_t path, dword_t flags,
+     lpdword_t disposition_ptr, lpdword_t license_mask_ptr,
+     pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+-  // TODO(gibbed): arguments assumed based on XamContentCreate.
+-  return X_ERROR_FILE_NOT_FOUND;
++  if (!root_name || !path || *root_name == '\0' || *path == '\0') {
++    return X_ERROR_INVALID_NAME;
++  }
++
++  auto run = [root_name = root_name.value(), relative_path = path.value(),
++              disposition_ptr, license_mask_ptr](uint32_t& extended_error,
++                                                 uint32_t& length) -> X_RESULT {
++    auto normalized_path = relative_path;
++    while (!normalized_path.empty() &&
++           (normalized_path.front() == '\\' || normalized_path.front() == '/')) {
++      normalized_path.erase(normalized_path.begin());
++    }
++
++    const std::string guest_path =
++        fmt::format("{}:\\{}", root_name, normalized_path);
++    auto entry = kernel_state()->file_system()->ResolvePath(guest_path);
++    const X_RESULT result = entry ? X_ERROR_SUCCESS : X_ERROR_FILE_NOT_FOUND;
++
++    if (entry) {
++      if (disposition_ptr) {
++        *disposition_ptr = static_cast<uint32_t>(kDispositionState::Open);
++      }
++      if (license_mask_ptr) {
++        *license_mask_ptr = 0;
++      }
++      length = 1;
++    } else {
++      XELOGW("X360_CONTENT_MISS=XamContentOpenFile root={} path={} guest_path={}",
++             root_name, normalized_path, guest_path);
++      if (disposition_ptr) {
++        *disposition_ptr = 0;
++      }
++      length = 0;
++    }
++
++    extended_error = X_HRESULT_FROM_WIN32(result);
++    return result;
++  };
++
++  if (!overlapped_ptr) {
++    uint32_t extended_error = 0;
++    uint32_t length = 0;
++    return run(extended_error, length);
++  } else {
++    kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
++    return X_ERROR_IO_PENDING;
++  }
+ }
+-DECLARE_XAM_EXPORT1(XamContentOpenFile, kContent, kStub);
++DECLARE_XAM_EXPORT1(XamContentOpenFile, kContent, kImplemented);
+ 
+ dword_result_t XamContentFlush_entry(lpstring_t root_name,
+                                      pointer_t<XAM_OVERLAPPED> overlapped_ptr) {

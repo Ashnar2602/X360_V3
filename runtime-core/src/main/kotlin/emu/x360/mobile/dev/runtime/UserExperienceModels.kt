@@ -7,7 +7,7 @@ import kotlinx.serialization.Serializable
 data class AppSettings(
     val showFpsCounter: Boolean = false,
     val defaultRenderScaleProfile: GuestRenderScaleProfile = GuestRenderScaleProfile.ONE,
-    val defaultPresentationBackend: PresentationBackend = PresentationBackend.FRAMEBUFFER_SHARED_MEMORY,
+    val defaultPresentationBackend: PresentationBackend = PresentationBackend.FRAMEBUFFER_POLLING,
 )
 
 object AppSettingsCodec {

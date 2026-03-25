@@ -8,6 +8,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.X360V3">
         <activity
+            android:name=".ControllerMappingActivity"
+            android:exported="false"
+            android:theme="@style/Theme.X360V3" />
+        <activity
             android:name=".PlayerActivity"
             android:exported="false"
             android:screenOrientation="landscape"
