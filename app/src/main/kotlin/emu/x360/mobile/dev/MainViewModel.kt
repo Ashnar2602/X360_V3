@@ -88,6 +88,30 @@ class MainViewModel(
         }
     }
 
+    fun setGameDlcEnabled(
+        entryId: String,
+        enabled: Boolean,
+    ) {
+        mutableState.update { it.copy(isBusy = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val currentOptions = gameOptionsStore.optionsFor(entryId)
+            gameOptionsStore.upsert(
+                currentOptions.copy(
+                    dlcEnabledOverride = if (enabled) null else false,
+                ),
+            )
+            val shell = manager.shellSnapshot(
+                lastAction = "DLC ${if (enabled) "enabled" else "disabled"} for $entryId",
+                autoPrepareRuntime = false,
+            )
+            mutableState.value = MainUiState.from(
+                shell = shell,
+                appSettings = appSettingsStore.load(),
+                gameOptions = currentGameOptions(shell),
+            )
+        }
+    }
+
     private fun loadShell(snapshotProvider: () -> ShellSnapshot) {
         mutableState.update { it.copy(isBusy = true) }
         viewModelScope.launch(Dispatchers.IO) {

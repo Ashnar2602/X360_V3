@@ -1,0 +1,475 @@
+diff --git a/src/xenia/CMakeLists.txt b/src/xenia/CMakeLists.txt
+index c88ea3a..76ff70f 100644
+--- a/src/xenia/CMakeLists.txt
++++ b/src/xenia/CMakeLists.txt
+@@ -32,6 +32,7 @@ add_subdirectory(hid/sdl)
+ # Platform-conditional modules
+ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+   add_subdirectory(apu/alsa)
++  add_subdirectory(hid/android_shared)
+ endif()
+ 
+ if(WIN32)
+diff --git a/src/xenia/app/CMakeLists.txt b/src/xenia/app/CMakeLists.txt
+index cc55afb..79b3db7 100644
+--- a/src/xenia/app/CMakeLists.txt
++++ b/src/xenia/app/CMakeLists.txt
+@@ -89,6 +89,7 @@ if(WIN32)
+   )
+ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+   target_link_libraries(xenia-app PRIVATE
++    xenia-hid-android-shared
+     xenia-apu-alsa
+     X11
+     xcb
+diff --git a/src/xenia/app/xenia_main.cc b/src/xenia/app/xenia_main.cc
+index 2a4f852..14b2039 100644
+--- a/src/xenia/app/xenia_main.cc
++++ b/src/xenia/app/xenia_main.cc
+@@ -59,6 +59,9 @@
+ // Available input drivers:
+ #include "xenia/hid/nop/nop_hid.h"
+ #if !XE_PLATFORM_ANDROID
++#if XE_PLATFORM_LINUX
++#include "xenia/hid/android_shared/android_shared_hid.h"
++#endif  // XE_PLATFORM_LINUX
+ #include "xenia/hid/sdl/sdl_hid.h"
+ #endif  // !XE_PLATFORM_ANDROID
+ #if XE_PLATFORM_WIN32
+@@ -72,7 +75,7 @@
+ #elif XE_PLATFORM_LINUX
+ #define APU_OPTIONS "[any, alsa, nop, sdl]"
+ #define GPU_OPTIONS "[any, vulkan, null]"
+-#define HID_OPTIONS "[any, nop, sdl]"
++#define HID_OPTIONS "[any, nop, sdl, android_shared_memory]"
+ #else
+ #define APU_OPTIONS "[any, nop, sdl]"
+ #define GPU_OPTIONS "[any, vulkan, null]"
+@@ -899,6 +902,20 @@ std::vector<std::unique_ptr<hid::InputDriver>> EmulatorApp::CreateInputDrivers(
+   if (cvars::hid.compare("nop") == 0) {
+     drivers.emplace_back(
+         xe::hid::nop::Create(window, EmulatorWindow::kZOrderHidInput));
++#if XE_PLATFORM_LINUX
++  } else if (cvars::hid.compare("android_shared_memory") == 0) {
++    auto driver = xe::hid::android_shared::Create(
++        window, EmulatorWindow::kZOrderHidInput);
++    if (driver && XSUCCEEDED(driver->Setup())) {
++      drivers.emplace_back(std::move(driver));
++    }
++    if (drivers.empty()) {
++      XELOGW("Android shared input driver is unavailable, falling back to nop");
++      drivers.emplace_back(
++          xe::hid::nop::Create(window, EmulatorWindow::kZOrderHidInput));
++    }
++    return drivers;
++#endif  // XE_PLATFORM_LINUX
+   } else {
+     Factory<hid::InputDriver, ui::Window*, size_t> factory;
+ #if XE_PLATFORM_WIN32
+@@ -1053,7 +1069,13 @@ void EmulatorApp::EmulatorThread() {
+   xe::ui::ImGuiDrawer* imgui_drawer =
+       emulator_window_ ? emulator_window_->imgui_drawer() : nullptr;
+   auto input_driver_factory = [this](ui::Window* window) {
+-    if (cvars::headless) {
++    if (cvars::headless &&
++        cvars::hid.compare("nop") != 0 &&
++        cvars::hid.compare("android_shared_memory") != 0) {
++      XELOGI(
++          "Headless mode active, skipping input driver '{}' because it "
++          "requires a windowed path",
++          cvars::hid);
+       return std::vector<std::unique_ptr<hid::InputDriver>>();
+     }
+     return CreateInputDrivers(window);
+diff --git a/src/xenia/hid/android_shared/CMakeLists.txt b/src/xenia/hid/android_shared/CMakeLists.txt
+new file mode 100644
+index 0000000..b7fc1ba
+--- /dev/null
++++ b/src/xenia/hid/android_shared/CMakeLists.txt
+@@ -0,0 +1,4 @@
++add_library(xenia-hid-android-shared STATIC)
++xe_platform_sources(xenia-hid-android-shared ${CMAKE_CURRENT_SOURCE_DIR})
++target_link_libraries(xenia-hid-android-shared PUBLIC xenia-base xenia-hid)
++xe_target_defaults(xenia-hid-android-shared)
+diff --git a/src/xenia/hid/android_shared/android_shared_hid.cc b/src/xenia/hid/android_shared/android_shared_hid.cc
+new file mode 100644
+index 0000000..863942a
+--- /dev/null
++++ b/src/xenia/hid/android_shared/android_shared_hid.cc
+@@ -0,0 +1,25 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026. All rights reserved.                                       *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#include "xenia/hid/android_shared/android_shared_hid.h"
++
++#include "xenia/hid/android_shared/android_shared_input_driver.h"
++
++namespace xe {
++namespace hid {
++namespace android_shared {
++
++std::unique_ptr<InputDriver> Create(xe::ui::Window* window,
++                                    size_t window_z_order) {
++  return std::make_unique<AndroidSharedInputDriver>(window, window_z_order);
++}
++
++}  // namespace android_shared
++}  // namespace hid
++}  // namespace xe
+diff --git a/src/xenia/hid/android_shared/android_shared_hid.h b/src/xenia/hid/android_shared/android_shared_hid.h
+new file mode 100644
+index 0000000..6742936
+--- /dev/null
++++ b/src/xenia/hid/android_shared/android_shared_hid.h
+@@ -0,0 +1,28 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026. All rights reserved.                                       *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#ifndef XENIA_HID_ANDROID_SHARED_ANDROID_SHARED_HID_H_
++#define XENIA_HID_ANDROID_SHARED_ANDROID_SHARED_HID_H_
++
++#include <memory>
++
++#include "xenia/hid/input_system.h"
++
++namespace xe {
++namespace hid {
++namespace android_shared {
++
++std::unique_ptr<InputDriver> Create(xe::ui::Window* window,
++                                    size_t window_z_order);
++
++}  // namespace android_shared
++}  // namespace hid
++}  // namespace xe
++
++#endif  // XENIA_HID_ANDROID_SHARED_ANDROID_SHARED_HID_H_
+diff --git a/src/xenia/hid/android_shared/android_shared_input_driver.cc b/src/xenia/hid/android_shared/android_shared_input_driver.cc
+new file mode 100644
+index 0000000..dbceac2
+--- /dev/null
++++ b/src/xenia/hid/android_shared/android_shared_input_driver.cc
+@@ -0,0 +1,235 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026. All rights reserved.                                       *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#include "xenia/hid/android_shared/android_shared_input_driver.h"
++
++#include <algorithm>
++#include <atomic>
++#include <cerrno>
++#include <cstdlib>
++#include <cstring>
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include "xenia/base/logging.h"
++
++namespace {
++
++constexpr uint32_t kTransportHeaderSize = 72;
++constexpr uint32_t kTransportVersion = 1;
++
++static_assert(sizeof(xe::hid::android_shared::AndroidSharedInputHeader) ==
++              kTransportHeaderSize);
++
++int ParseInheritedFdEnv(const char* env_name) {
++  const char* raw_value = std::getenv(env_name);
++  if (!raw_value || !raw_value[0]) {
++    return -1;
++  }
++  char* parse_end = nullptr;
++  errno = 0;
++  long parsed = std::strtol(raw_value, &parse_end, 10);
++  if (errno != 0 || parse_end == raw_value ||
++      (parse_end && *parse_end != '\0') || parsed < 0 ||
++      parsed > 0x7fffffffL) {
++    XELOGE("Invalid inherited controller fd '{}' for {}", raw_value, env_name);
++    return -1;
++  }
++  return int(parsed);
++}
++
++bool HeaderLooksValid(
++    const xe::hid::android_shared::AndroidSharedInputHeader& header) {
++  return header.magic[0] == 'X' && header.magic[1] == 'I' &&
++         header.magic[2] == 'M' && header.magic[3] == '1' &&
++         header.header_size == kTransportHeaderSize &&
++         header.version == kTransportVersion;
++}
++
++}  // namespace
++
++namespace xe {
++namespace hid {
++namespace android_shared {
++
++AndroidSharedInputDriver::AndroidSharedInputDriver(xe::ui::Window* window,
++                                                   size_t window_z_order)
++    : InputDriver(window, window_z_order) {}
++
++AndroidSharedInputDriver::~AndroidSharedInputDriver() {
++  if (mapped_header_) {
++    munmap(const_cast<AndroidSharedInputHeader*>(mapped_header_),
++           sizeof(AndroidSharedInputHeader));
++  }
++  if (transport_fd_ >= 0) {
++    close(transport_fd_);
++  }
++}
++
++X_STATUS AndroidSharedInputDriver::Setup() {
++  transport_fd_ = ParseInheritedFdEnv("X360_INPUT_TRANSPORT_SHM_FD");
++  const char* transport_path = std::getenv("X360_INPUT_TRANSPORT_PATH");
++  if (transport_fd_ < 0) {
++    if (!transport_path || !transport_path[0]) {
++      XELOGW("Android shared input transport is not configured");
++      return X_STATUS_SUCCESS;
++    }
++    transport_fd_ = open(transport_path, O_RDONLY | O_CLOEXEC);
++    if (transport_fd_ < 0) {
++      XELOGW("Failed to open Android shared input transport path {}: errno={}",
++             transport_path, errno);
++      return X_STATUS_SUCCESS;
++    }
++  }
++
++  struct stat transport_stat;
++  if (fstat(transport_fd_, &transport_stat) != 0 ||
++      transport_stat.st_size < off_t(sizeof(AndroidSharedInputHeader))) {
++    XELOGW("Android shared input transport is unavailable or too small");
++    close(transport_fd_);
++    transport_fd_ = -1;
++    return X_STATUS_SUCCESS;
++  }
++
++  void* mapped = mmap(nullptr, sizeof(AndroidSharedInputHeader), PROT_READ,
++                      MAP_SHARED, transport_fd_, 0);
++  if (mapped == MAP_FAILED) {
++    XELOGW("Failed to map Android shared input transport: errno={}", errno);
++    close(transport_fd_);
++    transport_fd_ = -1;
++    return X_STATUS_SUCCESS;
++  }
++
++  mapped_header_ = reinterpret_cast<const AndroidSharedInputHeader*>(mapped);
++  if (!HeaderLooksValid(*mapped_header_)) {
++    XELOGW("Android shared input transport header is invalid");
++    munmap(const_cast<AndroidSharedInputHeader*>(mapped_header_),
++           sizeof(AndroidSharedInputHeader));
++    mapped_header_ = nullptr;
++    close(transport_fd_);
++    transport_fd_ = -1;
++    return X_STATUS_SUCCESS;
++  }
++
++  XELOGI("Android shared input transport is ready");
++  return X_STATUS_SUCCESS;
++}
++
++X_RESULT AndroidSharedInputDriver::GetCapabilities(
++    uint32_t user_index, uint32_t flags, X_INPUT_CAPABILITIES* out_caps) {
++  (void)flags;
++  if (!SupportsUserIndex(user_index)) {
++    return X_ERROR_DEVICE_NOT_CONNECTED;
++  }
++
++  AndroidSharedInputHeader snapshot = {};
++  if (!ReadSnapshot(&snapshot) || !snapshot.connected) {
++    return X_ERROR_DEVICE_NOT_CONNECTED;
++  }
++
++  std::memset(out_caps, 0, sizeof(*out_caps));
++  out_caps->type = XINPUT_DEVTYPE_GAMEPAD;
++  out_caps->sub_type = XINPUT_DEVSUBTYPE_GAMEPAD;
++  out_caps->gamepad.buttons = 0xF3FF;
++  out_caps->gamepad.left_trigger = 0xFF;
++  out_caps->gamepad.right_trigger = 0xFF;
++  out_caps->gamepad.thumb_lx = 32767;
++  out_caps->gamepad.thumb_ly = 32767;
++  out_caps->gamepad.thumb_rx = 32767;
++  out_caps->gamepad.thumb_ry = 32767;
++  return X_ERROR_SUCCESS;
++}
++
++X_RESULT AndroidSharedInputDriver::GetState(uint32_t user_index,
++                                            X_INPUT_STATE* out_state) {
++  if (!SupportsUserIndex(user_index)) {
++    return X_ERROR_DEVICE_NOT_CONNECTED;
++  }
++
++  AndroidSharedInputHeader snapshot = {};
++  if (!ReadSnapshot(&snapshot) || !snapshot.connected) {
++    return X_ERROR_DEVICE_NOT_CONNECTED;
++  }
++
++  std::memset(out_state, 0, sizeof(*out_state));
++  out_state->packet_number = uint32_t(snapshot.sequence & 0xffffffffu);
++  out_state->gamepad.buttons = uint16_t(snapshot.buttons & 0xffffu);
++  out_state->gamepad.left_trigger =
++      uint8_t(std::clamp(snapshot.left_trigger, 0u, 255u));
++  out_state->gamepad.right_trigger =
++      uint8_t(std::clamp(snapshot.right_trigger, 0u, 255u));
++  out_state->gamepad.thumb_lx = int16_t(
++      std::clamp(snapshot.left_stick_x, int32_t(-32768), int32_t(32767)));
++  out_state->gamepad.thumb_ly = int16_t(
++      std::clamp(snapshot.left_stick_y, int32_t(-32768), int32_t(32767)));
++  out_state->gamepad.thumb_rx = int16_t(
++      std::clamp(snapshot.right_stick_x, int32_t(-32768), int32_t(32767)));
++  out_state->gamepad.thumb_ry = int16_t(
++      std::clamp(snapshot.right_stick_y, int32_t(-32768), int32_t(32767)));
++  return X_ERROR_SUCCESS;
++}
++
++X_RESULT AndroidSharedInputDriver::SetState(uint32_t user_index,
++                                            X_INPUT_VIBRATION* vibration) {
++  (void)vibration;
++  if (!SupportsUserIndex(user_index)) {
++    return X_ERROR_DEVICE_NOT_CONNECTED;
++  }
++  AndroidSharedInputHeader snapshot = {};
++  return (ReadSnapshot(&snapshot) && snapshot.connected) ? X_ERROR_SUCCESS
++                                                         : X_ERROR_DEVICE_NOT_CONNECTED;
++}
++
++X_RESULT AndroidSharedInputDriver::GetKeystroke(
++    uint32_t user_index, uint32_t flags, X_INPUT_KEYSTROKE* out_keystroke) {
++  (void)flags;
++  (void)out_keystroke;
++  if (!SupportsUserIndex(user_index)) {
++    return X_ERROR_DEVICE_NOT_CONNECTED;
++  }
++  AndroidSharedInputHeader snapshot = {};
++  return (ReadSnapshot(&snapshot) && snapshot.connected) ? X_ERROR_EMPTY
++                                                         : X_ERROR_DEVICE_NOT_CONNECTED;
++}
++
++InputType AndroidSharedInputDriver::GetInputType() const {
++  return InputType::Controller;
++}
++
++bool AndroidSharedInputDriver::SupportsUserIndex(uint32_t user_index) const {
++  return user_index == 0 || user_index == XUserIndexAny;
++}
++
++bool AndroidSharedInputDriver::ReadSnapshot(
++    AndroidSharedInputHeader* out_snapshot) const {
++  if (!mapped_header_) {
++    return false;
++  }
++
++  const uint64_t first_sequence = mapped_header_->sequence;
++  if (first_sequence & 1ull) {
++    return false;
++  }
++  std::atomic_thread_fence(std::memory_order_acquire);
++  AndroidSharedInputHeader snapshot = *mapped_header_;
++  std::atomic_thread_fence(std::memory_order_acquire);
++  const uint64_t second_sequence = mapped_header_->sequence;
++  if (first_sequence != second_sequence || (second_sequence & 1ull) ||
++      !HeaderLooksValid(snapshot)) {
++    return false;
++  }
++  *out_snapshot = snapshot;
++  return true;
++}
++
++}  // namespace android_shared
++}  // namespace hid
++}  // namespace xe
+diff --git a/src/xenia/hid/android_shared/android_shared_input_driver.h b/src/xenia/hid/android_shared/android_shared_input_driver.h
+new file mode 100644
+index 0000000..0ef433f
+--- /dev/null
++++ b/src/xenia/hid/android_shared/android_shared_input_driver.h
+@@ -0,0 +1,70 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2026. All rights reserved.                                       *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ */
++
++#ifndef XENIA_HID_ANDROID_SHARED_ANDROID_SHARED_INPUT_DRIVER_H_
++#define XENIA_HID_ANDROID_SHARED_ANDROID_SHARED_INPUT_DRIVER_H_
++
++#include <array>
++#include <cstdint>
++
++#include "xenia/hid/input_driver.h"
++
++namespace xe {
++namespace hid {
++namespace android_shared {
++
++struct AndroidSharedInputHeader {
++  std::array<char, 4> magic = {'X', 'I', 'M', '1'};
++  uint32_t header_size = 72;
++  uint32_t version = 1;
++  uint32_t connected = 0;
++  uint32_t reserved = 0;
++  uint32_t reserved_2 = 0;
++  uint64_t sequence = 0;
++  uint64_t timestamp_millis = 0;
++  uint32_t buttons = 0;
++  uint32_t left_trigger = 0;
++  uint32_t right_trigger = 0;
++  int32_t left_stick_x = 0;
++  int32_t left_stick_y = 0;
++  int32_t right_stick_x = 0;
++  int32_t right_stick_y = 0;
++  uint32_t reserved_3 = 0;
++};
++
++class AndroidSharedInputDriver final : public InputDriver {
++ public:
++  explicit AndroidSharedInputDriver(xe::ui::Window* window,
++                                    size_t window_z_order);
++  ~AndroidSharedInputDriver() override;
++
++  X_STATUS Setup() override;
++
++  X_RESULT GetCapabilities(uint32_t user_index, uint32_t flags,
++                           X_INPUT_CAPABILITIES* out_caps) override;
++  X_RESULT GetState(uint32_t user_index, X_INPUT_STATE* out_state) override;
++  X_RESULT SetState(uint32_t user_index,
++                    X_INPUT_VIBRATION* vibration) override;
++  X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags,
++                        X_INPUT_KEYSTROKE* out_keystroke) override;
++  InputType GetInputType() const override;
++
++ private:
++  bool SupportsUserIndex(uint32_t user_index) const;
++  bool ReadSnapshot(AndroidSharedInputHeader* out_snapshot) const;
++
++  int transport_fd_ = -1;
++  const AndroidSharedInputHeader* mapped_header_ = nullptr;
++};
++
++}  // namespace android_shared
++}  // namespace hid
++}  // namespace xe
++
++#endif  // XENIA_HID_ANDROID_SHARED_ANDROID_SHARED_INPUT_DRIVER_H_

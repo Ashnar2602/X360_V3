@@ -22,6 +22,23 @@ internal data class XeniaStartupAnalysis(
     val lastXamCallResult: String? = null,
     val lastXliveCallResult: String? = null,
     val lastXnetCallResult: String? = null,
+    val lastDiscResolveLine: String? = null,
+    val lastHostResolveLine: String? = null,
+    val lastEmptyDiscResolveLine: String? = null,
+    val lastTrueFileMiss: String? = null,
+    val lastRootProbe: String? = null,
+    val emptyDiscResolveCount: Int = 0,
+    val movieDecodeThreadCount: Int = 0,
+    val audioClientRegisterCount: Int = 0,
+    val movieThreadBurstCount: Int = 0,
+    val lastMovieDecodeThreadLine: String? = null,
+    val lastMovieAudioState: String? = null,
+    val audioClientEvents: List<String> = emptyList(),
+    val threadCreationEvents: List<String> = emptyList(),
+    val vfsAccessTimeline: List<String> = emptyList(),
+    val guestTimelineMarkers: List<String> = emptyList(),
+    val lastThreadSnapshotHeader: String? = null,
+    val lastThreadSnapshotLines: List<String> = emptyList(),
 )
 
 internal sealed interface XeniaLaunchMode {
@@ -47,6 +64,9 @@ internal data class XeniaPresentationSettings(
     val keepLastVisibleFrame: Boolean = true,
     val apuBackend: XeniaApuBackend = XeniaApuBackend.SDL,
     val readbackResolveMode: XeniaReadbackResolveMode? = XeniaReadbackResolveMode.FULL,
+    val muteAudioOutput: Boolean = false,
+    val xmaDecoderMode: XeniaXmaDecoderMode? = null,
+    val useDedicatedXmaThread: Boolean? = null,
 ) {
     companion object {
         val HeadlessBringup = XeniaPresentationSettings(
@@ -102,6 +122,13 @@ internal enum class XeniaReadbackResolveMode(
     NONE("none"),
 }
 
+internal enum class XeniaXmaDecoderMode(
+    val cliValue: String,
+) {
+    FAKE("fake"),
+    OLD("old"),
+}
+
 internal enum class XeniaHidBackend(
     val cliValue: String,
 ) {
@@ -132,6 +159,24 @@ internal fun XeniaPresentationSettings.resolveForMesaBranch(
 }
 
 internal object XeniaStartupStageParser {
+    private val titleIdPattern = Regex("""Title ID:\s*([0-9A-Fa-f]{8})""")
+    private val moduleHashPattern = Regex("""Module hash:\s*([0-9A-Fa-f]+)""")
+    private val patchDbTitleCountPattern = Regex("""PatchDB:\s+Loaded patches for\s+(\d+)\s+titles""")
+    private val emptyDiscResolvePattern = Regex("""DiscImageDevice::ResolvePath\(\s*\)""")
+    private val discResolvePattern = Regex("""DiscImageDevice::ResolvePath\(""")
+    private val hostResolvePattern = Regex("""HostPathDevice::ResolvePath\(""")
+    private val movieDecodeThreadPattern = Regex("""MoviePlayer2 Decode Thread""")
+    private val audioClientRegisterPattern =
+        Regex("""AudioSystem::RegisterClient:\s+client\s+\d+\s+registered successfully|X360_AUDIO_CLIENT_EVENT action=register""")
+    private val audioClientEventPattern = Regex(
+        """AudioSystem::RegisterClient|AudioSystem::UnregisterClient|RwAudioCore Dac|AudioMediaPlayer::|Driver initialization failed!|Error sending packet for decoding|Error during decoding|X360_AUDIO_CLIENT_EVENT|X360_AUDIO_SYSTEM_SETUP|X360_MOVIE_AUDIO_STATE""",
+    )
+    private val threadCreationPattern =
+        Regex("""XThread::Execute.*(MoviePlayer2 Decode Thread|RwAudioCore Dac|Audio Media Player)|X360_MOVIE_THREAD_EVENT""")
+    private val vfsAccessPattern = Regex(
+        """X360_VFS_|X360_IO_TRACE|X360_IO_FILE_MISS|ResolvePath\(|NtOpenFile|NtCreateFile|NtQueryDirectoryFile|NtQueryFullAttributesFile|XamContentOpenFile""",
+    )
+
     fun analyze(logContent: String): XeniaStartupAnalysis {
         val lines = logContent.lineSequence().toList()
         fun lastMatching(pattern: (String) -> Boolean): String? =
@@ -144,30 +189,82 @@ internal object XeniaStartupStageParser {
             }
         }
         val titleId = lines.firstNotNullOfOrNull { line ->
-            Regex("""Title ID:\s*([0-9A-Fa-f]{8})""").find(line)?.groupValues?.getOrNull(1)?.uppercase()
+            titleIdPattern.find(line)?.groupValues?.getOrNull(1)?.uppercase()
         }
         val moduleHash = lines.firstNotNullOfOrNull { line ->
-            Regex("""Module hash:\s*([0-9A-Fa-f]+)""").find(line)?.groupValues?.getOrNull(1)?.uppercase()
+            moduleHashPattern.find(line)?.groupValues?.getOrNull(1)?.uppercase()
         }
         val patchDatabaseLoadedTitleCount = lines.firstNotNullOfOrNull { line ->
-            Regex("""PatchDB:\s+Loaded patches for\s+(\d+)\s+titles""").find(line)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            patchDbTitleCountPattern.find(line)?.groupValues?.getOrNull(1)?.toIntOrNull()
         }
         val appliedPatches = lines
             .filter { it.contains("Patcher: Applying patch") }
             .map { it.trim() }
+        val discResolveLines = lines
+            .filter { line ->
+                discResolvePattern.containsMatchIn(line) ||
+                    line.contains("X360_VFS_RESOLVE", ignoreCase = true) ||
+                    line.contains("X360_VFS_DISC_RESOLVE", ignoreCase = true) ||
+                    line.contains("X360_VFS_DISC_EMPTY_RESOLVE", ignoreCase = true)
+            }
+            .map { it.trim() }
+        val hostResolveLines = lines
+            .filter { line ->
+                hostResolvePattern.containsMatchIn(line) ||
+                    line.contains("X360_VFS_HOST_RESOLVE", ignoreCase = true)
+            }
+            .map { it.trim() }
+        val emptyDiscResolveLines = lines
+            .filter { line ->
+                emptyDiscResolvePattern.containsMatchIn(line) ||
+                    line.contains("X360_VFS_ROOT_PROBE", ignoreCase = true) ||
+                    line.contains("X360_VFS_DISC_EMPTY_RESOLVE", ignoreCase = true)
+            }
+            .map { it.trim() }
+        val movieDecodeThreadLines = lines
+            .filter { movieDecodeThreadPattern.containsMatchIn(it) }
+            .map { it.trim() }
+        val audioClientEventLines = lines
+            .filter { audioClientEventPattern.containsMatchIn(it) }
+            .map { it.trim() }
+        val threadCreationEvents = lines
+            .filter { threadCreationPattern.containsMatchIn(it) }
+            .map { it.trim() }
+        val vfsAccessTimeline = lines
+            .filter { vfsAccessPattern.containsMatchIn(it) }
+            .map { it.trim() }
+            .takeLast(24)
+        val lastThreadSnapshotIndex = lines.indexOfLast { it.contains("X360_THREAD_SNAPSHOT") }
+        val lastThreadSnapshotHeader = lines.getOrNull(lastThreadSnapshotIndex)?.trim()
+        val lastThreadSnapshotLines = if (lastThreadSnapshotIndex >= 0) {
+            lines
+                .drop(lastThreadSnapshotIndex + 1)
+                .takeWhile { it.contains("X360_THREAD ") }
+                .map { it.trim() }
+        } else {
+            emptyList()
+        }
         val lastContentMiss = lastMatching { line ->
             line.contains("X360_CONTENT_MISS=") ||
-                line.contains("""\content\""", ignoreCase = true) ||
-                line.contains("ResolvePath(", ignoreCase = true) ||
-                line.contains("XamContentOpenFile", ignoreCase = true)
+                (line.contains("X360_VFS_", ignoreCase = true) && line.contains("MISS", ignoreCase = true))
+        }
+        val lastTrueFileMiss = lastMatching { line ->
+            (line.contains("X360_CONTENT_MISS=", ignoreCase = true) ||
+                line.contains("X360_VFS_", ignoreCase = true) && line.contains("MISS", ignoreCase = true) ||
+                line.contains("X360_IO_FILE_MISS", ignoreCase = true)) &&
+                !line.contains("EMPTY_RESOLVE", ignoreCase = true)
         }
         val lastContentCallResult = lastMatching { line ->
-            line.contains("ContentManager::", ignoreCase = true) ||
+            line.contains("X360_CONTENT_CALL=", ignoreCase = true) ||
+                line.contains("X360_CONTENT_MISS=", ignoreCase = true) ||
+                line.contains("X360_XAM_CONTENT_CALL", ignoreCase = true) ||
+                line.contains("ContentManager::", ignoreCase = true) ||
                 line.contains("XamContentOpenFile", ignoreCase = true) ||
-                line.contains("X360_VFS_", ignoreCase = true)
+                (line.contains("X360_VFS_", ignoreCase = true) && line.contains("MISS", ignoreCase = true))
         }
         val lastXamCallResult = lastMatching { line ->
-            line.contains("Xam", ignoreCase = true)
+            line.contains("X360_XAM_CONTENT_CALL", ignoreCase = true) ||
+                line.contains("Xam", ignoreCase = true)
         }
         val lastXliveCallResult = lastMatching { line ->
             line.contains("XLIVEBASE", ignoreCase = true) ||
@@ -182,14 +279,96 @@ internal object XeniaStartupStageParser {
                 line.contains("Loading module ", ignoreCase = true) ||
                 line.contains("Title name: ", ignoreCase = true) ||
                 line.contains("MoviePlayer", ignoreCase = true) ||
+                line.contains("AudioSystem::RegisterClient", ignoreCase = true) ||
+                line.contains("RwAudioCore Dac", ignoreCase = true) ||
+                line.contains("Audio Media Player", ignoreCase = true) ||
+                line.contains("AudioMediaPlayer::", ignoreCase = true) ||
+                line.contains("X360_AUDIO_CLIENT_EVENT", ignoreCase = true) ||
+                line.contains("X360_MOVIE_AUDIO_STATE", ignoreCase = true) ||
+                line.contains("X360_IO_TRACE", ignoreCase = true) ||
+                line.contains("X360_IO_FILE_MISS", ignoreCase = true) ||
                 line.contains("CreateThread(", ignoreCase = true) ||
+                line.contains("X360_CONTENT_CALL=", ignoreCase = true) ||
+                line.contains("X360_XAM_CONTENT_CALL", ignoreCase = true) ||
+                line.contains("X360_THREAD_SNAPSHOT", ignoreCase = true) ||
                 line.contains("ContentManager::", ignoreCase = true) ||
                 line.contains("XamContentOpenFile", ignoreCase = true) ||
                 line.contains("X360_VFS_", ignoreCase = true) ||
+                discResolvePattern.containsMatchIn(line) ||
+                hostResolvePattern.containsMatchIn(line) ||
                 line.contains("XNetLogon", ignoreCase = true) ||
                 line.contains("XLive", ignoreCase = true) ||
                 line.contains("XLIVEBASE", ignoreCase = true)
         }
+        val firstFrameLine = lines.firstOrNull { it.contains("X360_XENIA_STAGE=FIRST_FRAME_CAPTURED") }
+        val frameStreamActiveLine = lines.firstOrNull { it.contains("X360_XENIA_STAGE=FRAME_STREAM_ACTIVE") }
+        val audioClientRegisterCount = lines.count { audioClientRegisterPattern.containsMatchIn(it) }
+        val lastMovieAudioState = lastMatching { line ->
+            audioClientEventPattern.containsMatchIn(line) ||
+                movieDecodeThreadPattern.containsMatchIn(line) ||
+                threadCreationPattern.containsMatchIn(line)
+        }
+        val guestTimelineMarkers = buildList {
+            if (lines.any { it.contains("Loading module ", ignoreCase = true) }) {
+                add("MODULE_LOADED")
+            }
+            if (titleName != null || firstFrameLine != null || frameStreamActiveLine != null) {
+                add("TITLE_MENU_ACTIVE")
+            }
+            if (emptyDiscResolveLines.isNotEmpty() ||
+                movieDecodeThreadLines.isNotEmpty() ||
+                lines.any {
+                    it.contains("XamContentCreateEnumeratorResult", ignoreCase = true) &&
+                        it.contains("type=00000002", ignoreCase = true)
+                }
+            ) {
+                add("FIRST_MISSION_LOADING_ENTERED")
+            }
+            if (movieDecodeThreadLines.isNotEmpty()) {
+                add("MOVIE_THREAD_CREATED")
+            }
+            if (audioClientRegisterCount > 0) {
+                add("AUDIO_CLIENT_REGISTERED")
+            }
+            if (movieDecodeThreadLines.size >= 2 && audioClientRegisterCount >= 2) {
+                add("MOVIE_AUDIO_LOOP_DETECTED")
+            }
+        }
+        fun buildAnalysis(
+            stage: XeniaStartupStage,
+            detail: String,
+        ) = XeniaStartupAnalysis(
+            stage = stage,
+            detail = detail,
+            titleName = titleName,
+            titleId = titleId,
+            moduleHash = moduleHash,
+            patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
+            appliedPatches = appliedPatches,
+            lastContentMiss = lastContentMiss,
+            lastMeaningfulTransition = lastMeaningfulTransition,
+            lastContentCallResult = lastContentCallResult,
+            lastXamCallResult = lastXamCallResult,
+            lastXliveCallResult = lastXliveCallResult,
+            lastXnetCallResult = lastXnetCallResult,
+            lastDiscResolveLine = discResolveLines.lastOrNull(),
+            lastHostResolveLine = hostResolveLines.lastOrNull(),
+            lastEmptyDiscResolveLine = emptyDiscResolveLines.lastOrNull(),
+            lastTrueFileMiss = lastTrueFileMiss,
+            lastRootProbe = emptyDiscResolveLines.lastOrNull(),
+            emptyDiscResolveCount = emptyDiscResolveLines.size,
+            movieDecodeThreadCount = movieDecodeThreadLines.size,
+            audioClientRegisterCount = audioClientRegisterCount,
+            movieThreadBurstCount = movieDecodeThreadLines.size,
+            lastMovieDecodeThreadLine = movieDecodeThreadLines.lastOrNull(),
+            lastMovieAudioState = lastMovieAudioState,
+            audioClientEvents = audioClientEventLines.takeLast(24),
+            threadCreationEvents = threadCreationEvents.takeLast(24),
+            vfsAccessTimeline = vfsAccessTimeline,
+            guestTimelineMarkers = guestTimelineMarkers,
+            lastThreadSnapshotHeader = lastThreadSnapshotHeader,
+            lastThreadSnapshotLines = lastThreadSnapshotLines,
+        )
         val failureLine = lines.firstOrNull { line ->
             line.contains("Failed to create a Vulkan instance") ||
                 line.contains("No Vulkan physical devices available") ||
@@ -203,152 +382,62 @@ internal object XeniaStartupStageParser {
                 line.contains("uncaught exception", ignoreCase = true)
         }
         if (failureLine != null) {
-            return XeniaStartupAnalysis(
+            return buildAnalysis(
                 stage = XeniaStartupStage.FAILED,
                 detail = failureLine.trim(),
-                titleName = titleName,
-                titleId = titleId,
-                moduleHash = moduleHash,
-                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
-                appliedPatches = appliedPatches,
-                lastContentMiss = lastContentMiss,
-                lastMeaningfulTransition = lastMeaningfulTransition,
-                lastContentCallResult = lastContentCallResult,
-                lastXamCallResult = lastXamCallResult,
-                lastXliveCallResult = lastXliveCallResult,
-                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
-        val frameStreamActiveLine = lines.firstOrNull { it.contains("X360_XENIA_STAGE=FRAME_STREAM_ACTIVE") }
         if (frameStreamActiveLine != null) {
-            return XeniaStartupAnalysis(
+            return buildAnalysis(
                 stage = XeniaStartupStage.FRAME_STREAM_ACTIVE,
                 detail = frameStreamActiveLine.trim(),
-                titleName = titleName,
-                titleId = titleId,
-                moduleHash = moduleHash,
-                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
-                appliedPatches = appliedPatches,
-                lastContentMiss = lastContentMiss,
-                lastMeaningfulTransition = lastMeaningfulTransition,
-                lastContentCallResult = lastContentCallResult,
-                lastXamCallResult = lastXamCallResult,
-                lastXliveCallResult = lastXliveCallResult,
-                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
-        val firstFrameLine = lines.firstOrNull { it.contains("X360_XENIA_STAGE=FIRST_FRAME_CAPTURED") }
         if (firstFrameLine != null) {
-            return XeniaStartupAnalysis(
+            return buildAnalysis(
                 stage = XeniaStartupStage.FIRST_FRAME_CAPTURED,
                 detail = firstFrameLine.trim(),
-                titleName = titleName,
-                titleId = titleId,
-                moduleHash = moduleHash,
-                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
-                appliedPatches = appliedPatches,
-                lastContentMiss = lastContentMiss,
-                lastMeaningfulTransition = lastMeaningfulTransition,
-                lastContentCallResult = lastContentCallResult,
-                lastXamCallResult = lastXamCallResult,
-                lastXliveCallResult = lastXliveCallResult,
-                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
         val runningHeadlessLine = lines.firstOrNull { it.contains("X360_XENIA_STAGE=TITLE_RUNNING_HEADLESS") }
         if (runningHeadlessLine != null) {
-            return XeniaStartupAnalysis(
+            return buildAnalysis(
                 stage = XeniaStartupStage.TITLE_RUNNING_HEADLESS,
                 detail = runningHeadlessLine.trim(),
-                titleName = titleName,
-                titleId = titleId,
-                moduleHash = moduleHash,
-                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
-                appliedPatches = appliedPatches,
-                lastContentMiss = lastContentMiss,
-                lastMeaningfulTransition = lastMeaningfulTransition,
-                lastContentCallResult = lastContentCallResult,
-                lastXamCallResult = lastXamCallResult,
-                lastXliveCallResult = lastXliveCallResult,
-                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
         if (titleName != null) {
-            return XeniaStartupAnalysis(
+            return buildAnalysis(
                 stage = XeniaStartupStage.TITLE_METADATA_AVAILABLE,
                 detail = lines.firstOrNull { it.contains("Title name: ") }?.trim() ?: "Title name discovered",
-                titleName = titleName,
-                titleId = titleId,
-                moduleHash = moduleHash,
-                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
-                appliedPatches = appliedPatches,
-                lastContentMiss = lastContentMiss,
-                lastMeaningfulTransition = lastMeaningfulTransition,
-                lastContentCallResult = lastContentCallResult,
-                lastXamCallResult = lastXamCallResult,
-                lastXliveCallResult = lastXliveCallResult,
-                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
         val titleModuleLine = lines.firstOrNull { it.contains("Loading module ") }
         if (titleModuleLine != null) {
-            return XeniaStartupAnalysis(
+            return buildAnalysis(
                 stage = XeniaStartupStage.TITLE_MODULE_LOADING,
                 detail = titleModuleLine.trim(),
-                titleName = titleName,
-                titleId = titleId,
-                moduleHash = moduleHash,
-                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
-                appliedPatches = appliedPatches,
-                lastContentMiss = lastContentMiss,
-                lastMeaningfulTransition = lastMeaningfulTransition,
-                lastContentCallResult = lastContentCallResult,
-                lastXamCallResult = lastXamCallResult,
-                lastXliveCallResult = lastXliveCallResult,
-                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
         val discImageLine = lines.firstOrNull { it.contains("Checking for XISO") }
         if (discImageLine != null) {
-            return XeniaStartupAnalysis(
+            return buildAnalysis(
                 stage = XeniaStartupStage.DISC_IMAGE_ACCEPTED,
                 detail = discImageLine.trim(),
-                titleName = titleName,
-                titleId = titleId,
-                moduleHash = moduleHash,
-                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
-                appliedPatches = appliedPatches,
-                lastContentMiss = lastContentMiss,
-                lastMeaningfulTransition = lastMeaningfulTransition,
-                lastContentCallResult = lastContentCallResult,
-                lastXamCallResult = lastXamCallResult,
-                lastXliveCallResult = lastXliveCallResult,
-                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
         val initializedLine = lines.firstOrNull { it.contains("Vulkan device properties and enabled features:") }
         if (initializedLine != null) {
-            return XeniaStartupAnalysis(
+            return buildAnalysis(
                 stage = XeniaStartupStage.VULKAN_INITIALIZED,
                 detail = initializedLine.trim(),
-                titleName = titleName,
-                titleId = titleId,
-                moduleHash = moduleHash,
-                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
-                appliedPatches = appliedPatches,
-                lastContentMiss = lastContentMiss,
-                lastMeaningfulTransition = lastMeaningfulTransition,
-                lastContentCallResult = lastContentCallResult,
-                lastXamCallResult = lastXamCallResult,
-                lastXliveCallResult = lastXliveCallResult,
-                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
@@ -357,20 +446,9 @@ internal object XeniaStartupStageParser {
                 it.contains("Available Vulkan physical devices")
         }
         if (backendLine != null) {
-            return XeniaStartupAnalysis(
+            return buildAnalysis(
                 stage = XeniaStartupStage.VULKAN_BACKEND_SELECTED,
                 detail = backendLine.trim(),
-                titleName = titleName,
-                titleId = titleId,
-                moduleHash = moduleHash,
-                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
-                appliedPatches = appliedPatches,
-                lastContentMiss = lastContentMiss,
-                lastMeaningfulTransition = lastMeaningfulTransition,
-                lastContentCallResult = lastContentCallResult,
-                lastXamCallResult = lastXamCallResult,
-                lastXliveCallResult = lastXliveCallResult,
-                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
@@ -379,41 +457,19 @@ internal object XeniaStartupStageParser {
                 it.contains("Loaded config:")
         }
         if (configLine != null) {
-            return XeniaStartupAnalysis(
+            return buildAnalysis(
                 stage = XeniaStartupStage.CONFIG_READY,
                 detail = configLine.trim(),
-                titleName = titleName,
-                titleId = titleId,
-                moduleHash = moduleHash,
-                patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
-                appliedPatches = appliedPatches,
-                lastContentMiss = lastContentMiss,
-                lastMeaningfulTransition = lastMeaningfulTransition,
-                lastContentCallResult = lastContentCallResult,
-                lastXamCallResult = lastXamCallResult,
-                lastXliveCallResult = lastXliveCallResult,
-                lastXnetCallResult = lastXnetCallResult,
             )
         }
 
-        return XeniaStartupAnalysis(
+        return buildAnalysis(
             stage = XeniaStartupStage.PROCESS_STARTED,
             detail = if (logContent.isBlank()) {
                 "xenia process started"
             } else {
                 lines.lastOrNull().orEmpty().ifBlank { "xenia process started" }
             },
-            titleName = titleName,
-            titleId = titleId,
-            moduleHash = moduleHash,
-            patchDatabaseLoadedTitleCount = patchDatabaseLoadedTitleCount,
-            appliedPatches = appliedPatches,
-            lastContentMiss = lastContentMiss,
-            lastMeaningfulTransition = lastMeaningfulTransition,
-            lastContentCallResult = lastContentCallResult,
-            lastXamCallResult = lastXamCallResult,
-            lastXliveCallResult = lastXliveCallResult,
-            lastXnetCallResult = lastXnetCallResult,
         )
     }
 }
@@ -459,6 +515,11 @@ internal fun buildXeniaBringupArgs(
             ),
         )
         readbackResolveMode?.let { add("--readback_resolve=$it") }
+        if (presentationSettings.muteAudioOutput) {
+            add("--mute=true")
+        }
+        presentationSettings.xmaDecoderMode?.let { add("--xma_decoder=${it.cliValue}") }
+        presentationSettings.useDedicatedXmaThread?.let { add("--use_dedicated_xma_thread=$it") }
         if (presentationSettings.presentationBackend != PresentationBackend.HEADLESS_ONLY) {
             add("--internal_display_resolution=17")
             add("--internal_display_resolution_x=${presentationSettings.internalDisplayResolution.width}")

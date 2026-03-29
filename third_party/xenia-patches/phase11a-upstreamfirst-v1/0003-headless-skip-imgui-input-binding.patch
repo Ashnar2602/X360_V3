@@ -1,0 +1,17 @@
+diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
+index 7c9d0cc5e..c756f7f68 100644
+--- a/src/xenia/emulator.cc
++++ b/src/xenia/emulator.cc
+@@ -291,8 +291,10 @@ X_STATUS Emulator::Setup(
+     return result;
+   }
+ 
+-  // Add inputSystem to UI
+-  imgui_drawer_->LoadInputSystem(input_system_.get());
++  // Headless bring-up doesn't instantiate an ImGui UI surface.
++  if (imgui_drawer_) {
++    imgui_drawer_->LoadInputSystem(input_system_.get());
++  }
+ 
+   XELOGI("{}: Initializing VFS...", __func__);
+   // Bring up the virtual filesystem used by the kernel.

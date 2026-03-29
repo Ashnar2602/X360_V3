@@ -14,9 +14,11 @@ This document is for a new developer picking up the workspace and needing to und
 
 - active app package: `emu.x360.mobile.dev`
 - active repo root in this workspace: `c:\\Progetti\\Ibrido\\X360_V3\\X360_V3`
-- active date context for this hand-off: March 25, 2026
+- active date context for this hand-off: March 29, 2026
 - current stable player default: `FRAMEBUFFER_POLLING`
 - shared-memory player path still exists, but it is not the current default baseline
+- active Xenia source revision: `553aedebb59340d3106cd979ca7d09cc8e3bd98e`
+- active Xenia patch set: `phase11a-upstreamfirst-v1`
 
 Do not accidentally work on another historical package name. Earlier mistakes came from patching/building the wrong app on device.
 
@@ -47,6 +49,7 @@ Responsibilities:
 - runtime install/refresh
 - launch contracts
 - device logs and diagnostics
+- freeze-lab and debug tooling
 - instrumented tests
 
 Important files/directories to know:
@@ -66,7 +69,7 @@ Responsibilities:
 - directories model
 - metadata models
 - game library models
-- patch DB/content/progression diagnostic models
+- patch DB/content/progression/freeze diagnostic models
 
 ### `native-bridge/`
 
@@ -109,8 +112,53 @@ If you need to understand where the APK assets come from, start here.
 
 - source lock: `fixtures/xenia-runtime/xenia-source-lock.json`
 - official game patch DB lock: `fixtures/xenia-runtime/xenia-game-patches-lock.json`
-- repo-owned Xenia source patches: `third_party/xenia-patches/phase4/`
-- current Xenia patch set: `phase10c-triage-v2`
+- repo-owned Xenia source patches live under `third_party/xenia-patches/<patchSetId>/`
+- current Xenia patch set: `phase11a-upstreamfirst-v1`
+
+### What changed in Phase 11A
+
+The Android/Linux guest was rebased from the older `c50b...` family to the desktop-working Canary family:
+
+- `553aedebb59340d3106cd979ca7d09cc8e3bd98e`
+
+The important design shift is:
+
+- Android platform/runtime differences stay
+- XAM semantics move back to upstream-first by default
+
+In practice:
+
+- `xam_media` is now upstream-first
+- `xam_net` is now upstream-first
+- `apps/xlivebase_app` is now upstream-first
+- `xam_content` keeps only the minimum Android/product delta for:
+  - DLC visibility policy
+  - content-root integration
+  - diagnostics/tracing
+
+This matters because older local XAM behavior was a real source of drift versus the Windows desktop build that already works with Dante.
+
+### Current Phase 11A patch-set composition
+
+The active queue is intentionally split by purpose, even though Git stores it as a flat patch series.
+
+Retained in the active queue:
+
+- Android/headless presentation support
+- `FRAMEBUFFER_POLLING` and `FRAMEBUFFER_SHARED_MEMORY` guest plumbing
+- `android_shared_memory` HID support
+- Linux/posix runtime fixes needed by the Android guest
+- content-tool packaging and runtime integration
+- content-root aliases and title-content support
+- diagnostics-only tracing for progression, freeze lab, VFS, and movie/audio work
+- minimal `X360_MARKETPLACE_CONTENT_POLICY` support
+
+Intentionally not carried forward as default behavior:
+
+- old synthetic offline `xam_net` behavior
+- old synthetic offline `xlivebase` behavior
+- earlier custom `XamContentOpenFile` semantic changes
+- older "just make it continue" XAM/content hacks that were useful for triage but too divergent from desktop parity
 
 ## Runtime payload lifecycle
 
@@ -188,32 +236,54 @@ This is intentional. It avoids redoing a full checkout/setup on every iteration.
 
 ### Good workflow
 
-1. make a small patch change in `third_party/xenia-patches/phase4`
+1. make a small patch change in `third_party/xenia-patches/<patchSetId>`
 2. rebuild Xenia assets if the generator is healthy
 3. otherwise use the existing known-good incremental workspace
 4. verify the rebuilt `xenia_canary`
 5. make sure the APK payload actually packages that binary
 
+### Patch-queue layering rule
+
+When you change Xenia behavior, classify the delta first:
+
+- `Platform-required Android change`
+- `Diagnostics-only`
+- `Behavior change still required`
+- `Hack to delete`
+
+The current Phase 11A queue was built with exactly that rule.
+
+The intended long-term baseline is:
+
+- keep Android-specific presentation/input/runtime deltas
+- keep diagnostics
+- avoid silent behavior drift in XAM unless a regression is proven and documented
+
 ## Known generator pitfall
 
-Fresh `:app:generateDebugXeniaBringupAssets` is not always reliable today.
+Fresh `:app:generateDebugXeniaBringupAssets` is not always "hung" just because it runs a long time.
 
-Observed failure classes include:
+After the Phase 11A rebase, the full guest rebuild can take a long time legitimately. Check what is really happening:
 
-- missing/odd submodule state in a fresh Xenia workspace
-- shader compile failure around `guest_output_ffx_cas_resample.ps.xesl`
+- if WSL still has active `clang++`, `ninja`, or `cmake --build`, the rebuild is still real work
+- if the workspace has already produced:
+  - `xenia-build-result.txt`
+  - `build/bin/Linux/Release/xenia_canary`
+  - `build/bin/Linux/Release/xenia-content-tool`
+  and only wrapper/watchers remain, the guest build is effectively done
 
-This does not mean the repo is broken. It means the current fresh-workspace Xenia path is less reliable than the already-proven incremental workspace path.
+### Current safe validation points
 
-### Current safe workaround
+The generated payload should expose:
 
-When you already have a known-good rebuilt `xenia_canary`:
+- `app/build/generated/xeniaBringupAssets/debug/payload/config/xenia-source-lock.json`
+- `app/build/generated/xeniaBringupAssets/debug/payload/config/xenia-build-metadata.json`
 
-1. inject it into the debug runtime payload
-2. update payload metadata/checksums if needed
-3. rebuild/install the APK without forcing a fresh Xenia generator run
+For the current baseline, expect:
 
-The clean way to do that long-term is `_local/runtime-drop/`.
+- `sourceRevision = 553aedebb59340d3106cd979ca7d09cc8e3bd98e`
+- `patchSetId = phase11a-upstreamfirst-v1`
+- `xenia-canary` SHA-256 `6ae5bc7384ca5b59cac2b03035dcf26b9d3f39e5d6efe788c6795859601a5526`
 
 ## Device workflow
 
@@ -265,7 +335,7 @@ Main places:
 - `PlayerActivity.kt`
 - `PlayerSessionController.kt`
 - `MainActivity.kt`
-- `UserPreferencesStore.kt`
+- `UiModels.kt`
 
 ### Runtime orchestration layer
 
@@ -288,12 +358,12 @@ Main places:
 Look here when:
 
 - the emulator is alive but behavior inside the title is wrong
-- content/profile/XAM/XLive/XNet issues appear
+- content/profile/XAM/media/XLive/XNet issues appear
 - frame export behavior is suspicious
 
 Main places:
 
-- `third_party/xenia-patches/phase4/`
+- `third_party/xenia-patches/<patchSetId>/`
 - guest logs under `files/logs/guest`
 - Xenia source workspace under `app/build/xeniaDevWorkspaces/.../checkout`
 
@@ -318,7 +388,8 @@ Today the stack can:
 - render visible Dante frames on both validated devices
 - accept controller input
 - load the official patch DB
-- create session-scoped progression diagnostics
+- create session-scoped progression diagnostics and freeze-lab evidence bundles
+- package and install the rebased `553...` Xenia guest on both validated devices
 
 ## Current blocker
 
@@ -328,27 +399,29 @@ The rule for future work is:
 
 - do not assume every freeze is graphics
 - do not assume every freeze is guest-side either
-- use the live player diagnostics bundle and logs first
+- use live player diagnostics, freeze-lab bundles, and desktop parity traces first
 
-Recent example:
+Current Phase 11A interpretation:
 
-- a major freeze class turned out to be polling exporter dedupe incorrectly freezing after frame 1
-- that was a display/export problem, not a guest crash
+- old-pin drift and silent XAM semantic divergence are no longer the leading suspects
+- the remaining blocker is likely deeper in loading/cutscene/media or guest-environment parity
 
 ## Known pitfalls
 
 1. Working on the wrong Android package.
 2. Assuming device `filesDir` edits are durable.
 3. Letting Gradle use too much RAM.
-4. Deleting `_tmp*` diagnostics casually.
-5. Making multiple stack-layer changes at once and losing attribution.
+4. Mistaking a real long guest rebuild for a stuck wrapper.
+5. Deleting `_tmp*` diagnostics casually.
+6. Making multiple stack-layer changes at once and losing attribution.
 
 ## Recommended first steps for a new developer
 
 1. Read [README.md](/c:/Progetti/Ibrido/X360_V3/X360_V3/README.md).
 2. Read [docs/bringup-plan.md](/c:/Progetti/Ibrido/X360_V3/X360_V3/docs/bringup-plan.md).
 3. Read [docs/rebuild-action-plan.md](/c:/Progetti/Ibrido/X360_V3/X360_V3/docs/rebuild-action-plan.md).
-4. Build/install with the low-RAM commands.
-5. Verify the installed `xenia-canary` hash on device.
-6. Reproduce on a real device before changing code.
-7. Change one subsystem at a time and re-check `app`, `guest`, and `fex` logs.
+4. Verify `fixtures/xenia-runtime/xenia-source-lock.json` before assuming the active guest revision.
+5. Build/install with the low-RAM commands.
+6. Verify the installed `xenia-canary` hash on device.
+7. Reproduce on a real device before changing code.
+8. Change one subsystem at a time and re-check `app`, `guest`, and `fex` logs.

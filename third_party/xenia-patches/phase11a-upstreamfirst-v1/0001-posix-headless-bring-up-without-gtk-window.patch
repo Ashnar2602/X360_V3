@@ -1,0 +1,291 @@
+diff --git a/src/xenia/app/xenia_main.cc b/src/xenia/app/xenia_main.cc
+index 868c66a50..71e478281 100644
+--- a/src/xenia/app/xenia_main.cc
++++ b/src/xenia/app/xenia_main.cc
+@@ -118,6 +118,7 @@ DEFINE_transient_bool(portable, true,
+ #endif
+ 
+ DECLARE_bool(debug);
++DECLARE_bool(headless);
+ 
+ DEFINE_bool(discord, true, "Enable Discord rich presence", "General");
+ 
+@@ -535,11 +535,16 @@ bool EmulatorApp::OnInitialize() {
+   auto res = xe::gpu::GraphicsSystem::GetInternalDisplayResolution();
+ 
+   // Main emulator display window.
+-  emulator_window_ = EmulatorWindow::Create(emulator_.get(), app_context(),
+-                                            res.first, res.second);
+-  if (!emulator_window_) {
+-    XELOGE("Failed to create the main emulator window");
+-    return false;
++  if (!cvars::headless) {
++    emulator_window_ = EmulatorWindow::Create(emulator_.get(), app_context(),
++                                              res.first, res.second);
++    if (!emulator_window_) {
++      XELOGE("Failed to create the main emulator window");
++      return false;
++    }
++  } else {
++    XELOGI(
++        "Headless mode enabled, skipping platform window creation and presentation");
+   }
+ 
+   // Setup the emulator and run its loop in a separate thread.
+@@ -578,17 +583,30 @@ void EmulatorApp::EmulatorThread() {
+ 
+   // Setup and initialize all subsystems. If we can't do something
+   // (unsupported system, memory issues, etc) this will fail early.
++  xe::ui::Window* display_window =
++      emulator_window_ ? emulator_window_->window() : nullptr;
++  xe::ui::ImGuiDrawer* imgui_drawer =
++      emulator_window_ ? emulator_window_->imgui_drawer() : nullptr;
++  auto input_driver_factory = [this](ui::Window* window) {
++    if (cvars::headless) {
++      return std::vector<std::unique_ptr<hid::InputDriver>>();
++    }
++    return CreateInputDrivers(window);
++  };
+   X_STATUS result = emulator_->Setup(
+-      emulator_window_->window(), emulator_window_->imgui_drawer(), true,
+-      CreateAudioSystem, CreateGraphicsSystem, CreateInputDrivers);
++      display_window, imgui_drawer, true, CreateAudioSystem,
++      CreateGraphicsSystem, input_driver_factory);
+   if (XFAILED(result)) {
+     XELOGE("Failed to setup emulator: {:08X}", result);
+     app_context().RequestDeferredQuit();
+     return;
+   }
+ 
+-  app_context().CallInUIThread(
+-      [this]() { emulator_window_->SetupGraphicsSystemPresenterPainting(); });
++  app_context().CallInUIThread([this]() {
++    if (emulator_window_) {
++      emulator_window_->SetupGraphicsSystemPresenterPainting();
++    }
++  });
+ 
+   const auto fs = emulator_->file_system();
+ 
+@@ -681,7 +699,7 @@ void EmulatorApp::EmulatorThread() {
+ 
+   // Set a debug handler.
+   // This will respond to debugging requests so we can open the debug UI.
+-  if (cvars::debug) {
++  if (cvars::debug && emulator_window_) {
+     emulator_->processor()->set_debug_listener_request_handler(
+         [this](xe::cpu::Processor* processor) {
+           if (debug_window_) {
+@@ -703,19 +721,29 @@ void EmulatorApp::EmulatorThread() {
+       discord::DiscordPresence::PlayingTitle(
+           game_title.empty() ? "Unknown Title" : std::string(game_title));
+     }
+-    app_context().CallInUIThread([this]() { emulator_window_->UpdateTitle(); });
++    app_context().CallInUIThread([this]() {
++      if (emulator_window_) {
++        emulator_window_->UpdateTitle();
++      }
++    });
+     emulator_thread_event_->Set();
+   });
+ 
+   emulator_->on_shader_storage_initialization.AddListener(
+       [this](bool initializing) {
+         app_context().CallInUIThread([this, initializing]() {
+-          emulator_window_->SetInitializingShaderStorage(initializing);
++          if (emulator_window_) {
++            emulator_window_->SetInitializingShaderStorage(initializing);
++          }
+         });
+       });
+ 
+   emulator_->on_patch_apply.AddListener([this]() {
+-    app_context().CallInUIThread([this]() { emulator_window_->UpdateTitle(); });
++    app_context().CallInUIThread([this]() {
++      if (emulator_window_) {
++        emulator_window_->UpdateTitle();
++      }
++    });
+   });
+ 
+   emulator_->on_terminate.AddListener([]() {
+@@ -725,8 +753,11 @@ void EmulatorApp::EmulatorThread() {
+   });
+ 
+   // Enable emulator input now that the emulator is properly loaded.
+-  app_context().CallInUIThread(
+-      [this]() { emulator_window_->OnEmulatorInitialized(); });
++  app_context().CallInUIThread([this]() {
++    if (emulator_window_) {
++      emulator_window_->OnEmulatorInitialized();
++    }
++  });
+ 
+   // Grab path from the flag or unnamed argument.
+   std::filesystem::path path;
+@@ -738,10 +769,16 @@ void EmulatorApp::EmulatorThread() {
+     // Normalize the path and make absolute.
+     auto abs_path = std::filesystem::absolute(path);
+ 
+-    result = app_context().CallInUIThread(
+-        [this, abs_path]() { return emulator_window_->RunTitle(abs_path); });
++    if (emulator_window_) {
++      result = app_context().CallInUIThread(
++          [this, abs_path]() { return emulator_window_->RunTitle(abs_path); });
++    } else {
++      result = emulator_->LaunchPath(abs_path);
++    }
+     if (XFAILED(result)) {
+-      xe::FatalError(fmt::format("Failed to launch target: {:08X}", result));
++      xe::FatalError(fmt::format(
++          "Failed to launch target in {} mode: {:08X}",
++          cvars::headless ? "headless" : "windowed", result));
+       app_context().RequestDeferredQuit();
+       return;
+     }
+@@ -755,9 +792,12 @@ void EmulatorApp::EmulatorThread() {
+ 
+     if (xam->loader_data().launch_data_present) {
+       const std::filesystem::path host_path = xam->loader_data().host_path;
+-      app_context().CallInUIThread([this, host_path]() {
+-        return emulator_window_->RunTitle(host_path);
+-      });
++      if (emulator_window_) {
++        app_context().CallInUIThread(
++            [this, host_path]() { return emulator_window_->RunTitle(host_path); });
++      } else {
++        emulator_->LaunchPath(host_path);
++      }
+     }
+   }
+ 
+ diff --git a/src/xenia/ui/windowed_app_main_posix.cc b/src/xenia/ui/windowed_app_main_posix.cc
+index ed3ecd23b..2460f8be1 100644
+--- a/src/xenia/ui/windowed_app_main_posix.cc
++++ b/src/xenia/ui/windowed_app_main_posix.cc
+@@ -7,16 +7,80 @@
+  ******************************************************************************
+  */
+ 
++#include <chrono>
++#include <condition_variable>
+ #include <gtk/gtk.h>
++#include <mutex>
+ #include <cstdio>
+ #include <cstdlib>
++#include <string_view>
+ 
+ #include "xenia/base/cvar.h"
+ #include "xenia/base/logging.h"
+ #include "xenia/ui/windowed_app.h"
+ #include "xenia/ui/windowed_app_context_gtk.h"
+ 
++namespace {
++
++bool IsTruthyHeadlessValue(std::string_view value) {
++  return value.empty() || value == "1" || value == "true" || value == "TRUE" ||
++         value == "yes" || value == "YES";
++}
++
++bool HasHeadlessLaunchArgument(int argc, char** argv) {
++  for (int i = 1; i < argc; ++i) {
++    std::string_view argument(argv[i]);
++    if (argument == "--headless") {
++      return true;
++    }
++    constexpr std::string_view prefix = "--headless=";
++    if (argument.substr(0, prefix.size()) == prefix) {
++      return IsTruthyHeadlessValue(argument.substr(prefix.size()));
++    }
++  }
++  return false;
++}
++
++class HeadlessWindowedAppContext final : public xe::ui::WindowedAppContext {
++ public:
++  void RunMainLoop() {
++    while (!HasQuitFromUIThread()) {
++      ExecutePendingFunctionsFromUIThread();
++      if (HasQuitFromUIThread()) {
++        break;
++      }
++      std::unique_lock<std::mutex> lock(loop_mutex_);
++      if (!pending_functions_notified_) {
++        loop_condition_.wait_for(lock, std::chrono::milliseconds(16));
++      }
++      pending_functions_notified_ = false;
++    }
++  }
++
++ protected:
++  void NotifyUILoopOfPendingFunctions() override {
++    std::lock_guard<std::mutex> lock(loop_mutex_);
++    pending_functions_notified_ = true;
++    loop_condition_.notify_one();
++  }
++
++  void PlatformQuitFromUIThread() override {
++    std::lock_guard<std::mutex> lock(loop_mutex_);
++    pending_functions_notified_ = true;
++    loop_condition_.notify_one();
++  }
++
++ private:
++  std::condition_variable loop_condition_;
++  std::mutex loop_mutex_;
++  bool pending_functions_notified_ = false;
++};
++
++}  // namespace
++
+ int main(int argc_pre_gtk, char** argv_pre_gtk) {
++  const bool headless_launch =
++      HasHeadlessLaunchArgument(argc_pre_gtk, argv_pre_gtk);
+   // Before touching anything GTK+, make sure that when running on Wayland,
+   // we'll still get an X11 (Xwayland) window
+   // also allow users to override this
+@@ -32,15 +96,39 @@ int main(int argc_pre_gtk, char** argv_pre_gtk) {
+   // (the config).
+   int argc_post_gtk = argc_pre_gtk;
+   char** argv_post_gtk = argv_pre_gtk;
+-  if (!gtk_init_check(&argc_post_gtk, &argv_post_gtk)) {
+-    // Logging has not been initialized yet.
+-    std::fputs("Failed to initialize GTK+\n", stderr);
+-    return EXIT_FAILURE;
++  if (!headless_launch) {
++    if (!gtk_init_check(&argc_post_gtk, &argv_post_gtk)) {
++      // Logging has not been initialized yet.
++      std::fputs("Failed to initialize GTK+\n", stderr);
++      return EXIT_FAILURE;
++    }
+   }
+ 
+   int result;
+ 
+-  {
++  if (headless_launch) {
++    HeadlessWindowedAppContext app_context;
++
++    std::unique_ptr<xe::ui::WindowedApp> app =
++        xe::ui::GetWindowedAppCreator()(app_context);
++
++    cvar::ParseLaunchArguments(argc_post_gtk, argv_post_gtk,
++                               app->GetPositionalOptionsUsage(),
++                               app->GetPositionalOptions());
++
++    // Initialize logging. Needs parsed cvars.
++    xe::InitializeLogging(app->GetName());
++    XELOGI("Using headless POSIX app context; GTK initialization skipped");
++
++    if (app->OnInitialize()) {
++      app_context.RunMainLoop();
++      result = EXIT_SUCCESS;
++    } else {
++      result = EXIT_FAILURE;
++    }
++
++    app->InvokeOnDestroy();
++  } else {
+     xe::ui::GTKWindowedAppContext app_context;
+ 
+     std::unique_ptr<xe::ui::WindowedApp> app =

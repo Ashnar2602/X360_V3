@@ -21,6 +21,11 @@ class ProgressionDiagnosticsModelsTest {
             lastXamCallResult = "XamContentOpenFile root=game path=default.xex",
             lastXliveCallResult = "Unimplemented XLIVEBASE message 0005000E",
             lastXnetCallResult = "XNetLogonGetTitleID offline stub success",
+            lastThreadSnapshotHeader = "X360_THREAD_SNAPSHOT reason=OpenContent trigger_tid=00000001 count=2",
+            lastThreadSnapshotLines = listOf(
+                "X360_THREAD tid=00000001 handle=F8000004 state=running",
+                "X360_THREAD tid=00000002 handle=F8000008 state=waiting",
+            ),
             appLogPath = "/data/user/0/emu.x360.mobile.dev/files/logs/app/session.app.log",
             fexLogPath = "/data/user/0/emu.x360.mobile.dev/files/logs/fex/session.fex.log",
             guestLogPath = "/data/user/0/emu.x360.mobile.dev/files/logs/guest/session.guest.log",
@@ -28,6 +33,7 @@ class ProgressionDiagnosticsModelsTest {
                 entryId = "dante",
                 entryDisplayName = "Dante's Inferno.iso",
                 guestTitlePath = "/mnt/library/dante.iso",
+                freezeLabSource = "xenia-real-title",
                 presentationBackend = "framebuffer_shared_memory",
                 guestRenderScaleProfile = "one",
                 internalDisplayResolution = "1280x720",
@@ -36,6 +42,7 @@ class ProgressionDiagnosticsModelsTest {
                 mesaBranch = "mesa26",
                 mesaReason = "auto-adreno830-baseline",
                 diagnosticProfile = "default",
+                dlcPolicy = "disabled",
                 args = listOf("--gpu=vulkan", "--headless=true"),
                 environmentSummary = mapOf("X360_FRAME_TRANSPORT_PATH" to "/tmp/x360-v3/xenia/presentation/session/frame-transport.bin"),
             ),
@@ -59,6 +66,7 @@ class ProgressionDiagnosticsModelsTest {
                     packageSignature = "LIVE",
                 ),
             ),
+            installedMarketplaceContentCount = 1,
             patchState = PlayerSessionPatchState(
                 databasePresent = true,
                 revision = "4814fb128ae2ed060569840708196542823547de",
@@ -83,11 +91,25 @@ class ProgressionDiagnosticsModelsTest {
                 guestSwapFps = 44.0f,
                 captureFps = 43.8f,
                 transportPublishFps = 43.7f,
+                transportChangeFps = 43.5f,
                 decodeFps = 43.7f,
                 visiblePresentFps = 43.6f,
+                visibleChangeFps = 43.4f,
                 visibleFps = 43.6f,
+                screenChangeFps = 43.3f,
                 transportFrameHash = "a1b2c3d4",
+                transportFramePerceptualHash = "aaaabbbb",
                 visibleFrameHash = "deadbeef",
+                visibleFramePerceptualHash = "ccccdddd",
+                screenFrameHash = "feedface",
+                screenFramePerceptualHash = "eeeeffff",
+                screenBlackRatio = 0.02f,
+                screenAverageLuma = 83.5f,
+                presenterSubmittedAtEpochMillis = 1_742_891_000_123L,
+                uiLongFrameCount = 1L,
+                uiLongestFrameMillis = 712L,
+                lastLifecycleEvent = "activity-onResume",
+                lastSurfaceEvent = "polling-frame-submitted",
             ),
             input = PlayerSessionInputSnapshot(
                 controllerConnected = true,
@@ -120,5 +142,9 @@ class ProgressionDiagnosticsModelsTest {
         assertThat(decoded.patchState.titleMatchState).isEqualTo("matching-patch-candidate")
         assertThat(decoded.presentation.transportFrameHash).isEqualTo("a1b2c3d4")
         assertThat(decoded.input.controllerName).isEqualTo("Xbox Wireless Controller")
+        assertThat(decoded.launchSummary.dlcPolicy).isEqualTo("disabled")
+        assertThat(decoded.installedMarketplaceContentCount).isEqualTo(1)
+        assertThat(decoded.lastThreadSnapshotHeader).contains("X360_THREAD_SNAPSHOT")
+        assertThat(decoded.lastThreadSnapshotLines).hasSize(2)
     }
 }

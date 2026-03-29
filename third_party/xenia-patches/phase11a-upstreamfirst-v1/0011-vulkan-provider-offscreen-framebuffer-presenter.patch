@@ -1,0 +1,50 @@
+diff --git a/src/xenia/ui/vulkan/vulkan_provider.cc b/src/xenia/ui/vulkan/vulkan_provider.cc
+index 41fa12fb..128ad177 100644
+--- a/src/xenia/ui/vulkan/vulkan_provider.cc
++++ b/src/xenia/ui/vulkan/vulkan_provider.cc
+@@ -28,6 +28,9 @@ DEFINE_int32(vulkan_device, -1,
+              "compatible device.",
+              "Vulkan");
+ 
++DECLARE_bool(headless);
++DECLARE_string(x360_presentation_backend);
++
+ namespace xe {
+ namespace ui {
+ namespace vulkan {
+@@ -35,9 +38,17 @@ namespace vulkan {
+ std::unique_ptr<VulkanProvider> VulkanProvider::Create(
+     const bool with_gpu_emulation, const bool with_presentation) {
+   std::unique_ptr<VulkanProvider> provider(new VulkanProvider());
++  const bool with_surface_presentation =
++      with_presentation &&
++      !(cvars::headless &&
++        (cvars::x360_presentation_backend == "framebuffer_polling" ||
++         cvars::x360_presentation_backend == "framebuffer_shared_memory"));
++  if (with_presentation && !with_surface_presentation) {
++    XELOGI("VulkanProvider: using offscreen presenter path without surface support");
++  }
+ 
+   provider->vulkan_instance_ =
+-      VulkanInstance::Create(with_presentation, cvars::vulkan_validation);
++      VulkanInstance::Create(with_surface_presentation, cvars::vulkan_validation);
+   if (!provider->vulkan_instance_) {
+     return nullptr;
+   }
+@@ -72,14 +83,14 @@ std::unique_ptr<VulkanProvider> VulkanProvider::Create(
+     provider->vulkan_device_ = VulkanDevice::CreateIfSupported(
+         provider->vulkan_instance_.get(),
+         physical_devices[preferred_physical_device_index], with_gpu_emulation,
+-        with_presentation);
++        with_surface_presentation);
+   }
+ 
+   if (!provider->vulkan_device_) {
+     for (const VkPhysicalDevice physical_device : physical_devices) {
+       provider->vulkan_device_ = VulkanDevice::CreateIfSupported(
+           provider->vulkan_instance_.get(), physical_device, with_gpu_emulation,
+-          with_presentation);
++          with_surface_presentation);
+       if (provider->vulkan_device_) {
+         break;
+       }

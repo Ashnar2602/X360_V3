@@ -1,0 +1,696 @@
+diff --git a/src/xenia/kernel/xthread.cc b/src/xenia/kernel/xthread.cc
+index 4db3f88..3ba2559 100644
+--- a/src/xenia/kernel/xthread.cc
++++ b/src/xenia/kernel/xthread.cc
+@@ -101,6 +101,21 @@ uint32_t QueryGuestPc(XThread* thread) {
+   return debug_info->frames.front().guest_pc;
+ }
+ 
++std::string QueryGuestSymbolName(XThread* thread, uint32_t address) {
++  if (!thread || !address) {
++    return std::string();
++  }
++  auto* processor = thread->kernel_state()->processor();
++  if (!processor) {
++    return std::string();
++  }
++  auto* function = processor->LookupFunction(address);
++  if (!function) {
++    return std::string();
++  }
++  return function->name();
++}
++
+ void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
+                                      const char* reason) {
+   if (!ShouldEmitThreadSnapshot()) {
+@@ -116,12 +131,18 @@ void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
+     auto* context = thread->thread_state() ? thread->thread_state()->context()
+                                            : nullptr;
+     const uint32_t guest_pc = QueryGuestPc(thread.get());
++    const std::string start_symbol =
++        QueryGuestSymbolName(thread.get(), thread->start_address());
++    const std::string pc_symbol = QueryGuestSymbolName(thread.get(), guest_pc);
++    const std::string lr_symbol = QueryGuestSymbolName(
++        thread.get(), context ? static_cast<uint32_t>(context->lr) : 0u);
+     const std::string& thread_name = thread->thread_name();
+     XELOGW(
+         "X360_THREAD tid={:08X} handle={:08X} state={} suspend={} main={} "
+         "guest={} cpu={} start={:08X} pc={:08X} lr={:08X} r1={:08X} "
+         "wait_result={:08X} wait_status={:08X} wait_type={:04X} "
+-        "wait_obj={:08X} alertable={} terminated={} last_error={:08X} name={}",
++        "wait_obj={:08X} alertable={} terminated={} last_error={:08X} "
++        "start_symbol={} pc_symbol={} lr_symbol={} name={}",
+         thread->thread_id(), thread->handle(),
+         ThreadStateName(kthread ? kthread->thread_state : KTHREAD_STATE_UNKNOWN),
+         kthread ? static_cast<uint32_t>(kthread->suspend_count) : 0u,
+@@ -136,7 +157,7 @@ void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
+         kthread ? static_cast<uint32_t>(kthread->wait_timeout_block.object.m_ptr) : 0u,
+         kthread ? static_cast<uint32_t>(kthread->alertable) : 0u,
+         kthread ? static_cast<uint32_t>(kthread->terminated) : 0u,
+-        thread->last_error(),
++        thread->last_error(), start_symbol, pc_symbol, lr_symbol,
+         thread_name.empty() ? "<unnamed>" : thread_name);
+   }
+ }
+diff --git a/src/xenia/kernel/xam/content_manager.cc b/src/xenia/kernel/xam/content_manager.cc
+index 103fb04..a91e786 100644
+--- a/src/xenia/kernel/xam/content_manager.cc
++++ b/src/xenia/kernel/xam/content_manager.cc
+@@ -93,6 +93,21 @@ uint32_t QueryGuestPc(KernelState* kernel_state, XThread* thread) {
+   return debug_info->frames.front().guest_pc;
+ }
+ 
++std::string QueryGuestSymbolName(KernelState* kernel_state, uint32_t address) {
++  if (!kernel_state || !address) {
++    return std::string();
++  }
++  auto* processor = kernel_state->processor();
++  if (!processor) {
++    return std::string();
++  }
++  auto* function = processor->LookupFunction(address);
++  if (!function) {
++    return std::string();
++  }
++  return function->name();
++}
++
+ void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
+                                      const char* reason) {
+   if (!ShouldEmitThreadSnapshot()) {
+@@ -108,12 +123,19 @@ void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
+     auto* context = thread->thread_state() ? thread->thread_state()->context()
+                                            : nullptr;
+     const uint32_t guest_pc = QueryGuestPc(kernel_state, thread.get());
++    const std::string start_symbol =
++        QueryGuestSymbolName(kernel_state, thread->start_address());
++    const std::string pc_symbol =
++        QueryGuestSymbolName(kernel_state, guest_pc);
++    const std::string lr_symbol = QueryGuestSymbolName(
++        kernel_state, context ? static_cast<uint32_t>(context->lr) : 0u);
+     const std::string& thread_name = thread->thread_name();
+     XELOGW(
+         "X360_THREAD tid={:08X} handle={:08X} state={} suspend={} main={} "
+         "guest={} cpu={} start={:08X} pc={:08X} lr={:08X} r1={:08X} "
+         "wait_result={:08X} wait_status={:08X} wait_type={:04X} "
+-        "wait_obj={:08X} alertable={} terminated={} last_error={:08X} name={}",
++        "wait_obj={:08X} alertable={} terminated={} last_error={:08X} "
++        "start_symbol={} pc_symbol={} lr_symbol={} name={}",
+         thread->thread_id(), thread->handle(),
+         ThreadStateName(kthread ? kthread->thread_state : KTHREAD_STATE_UNKNOWN),
+         kthread ? static_cast<uint32_t>(kthread->suspend_count) : 0u,
+@@ -128,7 +150,7 @@ void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
+         kthread ? static_cast<uint32_t>(kthread->wait_timeout_block.object.m_ptr) : 0u,
+         kthread ? static_cast<uint32_t>(kthread->alertable) : 0u,
+         kthread ? static_cast<uint32_t>(kthread->terminated) : 0u,
+-        thread->last_error(),
++        thread->last_error(), start_symbol, pc_symbol, lr_symbol,
+         thread_name.empty() ? "<unnamed>" : thread_name);
+   }
+ }
+diff --git a/src/xenia/kernel/xam/xam_content.cc b/src/xenia/kernel/xam/xam_content.cc
+index 1575f82..a745040 100644
+--- a/src/xenia/kernel/xam/xam_content.cc
++++ b/src/xenia/kernel/xam/xam_content.cc
+@@ -99,6 +99,21 @@ uint32_t QueryGuestPc(KernelState* kernel_state, XThread* thread) {
+   return debug_info->frames.front().guest_pc;
+ }
+ 
++std::string QueryGuestSymbolName(KernelState* kernel_state, uint32_t address) {
++  if (!kernel_state || !address) {
++    return std::string();
++  }
++  auto* processor = kernel_state->processor();
++  if (!processor) {
++    return std::string();
++  }
++  auto* function = processor->LookupFunction(address);
++  if (!function) {
++    return std::string();
++  }
++  return function->name();
++}
++
+ void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
+                                      const char* reason) {
+   if (!ShouldEmitThreadSnapshot()) {
+@@ -114,12 +129,19 @@ void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
+     auto* context = thread->thread_state() ? thread->thread_state()->context()
+                                            : nullptr;
+     const uint32_t guest_pc = QueryGuestPc(kernel_state, thread.get());
++    const std::string start_symbol =
++        QueryGuestSymbolName(kernel_state, thread->start_address());
++    const std::string pc_symbol =
++        QueryGuestSymbolName(kernel_state, guest_pc);
++    const std::string lr_symbol = QueryGuestSymbolName(
++        kernel_state, context ? static_cast<uint32_t>(context->lr) : 0u);
+     const std::string& thread_name = thread->thread_name();
+     XELOGW(
+         "X360_THREAD tid={:08X} handle={:08X} state={} suspend={} main={} "
+         "guest={} cpu={} start={:08X} pc={:08X} lr={:08X} r1={:08X} "
+         "wait_result={:08X} wait_status={:08X} wait_type={:04X} "
+-        "wait_obj={:08X} alertable={} terminated={} last_error={:08X} name={}",
++        "wait_obj={:08X} alertable={} terminated={} last_error={:08X} "
++        "start_symbol={} pc_symbol={} lr_symbol={} name={}",
+         thread->thread_id(), thread->handle(),
+         ThreadStateName(kthread ? kthread->thread_state : KTHREAD_STATE_UNKNOWN),
+         kthread ? static_cast<uint32_t>(kthread->suspend_count) : 0u,
+@@ -134,7 +156,7 @@ void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
+         kthread ? static_cast<uint32_t>(kthread->wait_timeout_block.object.m_ptr) : 0u,
+         kthread ? static_cast<uint32_t>(kthread->alertable) : 0u,
+         kthread ? static_cast<uint32_t>(kthread->terminated) : 0u,
+-        thread->last_error(),
++        thread->last_error(), start_symbol, pc_symbol, lr_symbol,
+         thread_name.empty() ? "<unnamed>" : thread_name);
+   }
+ }
+diff --git a/src/xenia/vfs/virtual_file_system.cc b/src/xenia/vfs/virtual_file_system.cc
+index 01ca0dd..cf93722 100644
+--- a/src/xenia/vfs/virtual_file_system.cc
++++ b/src/xenia/vfs/virtual_file_system.cc
+@@ -11,6 +11,9 @@
+ #include "xenia/kernel/xam/content_manager.h"
+ #include "xenia/vfs/devices/xcontent_container_device.h"
+ 
++#include <algorithm>
++#include <cctype>
++
+ #include "devices/host_path_entry.h"
+ #include "xenia/base/literals.h"
+ #include "xenia/base/logging.h"
+@@ -22,6 +25,38 @@ namespace vfs {
+ 
+ using namespace xe::literals;
+ 
++namespace {
++
++bool IsRootProbePath(const std::string_view path) {
++  return path.empty() || path == "/" || path == "\\";
++}
++
++std::string ToLowerCopy(const std::string_view path) {
++  std::string lowered(path);
++  std::transform(lowered.begin(), lowered.end(), lowered.begin(),
++                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++  return lowered;
++}
++
++bool ShouldTraceVfsPath(const std::string_view path) {
++  if (IsRootProbePath(path)) {
++    return true;
++  }
++  const auto lowered = ToLowerCopy(path);
++  return lowered.find("game:") != std::string::npos ||
++         lowered.find("content") != std::string::npos ||
++         lowered.find("movie") != std::string::npos ||
++         lowered.find("video") != std::string::npos ||
++         lowered.find(".wmv") != std::string::npos ||
++         lowered.find(".bik") != std::string::npos ||
++         lowered.find(".xma") != std::string::npos ||
++         lowered.find(".wav") != std::string::npos ||
++         lowered.find(".wma") != std::string::npos ||
++         lowered.find(".mp3") != std::string::npos;
++}
++
++}  // namespace
++
+ VirtualFileSystem::VirtualFileSystem() {}
+ 
+ VirtualFileSystem::~VirtualFileSystem() {
+@@ -148,13 +183,30 @@ Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
+     // not an actual problem nor something we care about.
+     if (path != "ShaderDumpxe:\\CompareBackEnds") {
+       XELOGE("ResolvePath({}) failed - device not found", path);
++      if (ShouldTraceVfsPath(path) || ShouldTraceVfsPath(normalized_path)) {
++        XELOGI(
++            "X360_VFS_RESOLVE raw={} normalized={} mount=<none> relative=<none> "
++            "kind={} result=device-not-found",
++            path, normalized_path,
++            IsRootProbePath(normalized_path) ? "root-probe" : "path");
++      }
+     }
+     return nullptr;
+   }
+ 
+   const auto& device = *it;
+   auto relative_path = normalized_path.substr(device->mount_path().size());
+-  return device->ResolvePath(relative_path);
++  auto entry = device->ResolvePath(relative_path);
++  if (ShouldTraceVfsPath(path) || ShouldTraceVfsPath(normalized_path) ||
++      ShouldTraceVfsPath(relative_path)) {
++    XELOGI(
++        "{} raw={} normalized={} mount={} relative={} result={}",
++        IsRootProbePath(relative_path) ? "X360_VFS_ROOT_PROBE"
++                                       : "X360_VFS_RESOLVE",
++        path, normalized_path, device->mount_path(), relative_path,
++        entry ? "resolved" : "not-found");
++  }
++  return entry;
+ }
+ 
+ Entry* VirtualFileSystem::CreatePath(const std::string_view path,
+diff --git a/src/xenia/kernel/xboxkrnl/xboxkrnl_io.cc b/src/xenia/kernel/xboxkrnl/xboxkrnl_io.cc
+index bed9436..d927ebd 100644
+--- a/src/xenia/kernel/xboxkrnl/xboxkrnl_io.cc
++++ b/src/xenia/kernel/xboxkrnl/xboxkrnl_io.cc
+@@ -7,7 +7,12 @@
+  ******************************************************************************
+  */
+ 
++#include <algorithm>
++#include <cctype>
++
++#include "third_party/fmt/include/fmt/format.h"
+ #include "xenia/base/logging.h"
++#include "xenia/cpu/thread_state.h"
+ #include "xenia/kernel/info/file.h"
+ #include "xenia/kernel/kernel_state.h"
+ #include "xenia/kernel/util/shim_utils.h"
+@@ -24,6 +29,55 @@ namespace xe {
+ namespace kernel {
+ namespace xboxkrnl {
+ 
++namespace {
++
++uint32_t CurrentGuestThreadId() { return cpu::ThreadState::GetThreadID(); }
++
++bool IsRootProbePath(const std::string_view path) {
++  return path.empty() || path == "/" || path == "\\";
++}
++
++std::string ToLowerCopy(const std::string_view path) {
++  std::string lowered(path);
++  std::transform(lowered.begin(), lowered.end(), lowered.begin(),
++                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++  return lowered;
++}
++
++bool ShouldTraceIoPath(const std::string_view path) {
++  if (IsRootProbePath(path)) {
++    return true;
++  }
++  const auto lowered = ToLowerCopy(path);
++  return lowered.find("game:") != std::string::npos ||
++         lowered.find("content") != std::string::npos ||
++         lowered.find("movie") != std::string::npos ||
++         lowered.find("video") != std::string::npos ||
++         lowered.find(".wmv") != std::string::npos ||
++         lowered.find(".bik") != std::string::npos ||
++         lowered.find(".xma") != std::string::npos ||
++         lowered.find(".wav") != std::string::npos ||
++         lowered.find(".wma") != std::string::npos ||
++         lowered.find(".mp3") != std::string::npos;
++}
++
++void LogIoTrace(const char* api, const std::string& path, X_STATUS result,
++                const std::string& detail) {
++  if (!ShouldTraceIoPath(path) && XSUCCEEDED(result)) {
++    return;
++  }
++  XELOGI("X360_IO_TRACE api={} tid={:08X} kind={} path={} result={:08X} {}",
++         api, CurrentGuestThreadId(),
++         IsRootProbePath(path) ? "root-probe" : "path", path,
++         static_cast<uint32_t>(result), detail);
++  if (XFAILED(result) && ShouldTraceIoPath(path)) {
++    XELOGW("X360_IO_FILE_MISS api={} tid={:08X} path={} result={:08X}", api,
++           CurrentGuestThreadId(), path, static_cast<uint32_t>(result));
++  }
++}
++
++}  // namespace
++
+ struct CreateOptions {
+   // https://processhacker.sourceforge.io/doc/ntioapi_8h.html
+   static constexpr uint32_t FILE_DIRECTORY_FILE = 0x00000001;
+@@ -106,6 +160,14 @@ dword_result_t NtCreateFile_entry(lpdword_t handle_out, dword_t desired_access,
+   }
+ 
+   *handle_out = handle;
++  LogIoTrace(
++      "NtCreateFile", target_path, result,
++      fmt::format("root={:08X} handle={:08X} disposition={:08X} options={:08X} action={:08X}",
++                  static_cast<uint32_t>(object_attrs->root_directory),
++                  static_cast<uint32_t>(handle),
++                  static_cast<uint32_t>(creation_disposition),
++                  static_cast<uint32_t>(create_options),
++                  static_cast<uint32_t>(file_action)));
+ 
+   return result;
+ }
+@@ -506,9 +568,13 @@ dword_result_t NtQueryFullAttributesFile_entry(
+     file_info->end_of_file = entry->size();
+     file_info->attributes = entry->attributes();
+ 
++    LogIoTrace("NtQueryFullAttributesFile", target_path, X_STATUS_SUCCESS,
++               "resolved=1");
+     return X_STATUS_SUCCESS;
+   }
+ 
++  LogIoTrace("NtQueryFullAttributesFile", target_path, X_STATUS_NO_SUCH_FILE,
++             "resolved=0");
+   return X_STATUS_NO_SUCH_FILE;
+ }
+ DECLARE_XBOXKRNL_EXPORT1(NtQueryFullAttributesFile, kFileSystem, kImplemented);
+@@ -553,6 +619,12 @@ dword_result_t NtQueryDirectoryFile_entry(
+     io_status_block->information = info;
+   }
+ 
++  LogIoTrace(
++      "NtQueryDirectoryFile", name, result,
++      fmt::format("handle={:08X} restart={} length={:08X}",
++                  static_cast<uint32_t>(file_handle),
++                  restart_scan != 0 ? 1u : 0u, static_cast<uint32_t>(length)));
++
+   return result;
+ }
+ DECLARE_XBOXKRNL_EXPORT1(NtQueryDirectoryFile, kFileSystem, kImplemented);
+diff --git a/src/xenia/apu/audio_system.cc b/src/xenia/apu/audio_system.cc
+index e5c4fd3..a8cfb2c 100644
+--- a/src/xenia/apu/audio_system.cc
++++ b/src/xenia/apu/audio_system.cc
+@@ -7,6 +7,9 @@
+  ******************************************************************************
+  */
+ 
++#include <atomic>
++#include <cstring>
++
+ #include "xenia/apu/audio_system.h"
+ 
+ #include "xenia/apu/apu_flags.h"
+@@ -14,6 +17,8 @@
+ #include "xenia/apu/xma_decoder.h"
+ #include "xenia/base/assert.h"
+ #include "xenia/base/byte_stream.h"
++#include "xenia/base/clock.h"
++#include "xenia/base/cvar.h"
+ #include "xenia/base/logging.h"
+ #include "xenia/base/math.h"
+ #include "xenia/base/profiling.h"
+@@ -41,10 +46,41 @@ DEFINE_uint32(apu_max_queued_frames, 8,
+               "Value range: [4-64]",
+               "APU");
+ UPDATE_from_uint32(apu_max_queued_frames, 2024, 8, 31, 20, 64);
++DECLARE_bool(use_dedicated_xma_thread);
++DECLARE_string(xma_decoder);
+ 
+ namespace xe {
+ namespace apu {
+ 
++namespace {
++
++void TraceAudioClientEvent(const char* action, size_t index, uint32_t callback,
++                           uint32_t callback_arg) {
++  static std::atomic<uint64_t> last_register_tick{0};
++  static std::atomic<uint32_t> register_burst_count{0};
++
++  uint32_t burst = 0;
++  if (std::strcmp(action, "register") == 0) {
++    const uint64_t now = Clock::QueryHostTickCount();
++    const uint64_t window = Clock::QueryHostTickFrequency() * 2;
++    const uint64_t last = last_register_tick.exchange(now);
++    burst = 1;
++    if (last != 0 && now > last && now - last <= window) {
++      burst = register_burst_count.fetch_add(1) + 1;
++    } else {
++      register_burst_count.store(1);
++    }
++  }
++
++  XELOGW(
++      "X360_AUDIO_CLIENT_EVENT action={} tid={:08X} index={} callback={:08X} "
++      "arg={:08X} burst={}",
++      action, cpu::ThreadState::GetThreadID(), static_cast<uint32_t>(index),
++      callback, callback_arg, burst);
++}
++
++}  // namespace
++
+ AudioSystem::AudioSystem(cpu::Processor* processor)
+     : memory_(processor->memory()),
+       processor_(processor),
+@@ -79,6 +115,10 @@ X_STATUS AudioSystem::Setup(kernel::KernelState* kernel_state) {
+   if (result) {
+     return result;
+   }
++  XELOGI(
++      "X360_AUDIO_SYSTEM_SETUP xma_decoder={} dedicated_thread={} mute={}",
++      cvars::xma_decoder, cvars::use_dedicated_xma_thread ? 1 : 0,
++      cvars::mute ? 1 : 0);
+ 
+   worker_running_ = true;
+   worker_thread_ =
+@@ -215,6 +255,7 @@ X_STATUS AudioSystem::RegisterClient(uint32_t callback, uint32_t callback_arg,
+   if (XFAILED(result)) {
+     XELOGE("AudioSystem::RegisterClient: CreateDriver failed for index={}",
+            index);
++    TraceAudioClientEvent("register-failed", index, callback, callback_arg);
+     return result;
+   }
+   assert_not_null(driver);
+@@ -228,6 +269,7 @@ X_STATUS AudioSystem::RegisterClient(uint32_t callback, uint32_t callback_arg,
+   clients_[index] = {driver, callback, callback_arg, ptr, true};
+   XELOGI("AudioSystem::RegisterClient: client {} registered successfully",
+          index);
++  TraceAudioClientEvent("register", index, callback, callback_arg);
+ 
+   if (out_index) {
+     *out_index = index;
+@@ -258,9 +300,12 @@ void AudioSystem::UnregisterClient(size_t index) {
+ 
+   auto global_lock = global_critical_region_.Acquire();
+   assert_true(index < kMaximumClientCount);
++  const uint32_t callback = clients_[index].callback;
++  const uint32_t callback_arg = clients_[index].callback_arg;
+   DestroyDriver(clients_[index].driver);
+   memory()->SystemHeapFree(clients_[index].wrapped_callback_arg);
+   clients_[index] = {0};
++  TraceAudioClientEvent("unregister", index, callback, callback_arg);
+ 
+   // Drain the semaphore of its count.
+   auto client_semaphore = client_semaphores_[index].get();
+diff --git a/src/xenia/apu/audio_media_player.cc b/src/xenia/apu/audio_media_player.cc
+index f8451c0..02c5fb9 100644
+--- a/src/xenia/apu/audio_media_player.cc
++++ b/src/xenia/apu/audio_media_player.cc
+@@ -8,6 +8,8 @@
+  */
+ 
+ #include "xenia/apu/audio_media_player.h"
++
++#include "third_party/fmt/include/fmt/format.h"
+ #include "xenia/apu/audio_driver.h"
+ #include "xenia/apu/audio_system.h"
+ #include "xenia/apu/xma_context.h"
+@@ -33,6 +35,34 @@ DEFINE_int32(xmp_default_volume, 70,
+ namespace xe {
+ namespace apu {
+ 
++namespace {
++
++const char* XmpStateName(XmpApp::State state) {
++  switch (state) {
++    case XmpApp::State::kIdle:
++      return "idle";
++    case XmpApp::State::kPlaying:
++      return "playing";
++    case XmpApp::State::kPaused:
++      return "paused";
++    default:
++      return "unknown";
++  }
++}
++
++void LogMovieAudioState(const char* event, XmpApp::State state,
++                        const std::string& detail = std::string()) {
++  if (detail.empty()) {
++    XELOGI("X360_MOVIE_AUDIO_STATE event={} state={}", event,
++           XmpStateName(state));
++  } else {
++    XELOGI("X360_MOVIE_AUDIO_STATE event={} state={} {}", event,
++           XmpStateName(state), detail);
++  }
++}
++
++}  // namespace
++
+ int32_t InitializeAndOpenAvCodec(std::span<uint8_t> song_data,
+                                  AVFormatContext*& format_context,
+                                  AVCodecContext*& av_context) {
+@@ -173,6 +203,7 @@ void AudioMediaPlayer::WorkerThreadMain() {
+ 
+ void AudioMediaPlayer::Setup() {
+   if (!cvars::enable_xmp) {
++    LogMovieAudioState("setup-disabled", state_);
+     return;
+   }
+ 
+@@ -182,6 +213,7 @@ void AudioMediaPlayer::Setup() {
+   worker_running_ = true;
+   worker_thread_ = threading::Thread::Create({}, [&] { WorkerThreadMain(); });
+   worker_thread_->set_name("Audio Media Player");
++  LogMovieAudioState("setup", state_);
+ };
+ 
+ X_STATUS AudioMediaPlayer::Play(uint32_t playlist_handle, uint32_t song_handle,
+@@ -192,6 +224,10 @@ X_STATUS AudioMediaPlayer::Play(uint32_t playlist_handle, uint32_t song_handle,
+   }
+ 
+   active_playlist_ = playlist_itr->second.get();
++  LogMovieAudioState(
++      "queue-play", state_,
++      fmt::format("playlist={:08X} song={:08X} force={}", playlist_handle,
++                  song_handle, force ? 1 : 0));
+ 
+   // I've set it to false (force) for PGR3
+   if (!IsIdle()) {
+@@ -220,8 +256,13 @@ X_STATUS AudioMediaPlayer::Play(uint32_t playlist_handle, uint32_t song_handle,
+ }
+ 
+ void AudioMediaPlayer::Play() {
++  LogMovieAudioState(
++      "play-begin", state_,
++      active_song_ ? fmt::format("path={}", xe::to_utf8(active_song_->file_path))
++                   : std::string("path=<none>"));
+   std::span<uint8_t> song_buffer = LoadSongToMemory();
+   if (song_buffer.empty()) {
++    LogMovieAudioState("load-empty", state_);
+     return;
+   }
+ 
+@@ -232,6 +273,10 @@ void AudioMediaPlayer::Play() {
+   if (!SetupDriver(codecContext->sample_rate,
+                    codecContext->ch_layout.nb_channels)) {
+     XELOGE("Driver initialization failed!");
++    LogMovieAudioState(
++        "driver-init-failed", state_,
++        fmt::format("sample_rate={} channels={}", codecContext->sample_rate,
++                    codecContext->ch_layout.nb_channels));
+     avcodec_free_context(&codecContext);
+     av_freep(&formatContext->pb->buffer);
+     avio_context_free(&formatContext->pb);
+@@ -242,6 +287,10 @@ void AudioMediaPlayer::Play() {
+   state_ = XmpApp::State::kPlaying;
+   current_song_handle_ = active_song_->handle;
+   OnStateChanged();
++  LogMovieAudioState(
++      "driver-ready", state_,
++      fmt::format("sample_rate={} channels={}", codecContext->sample_rate,
++                  codecContext->ch_layout.nb_channels));
+ 
+   if (volume_ == 0.0f) {
+     volume_ = cvars::xmp_default_volume / 100.0f;
+@@ -298,6 +347,7 @@ void AudioMediaPlayer::Pause() {
+   }
+   state_ = XmpApp::State::kPaused;
+   OnStateChanged();
++  LogMovieAudioState("pause", state_);
+ };
+ 
+ void AudioMediaPlayer::Stop(bool change_state, bool force) {
+@@ -319,6 +369,7 @@ void AudioMediaPlayer::Stop(bool change_state, bool force) {
+   if (change_state) {
+     OnStateChanged();
+   }
++  LogMovieAudioState("stop", state_, fmt::format("force={}", force ? 1 : 0));
+ };
+ 
+ void AudioMediaPlayer::Continue() {
+@@ -332,6 +383,7 @@ void AudioMediaPlayer::Continue() {
+     driver_->Resume();
+   }
+   OnStateChanged();
++  LogMovieAudioState("continue", state_);
+ }
+ 
+ X_STATUS AudioMediaPlayer::Next() {
+@@ -399,18 +451,29 @@ std::span<uint8_t> AudioMediaPlayer::LoadSongToMemory() {
+   if (!active_song_) {
+     return {};
+   }
++  const auto song_path = xe::to_utf8(active_song_->file_path);
+ 
+   // Find file based on provided path?
+   vfs::File* vfs_file;
+   vfs::FileAction file_action;
+   X_STATUS result = kernel_state_->file_system()->OpenFile(
+-      nullptr, xe::to_utf8(active_song_->file_path),
++      nullptr, song_path,
+       vfs::FileDisposition::kOpen, vfs::FileAccess::kGenericRead, false, true,
+       &vfs_file, &file_action);
+ 
+   if (result) {
++    LogMovieAudioState(
++        "media-open-failed", state_,
++        fmt::format("path={} result={:08X} action={:08X}", song_path,
++                    static_cast<uint32_t>(result),
++                    static_cast<uint32_t>(file_action)));
+     return {};
+   }
++  LogMovieAudioState(
++      "media-open", state_,
++      fmt::format("path={} size={} action={:08X}", song_path,
++                  static_cast<uint32_t>(vfs_file->entry()->size()),
++                  static_cast<uint32_t>(file_action)));
+ 
+   std::span<uint8_t> buffer = {
+       static_cast<uint8_t*>(av_malloc(vfs_file->entry()->size())),
+@@ -425,8 +488,15 @@ std::span<uint8_t> AudioMediaPlayer::LoadSongToMemory() {
+   if (result != X_ERROR_SUCCESS) {
+     // Read failed. We need to manually release resources from av_malloc.
+     av_freep(buffer.data());
++    LogMovieAudioState(
++        "media-read-failed", state_,
++        fmt::format("path={} result={:08X}", song_path,
++                    static_cast<uint32_t>(result)));
+     return {};
+   }
++  LogMovieAudioState(
++      "media-read", state_,
++      fmt::format("path={} bytes={}", song_path, static_cast<uint32_t>(bytes_read)));
+ 
+   return buffer;
+ }
+@@ -494,6 +564,7 @@ void AudioMediaPlayer::SetCaptureCallback(uint32_t callback, uint32_t context,
+ }
+ 
+ void AudioMediaPlayer::OnStateChanged() {
++  LogMovieAudioState("state-changed", state_);
+   kernel_state_->BroadcastNotification(kXNotificationXmpStateChanged,
+                                        static_cast<uint32_t>(state_));
+ }
+@@ -527,6 +598,9 @@ void AudioMediaPlayer::ProcessAudioBuffer(std::vector<float>* buffer) {
+ 
+ bool AudioMediaPlayer::SetupDriver(uint32_t sample_rate, uint32_t channels) {
+   DeleteDriver();
++  LogMovieAudioState(
++      "setup-driver", state_,
++      fmt::format("sample_rate={} channels={}", sample_rate, channels));
+ 
+   std::unique_lock<xe_mutex> guard(driver_mutex_);
+   driver_semaphore_ = xe::threading::Semaphore::Create(
+@@ -540,6 +614,7 @@ bool AudioMediaPlayer::SetupDriver(uint32_t sample_rate, uint32_t channels) {
+       driver_semaphore_.get(), sample_rate, channels, false));
+   if (!driver_) {
+     driver_semaphore_.reset();
++    LogMovieAudioState("setup-driver-no-driver", state_);
+     return false;
+   }
+ 
+@@ -547,6 +622,7 @@ bool AudioMediaPlayer::SetupDriver(uint32_t sample_rate, uint32_t channels) {
+     driver_semaphore_.reset();
+     driver_->Shutdown();
+     driver_.reset();
++    LogMovieAudioState("setup-driver-init-failed", state_);
+     return false;
+   }
+ 
+@@ -556,6 +632,7 @@ bool AudioMediaPlayer::SetupDriver(uint32_t sample_rate, uint32_t channels) {
+ void AudioMediaPlayer::DeleteDriver() {
+   std::unique_lock<xe_mutex> guard(driver_mutex_);
+   if (driver_) {
++    LogMovieAudioState("delete-driver", state_);
+     if (driver_semaphore_) {
+       driver_semaphore_.reset();
+     }

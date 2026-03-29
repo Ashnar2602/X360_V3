@@ -1,0 +1,20 @@
+diff --git a/src/xenia/base/mapped_memory_posix.cc b/src/xenia/base/mapped_memory_posix.cc
+index db650756..8bd6755a 100644
+--- a/src/xenia/base/mapped_memory_posix.cc
++++ b/src/xenia/base/mapped_memory_posix.cc
+@@ -63,6 +63,15 @@ class PosixMappedMemory : public MappedMemory {
+       return nullptr;
+     }
+ 
++    if (mode == Mode::kReadWrite) {
++      const uint64_t required_size = uint64_t(offset) + uint64_t(map_length);
++      if (file_size < required_size &&
++          ftruncate(file_descriptor, static_cast<off_t>(required_size))) {
++        close(file_descriptor);
++        return nullptr;
++      }
++    }
++
+     void* data =
+         mmap(0, map_length, protection, MAP_SHARED, file_descriptor, offset);
+     if (data == MAP_FAILED) {

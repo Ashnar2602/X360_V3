@@ -15,7 +15,7 @@ Today it can:
 - render visible fullscreen frames in the product player
 - pass controller input into headless Xenia
 - load the official global game patch DB
-- persist title-content metadata and progression diagnostics
+- persist title-content metadata and progression/freeze diagnostics
 
 ## Active operational baseline
 
@@ -24,22 +24,22 @@ Today it can:
 - app package: `emu.x360.mobile.dev`
 - default player backend: `FRAMEBUFFER_POLLING`
 - alternate backend still present for research/debug: `FRAMEBUFFER_SHARED_MEMORY`
-- Xenia source pin: `c50b036178108f87cb0acaf3691a7c3caf07820f`
-- Xenia patch set: `phase10c-triage-v2`
+- Xenia source pin: `553aedebb59340d3106cd979ca7d09cc8e3bd98e`
+- Xenia patch set: `phase11a-upstreamfirst-v1`
 
 ### Why polling is the default again
 
 The shared-memory path is still implemented, but the current stable live-player baseline has been moved back to polling while progression work continues. That is intentional and should be reflected in any future debugging.
 
-### Important recent fix
+### Important recent fixes and shifts
 
-The polling exporter previously froze after the first frame because the guest-side export dedupe logic incorrectly treated later frames as duplicates.
-
-That symptom is now fixed in the active runtime payload:
-
-- `export_duplicate_skip` no longer dominates guest logs
-- `FRAME_STREAM_ACTIVE` is reached again on both validated devices
-- `exportFrameCount` and `lastFrameIndex` advance in app logs
+- the polling exporter regression that froze after the first frame is fixed in the packaged runtime
+- the active Xenia guest has been rebased to the desktop-working `553...` Canary family
+- the XAM layer is now upstream-first by default:
+  - `xam_media` baseline is upstream
+  - `xam_net` baseline is upstream
+  - `xlivebase_app` baseline is upstream
+  - `xam_content` keeps only the minimum Android/product delta for DLC visibility and diagnostics
 
 ## Runtime payload model
 
@@ -86,7 +86,9 @@ Key tasks:
 
 - `fixtures/xenia-runtime/xenia-source-lock.json`
 - `fixtures/xenia-runtime/xenia-game-patches-lock.json`
-- `third_party/xenia-patches/phase4`
+- `third_party/xenia-patches/<patchSetId>/`
+
+`patchSetId` now drives the patch-directory lookup. The build is no longer hardwired to `third_party/xenia-patches/phase4`.
 
 It clones/prepares a workspace under:
 
@@ -107,30 +109,32 @@ Debug builds default to incremental mode. The workspace key depends on:
 
 This is the preferred path for day-to-day Xenia iteration.
 
-### Current known pitfall
+### Current practical note on long Xenia rebuilds
 
-Fresh `generateDebugXeniaBringupAssets` can currently fail in a newly prepared workspace because of unrelated Xenia build issues, including:
+The guest rebuild can genuinely take a long time after a source-pin jump, especially after rebasing to a newer upstream revision. A `generateDebugXeniaBringupAssets` run is only "stuck" if the guest build has already produced:
 
-- submodule oddities in a fresh checkout
-- shader-generation failure around `guest_output_ffx_cas_resample.ps.xesl`
+- `xenia-build-result.txt`
+- `build/bin/Linux/Release/xenia_canary`
+- `build/bin/Linux/Release/xenia-content-tool`
 
-This does not invalidate the whole repo. It means the "clean new Xenia workspace" path is currently less reliable than the already-proven persistent workspace path.
+and the remaining process tree is only wrapper/watcher noise.
 
-### Current practical workaround
+If those markers are still missing and `clang++` / `ninja` are active inside WSL, the guest rebuild is still real work.
 
-If a known-good incremental Xenia workspace already exists and contains the wanted binary:
+### Current practical validation points
 
-1. rebuild there incrementally
-2. inject that binary into the runtime payload used by the APK
-3. rebuild/install the app without rerunning the failing Xenia generator
+After a successful build, verify:
 
-The safer long-lived version of this workflow is:
+- `app/build/generated/xeniaBringupAssets/debug/payload/config/xenia-source-lock.json`
+- `app/build/generated/xeniaBringupAssets/debug/payload/config/xenia-build-metadata.json`
+- `app/build/generated/xeniaBringupAssets/debug/rootfs/opt/x360-v3/xenia/bin/xenia-canary`
+- `app/build/generated/xeniaBringupAssets/debug/rootfs/opt/x360-v3/xenia/bin/xenia-content-tool`
 
-- place the override under `_local/runtime-drop/`
+For the current Phase 11A baseline, the payload should report:
 
-The short-term emergency version is:
-
-- patch the already-generated `app/build/generated/runtimePayload/...` payload and its manifest checksums
+- `sourceRevision = 553aedebb59340d3106cd979ca7d09cc8e3bd98e`
+- `patchSetId = phase11a-upstreamfirst-v1`
+- `executableSha256 = 6ae5bc7384ca5b59cac2b03035dcf26b9d3f39e5d6efe788c6795859601a5526`
 
 ## Device workflow
 
@@ -171,9 +175,14 @@ Areas already instrumented and worth checking first:
 - content root resolution
 - profile/save root resolution
 - XAM content APIs
-- XLive/XNet offline stubs
 - patch DB match/apply state
-- live player session diagnostics bundle
+- movie/audio loading diagnostics
+- freeze-lab evidence and desktop-parity comparisons
+
+Important current note:
+
+- Phase 11A intentionally removed the default synthetic offline behavior previously added in `xam_net` and `xlivebase_app`
+- any future offline fallback should be explicit and launch-controlled, not silently buried inside XAM behavior
 
 ## Guardrails for future work
 
@@ -181,4 +190,5 @@ Areas already instrumented and worth checking first:
 2. Prefer low-RAM Gradle invocations with `--no-daemon --max-workers=1`.
 3. Do not assume `filesDir` edits are durable if the APK payload is still older.
 4. Do not delete `_tmp*` evidence casually.
-5. Prefer small, isolated changes and verify with real device logs after each one.
+5. Keep Android platform deltas explicit; do not hide them inside silent XAM semantic rewrites.
+6. Prefer small, isolated changes and verify with real device logs after each one.

@@ -1,0 +1,59 @@
+diff --git a/src/xenia/cpu/xex_module.cc b/src/xenia/cpu/xex_module.cc
+--- a/src/xenia/cpu/xex_module.cc
++++ b/src/xenia/cpu/xex_module.cc
+@@ -1358,24 +1358,42 @@ void XexInfoCache::Init(XexModule* xexmod) {
+   auto emu = xexmod->kernel_state_->emulator();
+   std::filesystem::path infocache_path = emu->cache_root();
+ 
+   infocache_path.append(L"modules");
+ 
+   infocache_path.append(xexmod->image_sha_str_);
+ 
+-  std::filesystem::create_directories(infocache_path);
++  std::error_code error_code;
++  if (!std::filesystem::create_directories(infocache_path, error_code) &&
++      error_code) {
++    XELOGW("Module info cache disabled: failed to create {} ({})",
++           xe::path_to_utf8(infocache_path), error_code.message());
++    return;
++  }
+   infocache_path.append("executable_addr_flags.bin");
+ 
+   unsigned num_codebytes = xexmod->high_address_ - xexmod->low_address_;
+   num_codebytes += 3;  // round up to nearest multiple of 4
+   num_codebytes &= ~3;
+ 
+   auto try_open = [this, &infocache_path, num_codebytes]() {
+     bool did_exist = true;
+ 
+-    if (!std::filesystem::exists(infocache_path)) {
+-      xe::filesystem::CreateEmptyFile(infocache_path);
++    std::error_code exists_error;
++    bool cache_file_exists =
++        std::filesystem::exists(infocache_path, exists_error);
++    if (exists_error) {
++      XELOGW("Module info cache disabled: failed to query {} ({})",
++             xe::path_to_utf8(infocache_path), exists_error.message());
++      return false;
++    }
++    if (!cache_file_exists) {
++      if (!xe::filesystem::CreateEmptyFile(infocache_path)) {
++        XELOGW("Module info cache disabled: failed to create {}",
++               xe::path_to_utf8(infocache_path));
++        return false;
++      }
+       did_exist = false;
+     }
+ 
+     // todo: prepopulate with stuff from pdata, dll exports
+ 
+@@ -1386,6 +1404,9 @@ void XexInfoCache::Init(XexModule* xexmod) {
+ 
+   bool did_exist = try_open();
+   if (!GetHeader()) {
++    XELOGW("Module info cache disabled: failed to map {}",
++           xe::path_to_utf8(infocache_path));
++    executable_addr_flags_.reset();
+     return;
+   }
+ 

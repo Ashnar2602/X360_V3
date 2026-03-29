@@ -1,0 +1,50 @@
+diff --git a/src/xenia/base/memory_posix.cc b/src/xenia/base/memory_posix.cc
+index 15a9ab858..546ff4f03 100644
+--- a/src/xenia/base/memory_posix.cc
++++ b/src/xenia/base/memory_posix.cc
+@@ -16,8 +16,10 @@
+ #include <cstddef>
+ #include <cstdlib>
+ #include <fstream>
++#include <linux/memfd.h>
+ #include <mutex>
+ #include <sstream>
++#include <sys/syscall.h>
+ 
+ #include "xenia/base/math.h"
+ #include "xenia/base/platform.h"
+@@ -133,6 +135,21 @@ static void InstallCleanupHandlers() {
+ }
+ #endif  // !XE_PLATFORM_ANDROID
+ 
++#if defined(__linux__)
++static int CreateMemoryFileDescriptor(const std::filesystem::path& path,
++                                      size_t length) {
++  int fd = int(syscall(SYS_memfd_create, path.c_str(), MFD_CLOEXEC));
++  if (fd < 0) {
++    return kFileMappingHandleInvalid;
++  }
++  if (ftruncate64(fd, length) < 0) {
++    close(fd);
++    return kFileMappingHandleInvalid;
++  }
++  return fd;
++}
++#endif  // defined(__linux__)
++
+ void* AllocFixed(void* base_address, size_t length,
+                  AllocationType allocation_type, PageAccess access) {
+   // mmap does not support reserve / commit, so ignore allocation_type.
+@@ -273,6 +290,12 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
+   }
+   return ashmem_fd;
+ #else
++#if defined(__linux__)
++  int memfd_fd = CreateMemoryFileDescriptor(path, length);
++  if (memfd_fd != kFileMappingHandleInvalid) {
++    return memfd_fd;
++  }
++#endif
+   int oflag;
+   switch (access) {
+     case PageAccess::kNoAccess:

@@ -1,0 +1,133 @@
+diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
+--- a/src/xenia/emulator.cc
++++ b/src/xenia/emulator.cc
+@@ -454,17 +454,32 @@
+ 
+ X_STATUS Emulator::MountPath(const std::filesystem::path& path,
+                              const std::string_view mount_path) {
++  XELOGI("MountPath: begin target='{}' mount='{}'", xe::path_to_utf8(path),
++         mount_path);
+   auto device = CreateVfsDevice(path, mount_path);
+-  if (!device || !device->Initialize()) {
++  if (!device) {
++    XELOGE("MountPath: CreateVfsDevice returned null for '{}'",
++           xe::path_to_utf8(path));
+     XELOGE(
+         "Unable to mount the selected file, it is an unsupported format or "
+         "corrupted.");
+     return X_STATUS_NO_SUCH_FILE;
+   }
++  XELOGI("MountPath: device created for '{}'", xe::path_to_utf8(path));
++  if (!device->Initialize()) {
++    XELOGE("MountPath: device initialization failed for '{}'",
++           xe::path_to_utf8(path));
++    XELOGE(
++        "Unable to mount the selected file, it is an unsupported format or "
++        "corrupted.");
++    return X_STATUS_NO_SUCH_FILE;
++  }
++  XELOGI("MountPath: device initialized for '{}'", xe::path_to_utf8(path));
+   if (!file_system_->RegisterDevice(std::move(device))) {
+     XELOGE("Unable to register the input file to {}.", mount_path);
+     return X_STATUS_NO_SUCH_FILE;
+   }
++  XELOGI("MountPath: device registered at '{}'", mount_path);
+ 
+   file_system_->UnregisterSymbolicLink(kDefaultPartitionSymbolicLink);
+   file_system_->UnregisterSymbolicLink(kDefaultGameSymbolicLink);
+@@ -474,6 +489,7 @@
+   file_system_->RegisterSymbolicLink(kDefaultGameSymbolicLink, mount_path);
+   file_system_->RegisterSymbolicLink(kDefaultPartitionSymbolicLink, mount_path);
+ 
++  XELOGI("MountPath: symlinks refreshed for '{}'", xe::path_to_utf8(path));
+   return X_STATUS_SUCCESS;
+ }
+ 
+@@ -693,10 +709,16 @@
+ }
+ 
+ X_STATUS Emulator::LaunchDiscImage(const std::filesystem::path& path) {
++  XELOGI("LaunchDiscImage: begin target='{}'", xe::path_to_utf8(path));
+   std::string module_path = FindLaunchModule();
++  XELOGI("LaunchDiscImage: module candidate '{}'", module_path);
+   X_STATUS result = CompleteLaunch(path, module_path);
++  XELOGI("LaunchDiscImage: CompleteLaunch returned {:08X} for '{}'",
++         static_cast<uint32_t>(result), xe::path_to_utf8(path));
+ 
+   if (result == X_STATUS_NOT_FOUND && !cvars::launch_module.empty()) {
++    XELOGW("LaunchDiscImage: retrying default module for '{}'",
++           xe::path_to_utf8(path));
+     return LaunchDefaultModule(path);
+   }
+   kernel_state_->deployment_type_ = XDeploymentType::kOpticalDisc;
+@@ -1484,6 +1506,8 @@
+   std::string path(fmt::format("{}\\", kDefaultGameSymbolicLink));
+ 
+   auto xam = kernel_state()->GetKernelModule<kernel::xam::XamModule>("xam.xex");
++  XELOGI("FindLaunchModule: start launch_path='{}' override='{}'",
++         xam->loader_data().launch_path, cvars::launch_module);
+ 
+   if (!xam->loader_data().launch_path.empty()) {
+     std::string symbolic_link_path;
+@@ -1505,15 +1529,21 @@
+       kernel_state_->file_system()->RegisterSymbolicLink(
+           kDefaultGameSymbolicLink, xe::path_to_utf8(file_path.parent_path()));
+ 
++      XELOGI("FindLaunchModule: resolved launch_path to '{}'",
++             xe::path_to_utf8(file_path));
+       return xe::path_to_utf8(file_path);
+     }
+   }
+ 
+   if (!cvars::launch_module.empty()) {
+-    return path + cvars::launch_module;
+-  }
+-
+-  return path + "default.xex";
++    auto module_path = path + cvars::launch_module;
++    XELOGI("FindLaunchModule: using launch_module override '{}'", module_path);
++    return module_path;
++  }
++
++  auto default_path = path + "default.xex";
++  XELOGI("FindLaunchModule: defaulting to '{}'", default_path);
++  return default_path;
+ }
+ 
+ static std::string format_version(xex2_version version) {
+@@ -1524,6 +1554,8 @@
+ 
+ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
+                                   const std::string_view module_path) {
++  XELOGI("CompleteLaunch: begin path='{}' module='{}'",
++         xe::path_to_utf8(path), module_path);
+   // Making changes to the UI (setting the icon) and executing game config
+   // load callbacks which expect to be called from the UI thread.
+   assert_true(display_window_->app_context().IsInUIThread());
+@@ -1544,17 +1576,24 @@
+   auto null_device =
+       std::make_unique<vfs::NullDevice>("\\Device\\Harddisk0", null_paths);
+   if (null_device->Initialize()) {
++    XELOGI("CompleteLaunch: null device initialized");
+     file_system_->RegisterDevice(std::move(null_device));
+-  }
+-
++    XELOGI("CompleteLaunch: null device registered");
++  } else {
++    XELOGW("CompleteLaunch: null device initialization failed");
++  }
++
++  XELOGI("CompleteLaunch: resetting title state");
+   // Reset state.
+   title_id_ = std::nullopt;
+   title_name_ = "";
+   title_version_ = "";
+   display_window_->SetIcon(nullptr, 0);
+ 
++  XELOGI("CompleteLaunch: icon cleared");
+   // Allow xam to request module loads.
+   auto xam = kernel_state()->GetKernelModule<kernel::xam::XamModule>("xam.xex");
++  XELOGI("CompleteLaunch: xam module ready");
+ 
+   XELOGI("Loading module {}", module_path);
+   auto module = kernel_state_->LoadUserModule(module_path);

@@ -1,0 +1,26 @@
+diff --git a/src/xenia/app/xenia_main.cc b/src/xenia/app/xenia_main.cc
+index 868c66a5..6d766b0d 100644
+--- a/src/xenia/app/xenia_main.cc
++++ b/src/xenia/app/xenia_main.cc
+@@ -606,6 +606,21 @@ void EmulatorApp::EmulatorThread() {
+     }
+   }
+ 
++  auto content_root_device = std::make_unique<xe::vfs::HostPathDevice>(
++      "\\CONTENTROOT", emulator_->content_root(), false);
++  if (!content_root_device->Initialize()) {
++    XELOGE("Unable to scan content root path");
++  } else {
++    if (!fs->RegisterDevice(std::move(content_root_device))) {
++      XELOGE("Unable to register content root path");
++    } else {
++      fs->RegisterSymbolicLink("content:", "\\CONTENTROOT");
++      fs->RegisterSymbolicLink("\\Device\\Harddisk0\\Partition1\\Content",
++                               "\\CONTENTROOT");
++      XELOGI("Mounted content root alias for HDD guest content path");
++    }
++  }
++
+   if (cvars::mount_cache) {
+     auto cache0_device = std::make_unique<xe::vfs::HostPathDevice>(
+         "\\CACHE0", emulator_->storage_root() / "cache0", false);

@@ -1,0 +1,46 @@
+diff --git a/src/xenia/kernel/xam/profile_manager.cc b/src/xenia/kernel/xam/profile_manager.cc
+--- a/src/xenia/kernel/xam/profile_manager.cc
++++ b/src/xenia/kernel/xam/profile_manager.cc
+@@ -16,6 +16,8 @@
+ #include "xenia/kernel/util/crypto_utils.h"
+ #include "xenia/vfs/devices/host_path_device.h"
+ 
++DECLARE_bool(headless);
++
+ DEFINE_string(logged_profile_slot_0_xuid, "",
+               "XUID of the profile to load on boot in slot 0", "Profiles");
+ DEFINE_string(logged_profile_slot_1_xuid, "",
+@@ -25,6 +27,8 @@
+ DEFINE_string(logged_profile_slot_3_xuid, "",
+               "XUID of the profile to load on boot in slot 3", "Profiles");
+ 
++constexpr uint64_t kHeadlessDefaultProfileXuid = 0xB13EBABEBABEBABE;
++
+ namespace xe {
+ namespace kernel {
+ namespace xam {
+@@ -125,6 +129,24 @@
+     Login(xe::string_util::from_string<uint64_t>(
+               cvars::logged_profile_slot_3_xuid, true),
+           3);
++  }
++
++  if (cvars::headless && !IsAnyProfileSignedIn()) {
++    if (!accounts_.empty()) {
++      const uint64_t xuid = accounts_.cbegin()->first;
++      XELOGI("ProfileManager: Headless auto-login with profile {:016X}", xuid);
++      Login(xuid, 0);
++    } else {
++      XELOGI(
++          "ProfileManager: Headless mode found no profiles; creating default "
++          "offline profile {:016X}",
++          kHeadlessDefaultProfileXuid);
++      if (!CreateProfile("Player1", true, true)) {
++        XELOGW("ProfileManager: Failed to create default headless profile");
++      } else {
++        XELOGI("ProfileManager: Default headless profile is ready");
++      }
++    }
+   }
+ }
+

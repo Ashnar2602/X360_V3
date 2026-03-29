@@ -1,0 +1,320 @@
+From b8b9824de542befc9bf78585ce5a8115a2e75fc0 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.invalid>
+Date: Fri, 20 Mar 2026 20:39:42 +0100
+Subject: [PATCH] headless framebuffer polling export
+
+---
+ src/xenia/app/xenia_main.cc | 228 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 228 insertions(+)
+
+diff --git a/src/xenia/app/xenia_main.cc b/src/xenia/app/xenia_main.cc
+index 4d8fe000..b1f33460 100644
+--- a/src/xenia/app/xenia_main.cc
++++ b/src/xenia/app/xenia_main.cc
+@@ -7,17 +7,24 @@
+  ******************************************************************************
+  */
+ 
++#include <algorithm>
++#include <array>
+ #include <atomic>
++#include <chrono>
++#include <cctype>
+ #include <cstdlib>
++#include <fstream>
+ #include <functional>
+ #include <memory>
+ #include <string>
++#include <system_error>
+ #include <thread>
+ 
+ #include "xenia/app/discord/discord_presence.h"
+ #include "xenia/app/emulator_window.h"
+ #include "xenia/base/assert.h"
+ #include "xenia/base/cvar.h"
++#include "xenia/base/filesystem.h"
+ #include "xenia/base/debugging.h"
+ #include "xenia/base/logging.h"
+ #include "xenia/base/platform.h"
+@@ -26,8 +33,10 @@
+ #include "xenia/config.h"
+ #include "xenia/debug/ui/debug_window.h"
+ #include "xenia/emulator.h"
++#include "xenia/gpu/graphics_system.h"
+ #include "xenia/kernel/xam/xam_module.h"
+ #include "xenia/ui/file_picker.h"
++#include "xenia/ui/presenter.h"
+ #include "xenia/ui/window.h"
+ #include "xenia/ui/window_listener.h"
+ #include "xenia/ui/windowed_app.h"
+@@ -131,6 +140,132 @@ DEFINE_bool(discord, true, "Enable Discord rich presence", "General");
+ 
+ DECLARE_bool(widescreen);
+ 
++DEFINE_string(
++    x360_presentation_backend, "headless_only",
++    "Presentation backend contract for Android/X360 reconstruction. Use: "
++    "[headless_only, framebuffer_polling, surface_bridge]",
++    "General");
++DEFINE_path(
++    x360_framebuffer_path, "/tmp/xenia_fb",
++    "Guest-visible framebuffer export path used by the Android wrapper when "
++    "framebuffer polling is enabled.",
++    "General");
++DEFINE_uint32(
++    x360_framebuffer_fps, 10,
++    "Maximum number of guest-output framebuffer exports per second when the "
++    "framebuffer polling presentation backend is enabled.",
++    "General");
++
++namespace {
++
++constexpr uint32_t kX360FramebufferHeaderSize = 32;
++constexpr uint32_t kX360FramebufferPixelFormatR8G8B8X8 = 1;
++
++struct X360FramebufferFileHeader {
++  std::array<char, 4> magic = {'X', 'F', 'B', '1'};
++  uint32_t header_size = kX360FramebufferHeaderSize;
++  uint32_t width = 0;
++  uint32_t height = 0;
++  uint32_t stride = 0;
++  uint32_t pixel_format = kX360FramebufferPixelFormatR8G8B8X8;
++  uint64_t frame_index = 0;
++};
++static_assert(sizeof(X360FramebufferFileHeader) == kX360FramebufferHeaderSize);
++
++std::string ToLowerAscii(std::string value) {
++  std::transform(value.begin(), value.end(), value.begin(),
++                 [](unsigned char c) { return char(std::tolower(c)); });
++  return value;
++}
++
++bool IsFramebufferPollingBackendEnabled() {
++  return ToLowerAscii(cvars::x360_presentation_backend) ==
++         "framebuffer_polling";
++}
++
++bool PromoteFramebufferTempFile(const std::filesystem::path& temp_path,
++                                const std::filesystem::path& target_path) {
++  std::error_code error_code;
++  std::filesystem::rename(temp_path, target_path, error_code);
++#if XE_PLATFORM_WIN32
++  if (error_code) {
++    error_code.clear();
++    std::filesystem::remove(target_path, error_code);
++    error_code.clear();
++    std::filesystem::rename(temp_path, target_path, error_code);
++  }
++#endif  // XE_PLATFORM_WIN32
++  if (error_code) {
++    XELOGW("Failed to promote framebuffer export {} -> {}: {}", temp_path,
++           target_path, error_code.message());
++    error_code.clear();
++    std::filesystem::remove(temp_path, error_code);
++    return false;
++  }
++  return true;
++}
++
++bool WriteFramebufferExport(const std::filesystem::path& framebuffer_path,
++                            const xe::ui::RawImage& image,
++                            uint64_t frame_index) {
++  if (!image.width || !image.height || image.stride < size_t(image.width) * 4 ||
++      image.data.empty()) {
++    return false;
++  }
++
++  std::error_code error_code;
++  const std::filesystem::path parent_path = framebuffer_path.parent_path();
++  if (!parent_path.empty()) {
++    std::filesystem::create_directories(parent_path, error_code);
++    if (error_code) {
++      XELOGW("Failed to create framebuffer export directory {}: {}",
++             parent_path, error_code.message());
++      return false;
++    }
++  }
++
++  const size_t minimum_payload_size =
++      image.stride * size_t(image.height - 1) + size_t(image.width) * 4;
++  if (image.data.size() < minimum_payload_size ||
++      image.stride > size_t(UINT32_MAX)) {
++    XELOGW("Guest framebuffer payload is invalid for export: {}x{} stride={} "
++           "size={}",
++           image.width, image.height, image.stride, image.data.size());
++    return false;
++  }
++
++  std::filesystem::path temp_path = framebuffer_path;
++  temp_path += ".tmp";
++
++  std::ofstream file(temp_path, std::ios::binary | std::ios::trunc);
++  if (!file.is_open()) {
++    XELOGW("Failed to open framebuffer export file {}", temp_path);
++    return false;
++  }
++
++  X360FramebufferFileHeader header;
++  header.width = image.width;
++  header.height = image.height;
++  header.stride = uint32_t(image.stride);
++  header.frame_index = frame_index;
++  file.write(reinterpret_cast<const char*>(&header), sizeof(header));
++  file.write(reinterpret_cast<const char*>(image.data.data()),
++             std::streamsize(image.data.size()));
++  file.flush();
++  const bool write_ok = file.good();
++  file.close();
++  if (!write_ok) {
++    XELOGW("Failed to write framebuffer export {}", temp_path);
++    error_code.clear();
++    std::filesystem::remove(temp_path, error_code);
++    return false;
++  }
++
++  return PromoteFramebufferTempFile(temp_path, framebuffer_path);
++}
++
++}  // namespace
++
+ namespace xe {
+ namespace app {
+ 
+@@ -272,6 +407,9 @@ class EmulatorApp final : public xe::ui::WindowedApp {
+ 
+   void EmulatorThread();
+   void ShutdownEmulatorThreadFromUIThread();
++  void StartFramebufferExportThread();
++  void StopFramebufferExportThread();
++  void FramebufferExportThreadMain();
+ 
+   DebugWindowClosedListener debug_window_closed_listener_;
+ 
+@@ -285,6 +423,8 @@ class EmulatorApp final : public xe::ui::WindowedApp {
+   std::atomic<bool> emulator_thread_quit_requested_;
+   std::unique_ptr<xe::threading::Event> emulator_thread_event_;
+   std::thread emulator_thread_;
++  std::atomic<bool> framebuffer_export_thread_quit_requested_{false};
++  std::thread framebuffer_export_thread_;
+ };
+ 
+ void EmulatorApp::DebugWindowClosedListener::OnClosing(xe::ui::UIEvent& e) {
+@@ -303,6 +443,7 @@ EmulatorApp::~EmulatorApp() {
+   // Should be shut down from OnDestroy if OnInitialize has ever been done, but
+   // for the most safety as a running thread may be destroyed only after
+   // joining.
++  StopFramebufferExportThread();
+   ShutdownEmulatorThreadFromUIThread();
+ }
+ 
+@@ -558,6 +699,7 @@ bool EmulatorApp::OnInitialize() {
+ }
+ 
+ void EmulatorApp::OnDestroy() {
++  StopFramebufferExportThread();
+   ShutdownEmulatorThreadFromUIThread();
+ 
+   if (cvars::discord) {
+@@ -609,6 +751,8 @@ void EmulatorApp::EmulatorThread() {
+     }
+   });
+ 
++  StartFramebufferExportThread();
++
+   const auto fs = emulator_->file_system();
+ 
+   if (cvars::mount_scratch) {
+@@ -828,6 +972,90 @@ void EmulatorApp::ShutdownEmulatorThreadFromUIThread() {
+ #endif
+ }
+ 
++void EmulatorApp::StartFramebufferExportThread() {
++  StopFramebufferExportThread();
++  if (!cvars::headless || !IsFramebufferPollingBackendEnabled()) {
++    return;
++  }
++  framebuffer_export_thread_quit_requested_.store(false,
++                                                  std::memory_order_relaxed);
++  framebuffer_export_thread_ =
++      std::thread(&EmulatorApp::FramebufferExportThreadMain, this);
++}
++
++void EmulatorApp::StopFramebufferExportThread() {
++  framebuffer_export_thread_quit_requested_.store(true,
++                                                  std::memory_order_relaxed);
++  if (framebuffer_export_thread_.joinable()) {
++    framebuffer_export_thread_.join();
++  }
++}
++
++void EmulatorApp::FramebufferExportThreadMain() {
++  xe::threading::set_name("XeniaFrameExport");
++  Profiler::ThreadEnter("XeniaFrameExport");
++
++  std::filesystem::path framebuffer_path = cvars::x360_framebuffer_path;
++  if (!framebuffer_path.is_absolute() && emulator_) {
++    framebuffer_path = emulator_->storage_root() / framebuffer_path;
++  }
++  const uint32_t export_fps = std::max(uint32_t(1), cvars::x360_framebuffer_fps);
++  const auto export_interval =
++      std::chrono::milliseconds(std::max(uint32_t(1), 1000u / export_fps));
++  XELOGI("Headless framebuffer polling enabled: path={} fps={}",
++         framebuffer_path, export_fps);
++
++  uint64_t frame_index = 0;
++  uint32_t consecutive_exports = 0;
++  bool logged_first_frame = false;
++  bool logged_stream_active = false;
++
++  while (!framebuffer_export_thread_quit_requested_.load(
++      std::memory_order_relaxed)) {
++    gpu::GraphicsSystem* graphics_system =
++        emulator_ ? emulator_->graphics_system() : nullptr;
++    ui::Presenter* presenter =
++        graphics_system ? graphics_system->presenter() : nullptr;
++    if (!presenter) {
++      consecutive_exports = 0;
++      std::this_thread::sleep_for(export_interval);
++      continue;
++    }
++
++    ui::RawImage image;
++    if (!presenter->CaptureGuestOutput(image)) {
++      consecutive_exports = 0;
++      std::this_thread::sleep_for(export_interval);
++      continue;
++    }
++
++    ++frame_index;
++    if (!WriteFramebufferExport(framebuffer_path, image, frame_index)) {
++      consecutive_exports = 0;
++      std::this_thread::sleep_for(export_interval);
++      continue;
++    }
++
++    ++consecutive_exports;
++    if (!logged_first_frame) {
++      logged_first_frame = true;
++      XELOGI(
++          "X360_XENIA_STAGE=FIRST_FRAME_CAPTURED frame_index={} width={} "
++          "height={} stride={}",
++          frame_index, image.width, image.height, image.stride);
++    }
++    if (!logged_stream_active && consecutive_exports >= 3) {
++      logged_stream_active = true;
++      XELOGI(
++          "X360_XENIA_STAGE=FRAME_STREAM_ACTIVE frame_index={} width={} "
++          "height={} stride={}",
++          frame_index, image.width, image.height, image.stride);
++    }
++
++    std::this_thread::sleep_for(export_interval);
++  }
++}
++
+ }  // namespace app
+ }  // namespace xe
+ 
+-- 
+2.53.0.windows.1
+

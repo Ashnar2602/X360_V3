@@ -22,6 +22,7 @@ class UserExperienceModelsTest {
                         entryId = "dante",
                         renderScaleOverride = GuestRenderScaleProfile.TWO,
                         showFpsCounterOverride = true,
+                        dlcEnabledOverride = false,
                         presentationBackendOverride = PresentationBackend.FRAMEBUFFER_POLLING,
                         note = "Future override placeholder",
                     ),
@@ -36,6 +37,7 @@ class UserExperienceModelsTest {
         assertThat(entry.entryId).isEqualTo("dante")
         assertThat(entry.renderScaleOverride).isEqualTo(GuestRenderScaleProfile.TWO)
         assertThat(entry.showFpsCounterOverride).isTrue()
+        assertThat(entry.dlcEnabledOverride).isFalse()
         assertThat(entry.presentationBackendOverride).isEqualTo(PresentationBackend.FRAMEBUFFER_POLLING)
         assertThat(entry.note).isEqualTo("Future override placeholder")
     }

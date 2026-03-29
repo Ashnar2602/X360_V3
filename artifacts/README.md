@@ -17,7 +17,7 @@ Those archives preserve:
 
 ## Current live workspace vs archive state
 
-The live workspace is now well beyond the last archived milestone.
+The live workspace is now far beyond the last archived milestone.
 
 What exists in the live workspace but is not yet archived as a dedicated milestone set:
 
@@ -25,7 +25,10 @@ What exists in the live workspace but is not yet archived as a dedicated milesto
 - global official patch DB staging
 - title-content UI/pipeline
 - progression diagnostics bundle and stall classification
-- current Xenia patch set `phase10c-triage-v2`
+- freeze-lab diagnostics and movie/audio deep-debug plumbing
+- DLC visibility policy per game
+- Xenia rebase to `553aedebb59340d3106cd979ca7d09cc8e3bd98e`
+- current Xenia patch set `phase11a-upstreamfirst-v1`
 - current stable product baseline with `FRAMEBUFFER_POLLING` as default player backend
 
 Important note:
@@ -40,4 +43,5 @@ The next archive should be created only after the current progression-stall mile
 - live visible rendering on both validated devices
 - controller input
 - patch DB presence
+- the rebased `553...` upstream-first Xenia guest
 - a trustworthy post-boot progression baseline

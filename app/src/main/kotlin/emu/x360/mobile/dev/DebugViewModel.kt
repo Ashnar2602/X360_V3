@@ -167,6 +167,9 @@ data class DebugUiState(
     val xeniaLastXnetCallResult: String = "",
     val xeniaProgressionBucket: String = "",
     val xeniaProgressionReason: String = "",
+    val xeniaVideoFreezeCause: String = "",
+    val xeniaVideoFreezeConfidence: String = "",
+    val xeniaVideoFreezeReason: String = "",
     val xeniaPresentationBackend: String = "",
     val xeniaGuestRenderScaleProfile: String = "",
     val xeniaInternalDisplayResolution: String = "",
@@ -183,6 +186,13 @@ data class DebugUiState(
     val latestDiagnosticsBucket: String = "",
     val latestDiagnosticsReason: String = "",
     val latestDiagnosticsLastTransition: String = "",
+    val latestDiagnosticsFreezeCause: String = "",
+    val latestDiagnosticsFreezeConfidence: String = "",
+    val latestDiagnosticsFreezeReason: String = "",
+    val latestDiagnosticsGuestChanging: String = "",
+    val latestDiagnosticsTransportChanging: String = "",
+    val latestDiagnosticsScreenChanging: String = "",
+    val latestDiagnosticsCompareSummary: String = "",
     val latestDiagnosticsStorageSummary: String = "",
     val latestDiagnosticsBundlePath: String = "",
     val libraryEntries: List<GameLibraryEntryUi> = emptyList(),
@@ -195,6 +205,16 @@ data class DebugUiState(
 ) {
     companion object {
         fun from(snapshot: RuntimeSnapshot): DebugUiState {
+            val latestFreezeEvidence = snapshot.latestPlayerSessionDiagnostics?.freezeEvidence
+            val latestFreezeReport = snapshot.latestPlayerSessionDiagnostics?.freezeReport
+            val recentDiagnostics = snapshot.recentPlayerSessionDiagnostics
+            val latestDiagnosticsCompareSummary = if (recentDiagnostics.size >= 2) {
+                val newest = recentDiagnostics[0]
+                val previous = recentDiagnostics[1]
+                "latest ${newest.sessionId}:${newest.freezeReport.cause.name.lowercase()} ${newest.freezeReport.confidencePercent}% | previous ${previous.sessionId}:${previous.freezeReport.cause.name.lowercase()} ${previous.freezeReport.confidencePercent}%"
+            } else {
+                ""
+            }
             val installSummary = when (val state = snapshot.installState) {
                 RuntimeInstallState.NotInstalled -> "Not installed"
                 is RuntimeInstallState.Installed -> "Installed at ${state.installedAt}"
@@ -270,6 +290,9 @@ data class DebugUiState(
                 xeniaLastXnetCallResult = snapshot.xeniaDiagnostics.lastXnetCallResult,
                 xeniaProgressionBucket = snapshot.xeniaDiagnostics.progressionBucket,
                 xeniaProgressionReason = snapshot.xeniaDiagnostics.progressionReason,
+                xeniaVideoFreezeCause = latestFreezeReport?.cause?.name?.lowercase().orEmpty(),
+                xeniaVideoFreezeConfidence = latestFreezeReport?.confidencePercent?.toString().orEmpty(),
+                xeniaVideoFreezeReason = latestFreezeReport?.reason.orEmpty(),
                 xeniaPresentationBackend = snapshot.xeniaDiagnostics.presentationBackend,
                 xeniaGuestRenderScaleProfile = snapshot.xeniaDiagnostics.guestRenderScaleProfile,
                 xeniaInternalDisplayResolution = snapshot.xeniaDiagnostics.internalDisplayResolution,
@@ -290,6 +313,19 @@ data class DebugUiState(
                 latestDiagnosticsBucket = snapshot.latestPlayerSessionDiagnostics?.progressionBucket?.name?.lowercase().orEmpty(),
                 latestDiagnosticsReason = snapshot.latestPlayerSessionDiagnostics?.progressionReason.orEmpty(),
                 latestDiagnosticsLastTransition = snapshot.latestPlayerSessionDiagnostics?.lastMeaningfulGuestTransition.orEmpty(),
+                latestDiagnosticsFreezeCause = latestFreezeReport?.cause?.name?.lowercase().orEmpty(),
+                latestDiagnosticsFreezeConfidence = latestFreezeReport?.confidencePercent?.toString().orEmpty(),
+                latestDiagnosticsFreezeReason = latestFreezeReport?.reason.orEmpty(),
+                latestDiagnosticsGuestChanging = latestFreezeEvidence?.let { evidence ->
+                    (evidence.guestSwapFps > 1f || evidence.captureFps > 1f || evidence.transportPublishFps > 1f).toString()
+                }.orEmpty(),
+                latestDiagnosticsTransportChanging = latestFreezeEvidence?.let { evidence ->
+                    (evidence.transportPublishFps > 1f || evidence.transportChangeFps > 1f).toString()
+                }.orEmpty(),
+                latestDiagnosticsScreenChanging = latestFreezeEvidence?.let { evidence ->
+                    (evidence.screenChangeFps > 1f || evidence.visibleChangeFps > 1f).toString()
+                }.orEmpty(),
+                latestDiagnosticsCompareSummary = latestDiagnosticsCompareSummary,
                 latestDiagnosticsStorageSummary = snapshot.latestPlayerSessionDiagnostics
                     ?.storageRoots
                     ?.joinToString(" | ") { root ->

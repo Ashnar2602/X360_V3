@@ -21,6 +21,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -39,6 +43,8 @@ internal fun DebugScreen(
     onImportIso: () -> Unit,
     onLaunchImportedTitle: (String) -> Unit,
     onLaunchImportedTitleDiagnostic: (String, DiagnosticLaunchProfile) -> Unit,
+    onOpenFreezeLabRun: (String, DiagnosticLaunchProfile, Boolean, Boolean) -> Unit,
+    onCaptureCurrentFreezeReport: () -> Unit,
     onRemoveLibraryEntry: (String) -> Unit,
     onLaunchXeniaBringup: () -> Unit,
     onLaunchTurnipProbe: () -> Unit,
@@ -98,6 +104,21 @@ internal fun DebugScreen(
                 onLaunchEntry = onLaunchImportedTitle,
                 onLaunchDiagnostic = onLaunchImportedTitleDiagnostic,
                 onRemoveEntry = onRemoveLibraryEntry,
+            )
+
+            DebugFreezeLabCard(
+                entries = state.libraryEntries,
+                isBusy = state.isBusy,
+                latestDiagnosticsSessionId = state.latestDiagnosticsSessionId,
+                latestDiagnosticsFreezeCause = state.latestDiagnosticsFreezeCause,
+                latestDiagnosticsFreezeConfidence = state.latestDiagnosticsFreezeConfidence,
+                latestDiagnosticsGuestChanging = state.latestDiagnosticsGuestChanging,
+                latestDiagnosticsTransportChanging = state.latestDiagnosticsTransportChanging,
+                latestDiagnosticsScreenChanging = state.latestDiagnosticsScreenChanging,
+                latestDiagnosticsCompareSummary = state.latestDiagnosticsCompareSummary,
+                latestDiagnosticsBundlePath = state.latestDiagnosticsBundlePath,
+                onOpenFreezeLabRun = onOpenFreezeLabRun,
+                onCaptureCurrentFreezeReport = onCaptureCurrentFreezeReport,
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -193,6 +214,9 @@ internal fun DebugScreen(
                     "Last XNet call: ${state.xeniaLastXnetCallResult}",
                     "Progression bucket: ${state.xeniaProgressionBucket}",
                     "Progression reason: ${state.xeniaProgressionReason}",
+                    "Video freeze cause: ${state.xeniaVideoFreezeCause.ifBlank { "unknown" }}",
+                    "Video freeze confidence: ${state.xeniaVideoFreezeConfidence.ifBlank { "n/a" }}",
+                    "Video freeze reason: ${state.xeniaVideoFreezeReason.ifBlank { "n/a" }}",
                     "Presentation backend: ${state.xeniaPresentationBackend}",
                     "Guest render scale: ${state.xeniaGuestRenderScaleProfile}",
                     "Internal display resolution: ${state.xeniaInternalDisplayResolution}",
@@ -215,6 +239,13 @@ internal fun DebugScreen(
                     "Session: ${state.latestDiagnosticsSessionId.ifBlank { "none" }}",
                     "Bucket: ${state.latestDiagnosticsBucket.ifBlank { "unknown" }}",
                     "Reason: ${state.latestDiagnosticsReason.ifBlank { "n/a" }}",
+                    "Freeze cause: ${state.latestDiagnosticsFreezeCause.ifBlank { "unknown" }}",
+                    "Freeze confidence: ${state.latestDiagnosticsFreezeConfidence.ifBlank { "n/a" }}",
+                    "Freeze reason: ${state.latestDiagnosticsFreezeReason.ifBlank { "n/a" }}",
+                    "Guest changing: ${state.latestDiagnosticsGuestChanging.ifBlank { "n/a" }}",
+                    "Transport changing: ${state.latestDiagnosticsTransportChanging.ifBlank { "n/a" }}",
+                    "Screen changing: ${state.latestDiagnosticsScreenChanging.ifBlank { "n/a" }}",
+                    "Latest compare: ${state.latestDiagnosticsCompareSummary.ifBlank { "n/a" }}",
                     "Last transition: ${state.latestDiagnosticsLastTransition.ifBlank { "n/a" }}",
                     "Storage roots: ${state.latestDiagnosticsStorageSummary.ifBlank { "n/a" }}",
                     "Bundle path: ${state.latestDiagnosticsBundlePath.ifBlank { "n/a" }}",
@@ -378,6 +409,207 @@ private fun DebugLibraryCard(
                                 ) {
                                     Text("Remove")
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DebugFreezeLabCard(
+    entries: List<GameLibraryEntryUi>,
+    isBusy: Boolean,
+    latestDiagnosticsSessionId: String,
+    latestDiagnosticsFreezeCause: String,
+    latestDiagnosticsFreezeConfidence: String,
+    latestDiagnosticsGuestChanging: String,
+    latestDiagnosticsTransportChanging: String,
+    latestDiagnosticsScreenChanging: String,
+    latestDiagnosticsCompareSummary: String,
+    latestDiagnosticsBundlePath: String,
+    onOpenFreezeLabRun: (String, DiagnosticLaunchProfile, Boolean, Boolean) -> Unit,
+    onCaptureCurrentFreezeReport: () -> Unit,
+) {
+    var inputMuted by rememberSaveable { mutableStateOf(false) }
+    var overlayHidden by rememberSaveable { mutableStateOf(false) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xCC10212F)),
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                text = "Freeze Lab",
+                style = MaterialTheme.typography.titleLarge,
+                color = Color(0xFFFFC36A),
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "Run the live player with controlled diagnostics, then capture and compare freeze reports from the real session path.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFFC7D2DC),
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(onClick = onCaptureCurrentFreezeReport, enabled = !isBusy) {
+                    Text("Capture Current Report")
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Mute controller input after launch",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFC7D2DC),
+                )
+                androidx.compose.material3.Switch(
+                    checked = inputMuted,
+                    onCheckedChange = { inputMuted = it },
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Hide FPS/error overlays",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFC7D2DC),
+                )
+                androidx.compose.material3.Switch(
+                    checked = overlayHidden,
+                    onCheckedChange = { overlayHidden = it },
+                )
+            }
+            Text(
+                text = "Latest session: ${latestDiagnosticsSessionId.ifBlank { "none" }}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFC7D2DC),
+            )
+            Text(
+                text = "Cause: ${latestDiagnosticsFreezeCause.ifBlank { "unknown" }} | Confidence: ${latestDiagnosticsFreezeConfidence.ifBlank { "n/a" }}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFC7D2DC),
+            )
+            Text(
+                text = "Guest changing: ${latestDiagnosticsGuestChanging.ifBlank { "n/a" }} | Transport changing: ${latestDiagnosticsTransportChanging.ifBlank { "n/a" }} | Screen changing: ${latestDiagnosticsScreenChanging.ifBlank { "n/a" }}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFC7D2DC),
+            )
+            Text(
+                text = "Compare latest two: ${latestDiagnosticsCompareSummary.ifBlank { "n/a" }}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFC7D2DC),
+            )
+            Text(
+                text = "Bundle: ${latestDiagnosticsBundlePath.ifBlank { "n/a" }}",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFC7D2DC),
+            )
+            if (entries.isEmpty()) {
+                Text(
+                    text = "Import a title to run the freeze lab on a live player session.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFC7D2DC),
+                )
+            } else {
+                entries.forEach { entry ->
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = entry.displayName,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFFF0F4F8),
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Button(
+                                onClick = {
+                                    onOpenFreezeLabRun(
+                                        entry.id,
+                                        DiagnosticLaunchProfile.XENIA_REAL_TITLE,
+                                        inputMuted,
+                                        overlayHidden,
+                                    )
+                                },
+                                enabled = !isBusy,
+                            ) {
+                                Text("Current")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    onOpenFreezeLabRun(
+                                        entry.id,
+                                        DiagnosticLaunchProfile.FRAMEBUFFER_POLLING_DIAGNOSTIC,
+                                        inputMuted,
+                                        overlayHidden,
+                                    )
+                                },
+                                enabled = !isBusy,
+                            ) {
+                                Text("Polling")
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    onOpenFreezeLabRun(
+                                        entry.id,
+                                        DiagnosticLaunchProfile.AUDIO_MUTED,
+                                        inputMuted,
+                                        overlayHidden,
+                                    )
+                                },
+                                enabled = !isBusy,
+                            ) {
+                                Text("Muted")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    onOpenFreezeLabRun(
+                                        entry.id,
+                                        DiagnosticLaunchProfile.XMA_FAKE,
+                                        inputMuted,
+                                        overlayHidden,
+                                    )
+                                },
+                                enabled = !isBusy,
+                            ) {
+                                Text("XMA Fake")
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    onOpenFreezeLabRun(
+                                        entry.id,
+                                        DiagnosticLaunchProfile.XMA_OLD,
+                                        inputMuted,
+                                        overlayHidden,
+                                    )
+                                },
+                                enabled = !isBusy,
+                            ) {
+                                Text("XMA Old")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    onOpenFreezeLabRun(
+                                        entry.id,
+                                        DiagnosticLaunchProfile.XMA_SINGLE_THREAD,
+                                        inputMuted,
+                                        overlayHidden,
+                                    )
+                                },
+                                enabled = !isBusy,
+                            ) {
+                                Text("No XMA Thread")
                             }
                         }
                     }

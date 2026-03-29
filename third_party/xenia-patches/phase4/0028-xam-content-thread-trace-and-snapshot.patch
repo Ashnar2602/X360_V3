@@ -1,0 +1,455 @@
+diff --git a/src/xenia/kernel/xam/content_manager.cc b/src/xenia/kernel/xam/content_manager.cc
+index fd3dc3d..1cefbe0 100644
+--- a/src/xenia/kernel/xam/content_manager.cc
++++ b/src/xenia/kernel/xam/content_manager.cc
+@@ -9,12 +9,17 @@
+ 
+ #include "xenia/kernel/xam/content_manager.h"
+ 
++#include <atomic>
++
+ #include "third_party/fmt/include/fmt/format.h"
++#include "xenia/base/clock.h"
+ #include "xenia/base/filesystem.h"
+ #include "xenia/base/logging.h"
+ #include "xenia/base/string.h"
++#include "xenia/cpu/thread_state.h"
+ #include "xenia/emulator.h"
+ #include "xenia/kernel/kernel_state.h"
++#include "xenia/kernel/xthread.h"
+ #include "xenia/kernel/xam/xam_content_device.h"
+ #include "xenia/kernel/xam/user_profile.h"
+ #include "xenia/kernel/xfile.h"
+@@ -37,10 +42,107 @@ std::string DescribeContentRequest(const XCONTENT_AGGREGATE_DATA& data) {
+                      static_cast<uint64_t>(data.xuid), data.file_name());
+ }
+ 
++uint32_t CurrentGuestThreadId() { return cpu::ThreadState::GetThreadID(); }
++
++const char* ThreadStateName(uint8_t state) {
++  switch (state) {
++    case KTHREAD_STATE_INITIALIZED:
++      return "initialized";
++    case KTHREAD_STATE_READY:
++      return "ready";
++    case KTHREAD_STATE_RUNNING:
++      return "running";
++    case KTHREAD_STATE_STANDBY:
++      return "standby";
++    case KTHREAD_STATE_TERMINATED:
++      return "terminated";
++    case KTHREAD_STATE_WAITING:
++      return "waiting";
++    case KTHREAD_STATE_UNKNOWN:
++    default:
++      return "unknown";
++  }
++}
++
++bool ShouldEmitThreadSnapshot() {
++  static std::atomic<uint64_t> last_dump_tick{0};
++  const uint64_t now = Clock::QueryHostTickCount();
++  const uint64_t min_delta = Clock::QueryHostTickFrequency();
++  const uint64_t last = last_dump_tick.load();
++  if (last != 0 && now > last && now - last < min_delta) {
++    return false;
++  }
++  last_dump_tick.store(now);
++  return true;
++}
++
++void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
++                                     const char* reason) {
++  if (!ShouldEmitThreadSnapshot()) {
++    return;
++  }
++
++  auto threads = kernel_state->object_table()->GetObjectsByType<XThread>();
++  XELOGW("X360_THREAD_SNAPSHOT reason={} trigger_tid={:08X} count={}", reason,
++         CurrentGuestThreadId(), threads.size());
++
++  for (const auto& thread : threads) {
++    auto* kthread = thread->guest_object<X_KTHREAD>();
++    auto* context = thread->thread_state() ? thread->thread_state()->context()
++                                           : nullptr;
++    const std::string& thread_name = thread->thread_name();
++    XELOGW(
++        "X360_THREAD tid={:08X} handle={:08X} state={} suspend={} main={} "
++        "guest={} cpu={} start={:08X} lr={:08X} r1={:08X} wait_result={:08X} "
++        "wait_obj={:08X} alertable={} terminated={} last_error={:08X} name={}",
++        thread->thread_id(), thread->handle(),
++        ThreadStateName(kthread ? kthread->thread_state : KTHREAD_STATE_UNKNOWN),
++        kthread ? static_cast<uint32_t>(kthread->suspend_count) : 0u,
++        thread->main_thread() ? 1u : 0u, thread->is_guest_thread() ? 1u : 0u,
++        kthread ? static_cast<uint32_t>(kthread->current_cpu) : 0u,
++        thread->start_address(),
++        context ? static_cast<uint32_t>(context->lr) : 0u,
++        context ? static_cast<uint32_t>(context->r[1]) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->wait_result) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->wait_timeout_block.object.m_ptr) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->alertable) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->terminated) : 0u,
++        thread->last_error(),
++        thread_name.empty() ? "<unnamed>" : thread_name);
++  }
++}
++
++bool ShouldTraceContentRequest(const XCONTENT_AGGREGATE_DATA& data) {
++  return data.content_type == XContentType::kMarketplaceContent ||
++      data.content_type == XContentType::kSavedGame ||
++      data.device_id == static_cast<uint32_t>(DummyDeviceId::ODD);
++}
++
++void LogContentCall(const char* stage, const XCONTENT_AGGREGATE_DATA& data,
++                    uint64_t xuid, const std::filesystem::path& path,
++                    const std::string& detail = std::string()) {
++  if (!ShouldTraceContentRequest(data)) {
++    return;
++  }
++  if (detail.empty()) {
++    XELOGI("X360_CONTENT_CALL={} tid={:08X} request=[{}] caller_xuid={:016X} path={}",
++           stage, CurrentGuestThreadId(), DescribeContentRequest(data), xuid,
++           xe::path_to_utf8(path));
++  } else {
++    XELOGI(
++        "X360_CONTENT_CALL={} tid={:08X} request=[{}] caller_xuid={:016X} "
++        "path={} {}",
++        stage, CurrentGuestThreadId(), DescribeContentRequest(data), xuid,
++        xe::path_to_utf8(path), detail);
++  }
++}
++
+ void LogContentMiss(const char* stage, const XCONTENT_AGGREGATE_DATA& data,
+-                    uint64_t xuid, const std::filesystem::path& path) {
++                    uint64_t xuid, const std::filesystem::path& path,
++                    KernelState* kernel_state) {
+   XELOGW("X360_CONTENT_MISS={} request=[{}] caller_xuid={:016X} path={}",
+          stage, DescribeContentRequest(data), xuid, xe::path_to_utf8(path));
++  DumpGuestThreadsForFreezeTriage(kernel_state, stage);
+ }
+ 
+ }  // namespace
+@@ -159,8 +261,9 @@ std::filesystem::path ContentManager::ResolvePackagePath(
+   auto package_path = get_package_path(data.title_id);
+   if (data.content_type == XContentType::kMarketplaceContent ||
+       data.device_id == static_cast<uint32_t>(DummyDeviceId::ODD)) {
+-    XELOGD("ContentManager::ResolvePackagePath({}) -> {}",
+-           DescribeContentRequest(data), xe::path_to_utf8(package_path));
++    LogContentCall("ResolvePackagePath", data, xuid, package_path,
++                   fmt::format("disc={} exists={}", disc_number,
++                               std::filesystem::exists(package_path) ? 1 : 0));
+   }
+   return package_path;
+ }
+@@ -306,7 +409,7 @@ std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
+     const XCONTENT_AGGREGATE_DATA& data, const uint32_t disc_number) {
+   auto package_path = ResolvePackagePath(xuid, data, disc_number);
+   if (!std::filesystem::exists(package_path)) {
+-    LogContentMiss("ResolvePackage", data, xuid, package_path);
++    LogContentMiss("ResolvePackage", data, xuid, package_path, kernel_state_);
+     return nullptr;
+   }
+ 
+@@ -321,8 +424,10 @@ bool ContentManager::ContentExists(const uint64_t xuid,
+                                    const XCONTENT_AGGREGATE_DATA& data) {
+   auto path = ResolvePackagePath(xuid, data);
+   const bool exists = std::filesystem::exists(path);
++  LogContentCall("ContentExists", data, xuid, path,
++                 fmt::format("exists={}", exists ? 1 : 0));
+   if (!exists) {
+-    LogContentMiss("ContentExists", data, xuid, path);
++    LogContentMiss("ContentExists", data, xuid, path, kernel_state_);
+   }
+   return exists;
+ }
+@@ -435,7 +540,7 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
+   auto package_path = ResolvePackagePath(xuid, data, disc_number);
+   if (!std::filesystem::exists(package_path)) {
+     // Does not exist, must be created.
+-    LogContentMiss("OpenContent", data, xuid, package_path);
++    LogContentMiss("OpenContent", data, xuid, package_path, kernel_state_);
+     return X_ERROR_FILE_NOT_FOUND;
+   }
+ 
+@@ -463,6 +568,10 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
+   open_packages_.insert(
+       {string_key_insensitive::create(root_name), package.release()});
+ 
++  LogContentCall("OpenContent", data, xuid, package_path,
++                 fmt::format("root={} disc={} result={:08X}", root_name,
++                             disc_number, static_cast<uint32_t>(X_ERROR_SUCCESS)));
++
+   return X_ERROR_SUCCESS;
+ }
+ 
+diff --git a/src/xenia/kernel/xam/xam_content.cc b/src/xenia/kernel/xam/xam_content.cc
+index f21bd12..18e318b 100644
+--- a/src/xenia/kernel/xam/xam_content.cc
++++ b/src/xenia/kernel/xam/xam_content.cc
+@@ -7,13 +7,18 @@
+  ******************************************************************************
+  */
+ 
++#include <atomic>
++
++#include "xenia/base/clock.h"
+ #include "xenia/base/logging.h"
+ #include "xenia/base/math.h"
+ #include "xenia/base/string_util.h"
++#include "xenia/cpu/thread_state.h"
+ #include "xenia/kernel/kernel_state.h"
+ #include "xenia/kernel/smc.h"
+ #include "xenia/kernel/user_module.h"
+ #include "xenia/kernel/util/shim_utils.h"
++#include "xenia/kernel/xthread.h"
+ #include "xenia/kernel/xam/xam_content_device.h"
+ #include "xenia/kernel/xam/xam_module.h"
+ #include "xenia/kernel/xam/xam_private.h"
+@@ -39,6 +44,94 @@ namespace xe {
+ namespace kernel {
+ namespace xam {
+ 
++namespace {
++
++uint32_t CurrentGuestThreadId() { return cpu::ThreadState::GetThreadID(); }
++
++const char* ThreadStateName(uint8_t state) {
++  switch (state) {
++    case KTHREAD_STATE_INITIALIZED:
++      return "initialized";
++    case KTHREAD_STATE_READY:
++      return "ready";
++    case KTHREAD_STATE_RUNNING:
++      return "running";
++    case KTHREAD_STATE_STANDBY:
++      return "standby";
++    case KTHREAD_STATE_TERMINATED:
++      return "terminated";
++    case KTHREAD_STATE_WAITING:
++      return "waiting";
++    case KTHREAD_STATE_UNKNOWN:
++    default:
++      return "unknown";
++  }
++}
++
++bool ShouldEmitThreadSnapshot() {
++  static std::atomic<uint64_t> last_dump_tick{0};
++  const uint64_t now = Clock::QueryHostTickCount();
++  const uint64_t min_delta = Clock::QueryHostTickFrequency();
++  const uint64_t last = last_dump_tick.load();
++  if (last != 0 && now > last && now - last < min_delta) {
++    return false;
++  }
++  last_dump_tick.store(now);
++  return true;
++}
++
++void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
++                                     const char* reason) {
++  if (!ShouldEmitThreadSnapshot()) {
++    return;
++  }
++
++  auto threads = kernel_state->object_table()->GetObjectsByType<XThread>();
++  XELOGW("X360_THREAD_SNAPSHOT reason={} trigger_tid={:08X} count={}", reason,
++         CurrentGuestThreadId(), threads.size());
++
++  for (const auto& thread : threads) {
++    auto* kthread = thread->guest_object<X_KTHREAD>();
++    auto* context = thread->thread_state() ? thread->thread_state()->context()
++                                           : nullptr;
++    const std::string& thread_name = thread->thread_name();
++    XELOGW(
++        "X360_THREAD tid={:08X} handle={:08X} state={} suspend={} main={} "
++        "guest={} cpu={} start={:08X} lr={:08X} r1={:08X} wait_result={:08X} "
++        "wait_obj={:08X} alertable={} terminated={} last_error={:08X} name={}",
++        thread->thread_id(), thread->handle(),
++        ThreadStateName(kthread ? kthread->thread_state : KTHREAD_STATE_UNKNOWN),
++        kthread ? static_cast<uint32_t>(kthread->suspend_count) : 0u,
++        thread->main_thread() ? 1u : 0u, thread->is_guest_thread() ? 1u : 0u,
++        kthread ? static_cast<uint32_t>(kthread->current_cpu) : 0u,
++        thread->start_address(),
++        context ? static_cast<uint32_t>(context->lr) : 0u,
++        context ? static_cast<uint32_t>(context->r[1]) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->wait_result) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->wait_timeout_block.object.m_ptr) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->alertable) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->terminated) : 0u,
++        thread->last_error(),
++        thread_name.empty() ? "<unnamed>" : thread_name);
++  }
++}
++
++std::string DescribeContentRequest(const XCONTENT_AGGREGATE_DATA& content_data,
++                                   uint64_t xuid, uint32_t title_id) {
++  return fmt::format(
++      "device={:08X} type={:08X} title={:08X} xuid={:016X} file={}",
++      static_cast<uint32_t>(content_data.device_id),
++      static_cast<uint32_t>(content_data.content_type.get()), title_id, xuid,
++      content_data.file_name());
++}
++
++void LogXamContentCall(const char* name, const std::string& message) {
++  XELOGI("X360_XAM_CONTENT_CALL name={} tid={:08X} {}", name,
++         CurrentGuestThreadId(), message);
++}
++
++}  // namespace
++
+ dword_result_t XamContentGetLicenseMask_entry(lpdword_t mask_ptr,
+                                               lpvoid_t overlapped_ptr) {
+   if (!mask_ptr) {
+@@ -119,11 +212,17 @@ dword_result_t XamContentResolve_entry(
+   string_util::copy_truncating(buffer, root_device_path + relative_path,
+                                buffer_size);
+ 
+-  XELOGI(
+-      "XamContentResolve: device={:08X} type={:08X} title={:08X} file={} -> {}",
+-      static_cast<uint32_t>(content_data_ptr->device_id),
+-      static_cast<uint32_t>(content_data_ptr->content_type.get()),
+-      kernel_state()->title_id(), content_data_ptr->file_name(), buffer);
++  XCONTENT_AGGREGATE_DATA request = {};
++  request.device_id = content_data_ptr->device_id;
++  request.content_type = content_data_ptr->content_type;
++  request.title_id = kernel_state()->title_id();
++  request.xuid = xuid;
++  request.set_file_name(content_data_ptr->file_name());
++  LogXamContentCall(
++      "XamContentResolve",
++      fmt::format("request=[{}] path={}", DescribeContentRequest(request, xuid,
++                                                                 kernel_state()->title_id()),
++                  buffer));
+ 
+   // Check if it exists and try to mount that package
+   // Result of buffer_ptr is sent to RtlInitAnsiString.
+@@ -164,6 +263,18 @@ dword_result_t XamContentCreateEnumerator_entry(
+     xuid = user->xuid();
+   }
+ 
++  const uint32_t device_id_value = static_cast<uint32_t>(device_id);
++  const uint32_t content_type_value =
++      static_cast<uint32_t>(content_type.value());
++  const uint32_t content_flags_value = static_cast<uint32_t>(content_flags);
++  const uint32_t items_per_enumerate_value =
++      static_cast<uint32_t>(items_per_enumerate);
++  LogXamContentCall(
++      "XamContentCreateEnumerator",
++      fmt::format("device={:08X} type={:08X} flags={:08X} items={} xuid={:016X}",
++                  device_id_value, content_type_value, content_flags_value,
++                  items_per_enumerate_value, xuid));
++
+   auto e = object_ref<ContentEnumerator>(
+       new ContentEnumerator(kernel_state(), items_per_enumerate));
+ 
+@@ -221,6 +332,11 @@ dword_result_t XamContentCreateEnumerator_entry(
+ 
+   XELOGD("XamContentCreateEnumerator: added {} items to enumerator",
+          e->item_count());
++  LogXamContentCall(
++      "XamContentCreateEnumeratorResult",
++      fmt::format("device={:08X} type={:08X} items={} handle={:08X}",
++                  device_id_value, content_type_value, e->item_count(),
++                  e->handle()));
+ 
+   *handle_out = e->handle();
+   return X_ERROR_SUCCESS;
+@@ -276,17 +392,26 @@ dword_result_t xeXamContentCreate(dword_t user_index, lpstring_t root_name,
+   }
+ 
+   auto content_manager = kernel_state()->content_manager();
++  auto current_kernel_state = kernel_state();
+ 
+   if (overlapped_ptr && disposition_ptr) {
+     *disposition_ptr = 0;
+   }
+ 
+-  auto run = [content_manager, xuid, root_name = root_name.value(), flags,
+-              content_data, disposition_ptr, license_mask_ptr, overlapped_ptr](
+-                 uint32_t& extended_error, uint32_t& length) -> X_RESULT {
++  const uint32_t flags_value = static_cast<uint32_t>(flags);
++  LogXamContentCall(
++      "xeXamContentCreate",
++      fmt::format("root={} flags={:08X} request=[{}]", root_name.value(),
++                  flags_value, DescribeContentRequest(content_data, xuid,
++                                                      current_kernel_state->title_id())));
++
++  auto run = [content_manager, xuid, root_name = root_name.value(), flags_value,
++              content_data, disposition_ptr, license_mask_ptr, overlapped_ptr,
++              current_kernel_state](uint32_t& extended_error,
++                                    uint32_t& length) -> X_RESULT {
+     X_RESULT result = X_ERROR_INVALID_PARAMETER;
+     kDispositionState disposition = kDispositionState::Unknown;
+-    switch (flags & 0xF) {
++    switch (flags_value & 0xF) {
+       case vfs::XContentFlag::kCreateNew:
+         // Fail if exists.
+         if (content_manager->ContentExists(xuid, content_data)) {
+@@ -328,7 +453,7 @@ dword_result_t xeXamContentCreate(dword_t user_index, lpstring_t root_name,
+         }
+         break;
+       default:
+-        assert_unhandled_case(flags & 0xF);
++        assert_unhandled_case(flags_value & 0xF);
+         break;
+     }
+ 
+@@ -357,6 +482,19 @@ dword_result_t xeXamContentCreate(dword_t user_index, lpstring_t root_name,
+     if (result && overlapped_ptr) {
+       result = X_ERROR_FUNCTION_FAILED;
+     }
++    LogXamContentCall(
++        "xeXamContentCreateResult",
++        fmt::format(
++            "root={} flags={:08X} disposition={} result={:08X} request=[{}]",
++            root_name, flags_value, static_cast<uint32_t>(disposition),
++            static_cast<uint32_t>(result),
++            DescribeContentRequest(content_data, xuid,
++                                   current_kernel_state->title_id())));
++    if (result == X_ERROR_FILE_NOT_FOUND || result == X_ERROR_PATH_NOT_FOUND ||
++        result == X_ERROR_FUNCTION_FAILED) {
++      DumpGuestThreadsForFreezeTriage(current_kernel_state,
++                                      "xeXamContentCreateResult");
++    }
+     return result;
+   };
+ 
+@@ -418,9 +556,16 @@ dword_result_t XamContentOpenFile_entry(
+     return X_ERROR_INVALID_NAME;
+   }
+ 
++  auto current_kernel_state = kernel_state();
++  const uint32_t flags_value = static_cast<uint32_t>(flags);
++  LogXamContentCall(
++      "XamContentOpenFile",
++      fmt::format("root={} path={} flags={:08X}", root_name.value(),
++                  path.value(), flags_value));
++
+   auto run = [root_name = root_name.value(), relative_path = path.value(),
+-              disposition_ptr, license_mask_ptr](uint32_t& extended_error,
+-                                                 uint32_t& length) -> X_RESULT {
++              disposition_ptr, license_mask_ptr, current_kernel_state](
++                 uint32_t& extended_error, uint32_t& length) -> X_RESULT {
+     auto normalized_path = relative_path;
+     while (!normalized_path.empty() &&
+            (normalized_path.front() == '\\' || normalized_path.front() == '/')) {
+@@ -443,6 +588,8 @@ dword_result_t XamContentOpenFile_entry(
+     } else {
+       XELOGW("X360_CONTENT_MISS=XamContentOpenFile root={} path={} guest_path={}",
+              root_name, normalized_path, guest_path);
++      DumpGuestThreadsForFreezeTriage(current_kernel_state,
++                                      "XamContentOpenFileMiss");
+       if (disposition_ptr) {
+         *disposition_ptr = 0;
+       }
+@@ -450,6 +597,10 @@ dword_result_t XamContentOpenFile_entry(
+     }
+ 
+     extended_error = X_HRESULT_FROM_WIN32(result);
++    LogXamContentCall(
++        "XamContentOpenFileResult",
++        fmt::format("root={} path={} guest_path={} result={:08X}", root_name,
++                    normalized_path, guest_path, static_cast<uint32_t>(result)));
+     return result;
+   };
+ 

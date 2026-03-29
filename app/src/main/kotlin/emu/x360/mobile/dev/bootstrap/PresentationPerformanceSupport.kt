@@ -48,18 +48,34 @@ internal class RollingPresentationMetricsTracker(
     private val fpsWindowMillis: Long = 500L,
 ) {
     private val exportCounter = RollingAbsoluteCountFpsCounter(fpsWindowMillis)
+    private val transportChangeCounter = RollingEventFpsCounter(fpsWindowMillis)
     private val decodeCounter = RollingEventFpsCounter(fpsWindowMillis)
     private val presentCounter = RollingEventFpsCounter(fpsWindowMillis)
+    private val visibleChangeCounter = RollingEventFpsCounter(fpsWindowMillis)
     private val visibleCounter = RollingAbsoluteCountFpsCounter(fpsWindowMillis)
+    private val screenChangeCounter = RollingEventFpsCounter(fpsWindowMillis)
     private var exportFrameCount: Long = 0L
     private var decodedFrameCount: Long = 0L
     private var presentedFrameCount: Long = 0L
     private var lastTransportFrameHash: String = ""
+    private var lastTransportPerceptualHash: String = ""
     private var lastVisibleFrameHash: String = ""
+    private var lastVisiblePerceptualHash: String = ""
+    private var lastScreenFrameHash: String = ""
+    private var lastScreenPerceptualHash: String = ""
+    private var lastScreenBlackRatio: Float = 0f
+    private var lastScreenAverageLuma: Float = 0f
+    private var lastPresenterSubmittedAtEpochMillis: Long = 0L
+    private var uiLongFrameCount: Long = 0L
+    private var uiLongestFrameMillis: Long = 0L
+    private var inputEventsPerSecond: Float = 0f
+    private var lastLifecycleEvent: String = ""
+    private var lastSurfaceEvent: String = ""
 
     fun onExportObserved(
         frameIndex: Long,
         frameHash: String = "",
+        perceptualHash: String = "",
         nowMillis: Long = System.currentTimeMillis(),
     ) {
         if (frameIndex < 0L) {
@@ -68,6 +84,11 @@ internal class RollingPresentationMetricsTracker(
         exportFrameCount = frameIndex
         if (frameHash.isNotBlank()) {
             lastTransportFrameHash = frameHash
+        }
+        val changeHash = perceptualHash.ifBlank { frameHash }
+        if (changeHash.isNotBlank() && changeHash != lastTransportPerceptualHash) {
+            lastTransportPerceptualHash = changeHash
+            transportChangeCounter.record(nowMillis)
         }
         exportCounter.record(frameIndex, nowMillis)
     }
@@ -80,6 +101,7 @@ internal class RollingPresentationMetricsTracker(
     fun onPresented(
         frameIndex: Long,
         visibleFrameHash: String = "",
+        visiblePerceptualHash: String = "",
         nowMillis: Long = System.currentTimeMillis(),
     ) {
         presentedFrameCount += 1L
@@ -87,7 +109,52 @@ internal class RollingPresentationMetricsTracker(
         if (visibleFrameHash.isNotBlank()) {
             lastVisibleFrameHash = visibleFrameHash
         }
+        val changeHash = visiblePerceptualHash.ifBlank { visibleFrameHash }
+        if (changeHash.isNotBlank() && changeHash != lastVisiblePerceptualHash) {
+            lastVisiblePerceptualHash = changeHash
+            visibleChangeCounter.record(nowMillis)
+        }
+        lastPresenterSubmittedAtEpochMillis = nowMillis
         visibleCounter.record(frameIndex, nowMillis)
+    }
+
+    fun onScreenObserved(
+        screenFrameHash: String = "",
+        screenPerceptualHash: String = "",
+        blackRatio: Float = 0f,
+        averageLuma: Float = 0f,
+        nowMillis: Long = System.currentTimeMillis(),
+    ) {
+        if (screenFrameHash.isNotBlank()) {
+            lastScreenFrameHash = screenFrameHash
+        }
+        val changeHash = screenPerceptualHash.ifBlank { screenFrameHash }
+        if (changeHash.isNotBlank() && changeHash != lastScreenPerceptualHash) {
+            lastScreenPerceptualHash = changeHash
+            screenChangeCounter.record(nowMillis)
+        }
+        lastScreenBlackRatio = blackRatio
+        lastScreenAverageLuma = averageLuma
+    }
+
+    fun onUiLongFrameObserved(frameMillis: Long) {
+        if (frameMillis <= 0L) {
+            return
+        }
+        uiLongFrameCount += 1L
+        uiLongestFrameMillis = max(uiLongestFrameMillis, frameMillis)
+    }
+
+    fun onInputRateObserved(ratePerSecond: Float) {
+        inputEventsPerSecond = ratePerSecond.coerceAtLeast(0f)
+    }
+
+    fun onLifecycleEvent(event: String) {
+        lastLifecycleEvent = event
+    }
+
+    fun onSurfaceEvent(event: String) {
+        lastSurfaceEvent = event
     }
 
     fun snapshot(frameSourceStatus: String): PresentationPerformanceMetrics {
@@ -96,12 +163,27 @@ internal class RollingPresentationMetricsTracker(
             decodedFrameCount = decodedFrameCount,
             presentedFrameCount = presentedFrameCount,
             exportFps = exportCounter.fps,
+            transportChangeFps = transportChangeCounter.fps,
             decodeFps = decodeCounter.fps,
             presentFps = presentCounter.fps,
+            visibleChangeFps = visibleChangeCounter.fps,
             visibleFps = visibleCounter.fps,
+            screenChangeFps = screenChangeCounter.fps,
             frameSourceStatus = frameSourceStatus,
             transportFrameHash = lastTransportFrameHash,
+            transportFramePerceptualHash = lastTransportPerceptualHash,
             visibleFrameHash = lastVisibleFrameHash,
+            visibleFramePerceptualHash = lastVisiblePerceptualHash,
+            screenFrameHash = lastScreenFrameHash,
+            screenFramePerceptualHash = lastScreenPerceptualHash,
+            screenBlackRatio = lastScreenBlackRatio,
+            screenAverageLuma = lastScreenAverageLuma,
+            presenterSubmittedAtEpochMillis = lastPresenterSubmittedAtEpochMillis,
+            uiLongFrameCount = uiLongFrameCount,
+            uiLongestFrameMillis = uiLongestFrameMillis,
+            inputEventsPerSecond = inputEventsPerSecond,
+            lastLifecycleEvent = lastLifecycleEvent,
+            lastSurfaceEvent = lastSurfaceEvent,
         )
     }
 }

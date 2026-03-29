@@ -31,6 +31,30 @@ enum class ProgressionStallClassification {
 }
 
 @Serializable
+enum class AndroidVideoFreezeCause {
+    @SerialName("android-presenter-stale")
+    ANDROID_PRESENTER_STALE,
+
+    @SerialName("transport-export-stale")
+    TRANSPORT_EXPORT_STALE,
+
+    @SerialName("xenia-readback-or-export-pipeline-stalled")
+    XENIA_READBACK_OR_EXPORT_PIPELINE_STALLED,
+
+    @SerialName("guest-progress-stalled-not-android-video")
+    GUEST_PROGRESS_STALLED_NOT_ANDROID_VIDEO,
+
+    @SerialName("input-or-ui-thread-starvation")
+    INPUT_OR_UI_THREAD_STARVATION,
+
+    @SerialName("host-storage-permission-or-session-desync")
+    HOST_STORAGE_PERMISSION_OR_SESSION_DESYNC,
+
+    @SerialName("unknown")
+    UNKNOWN,
+}
+
+@Serializable
 data class DiagnosticRootAccessState(
     val label: String,
     val hostPath: String,
@@ -55,6 +79,7 @@ data class PlayerSessionLaunchSummary(
     val entryId: String,
     val entryDisplayName: String,
     val guestTitlePath: String,
+    val freezeLabSource: String,
     val presentationBackend: String,
     val guestRenderScaleProfile: String,
     val internalDisplayResolution: String,
@@ -63,6 +88,9 @@ data class PlayerSessionLaunchSummary(
     val mesaBranch: String,
     val mesaReason: String,
     val diagnosticProfile: String,
+    val dlcPolicy: String = "enabled",
+    val inputMuted: Boolean = false,
+    val overlayHidden: Boolean = false,
     val args: List<String>,
     val environmentSummary: Map<String, String>,
 )
@@ -94,11 +122,25 @@ data class PlayerSessionPresentationSnapshot(
     val guestSwapFps: Float,
     val captureFps: Float,
     val transportPublishFps: Float,
+    val transportChangeFps: Float,
     val decodeFps: Float,
     val visiblePresentFps: Float,
+    val visibleChangeFps: Float,
     val visibleFps: Float,
+    val screenChangeFps: Float,
     val transportFrameHash: String,
+    val transportFramePerceptualHash: String,
     val visibleFrameHash: String,
+    val visibleFramePerceptualHash: String,
+    val screenFrameHash: String,
+    val screenFramePerceptualHash: String,
+    val screenBlackRatio: Float,
+    val screenAverageLuma: Float,
+    val presenterSubmittedAtEpochMillis: Long,
+    val uiLongFrameCount: Long,
+    val uiLongestFrameMillis: Long,
+    val lastLifecycleEvent: String,
+    val lastSurfaceEvent: String,
 )
 
 @Serializable
@@ -107,6 +149,7 @@ data class PlayerSessionInputSnapshot(
     val controllerName: String? = null,
     val lastInputSequence: Long,
     val lastInputAgeMs: Long? = null,
+    val inputEventsPerSecond: Float = 0f,
 )
 
 @Serializable
@@ -126,8 +169,82 @@ data class PlayerSessionHostSnapshot(
 )
 
 @Serializable
+data class MovieAudioDebugSnapshot(
+    val playerState: String = "unavailable",
+    val activeAudioClients: Int = 0,
+    val audioClientRegisterCount: Int = 0,
+    val movieThreadBurstCount: Int = 0,
+    val lastThreadChurnEvent: String? = null,
+    val lastMediaEvent: String? = null,
+    val lastVfsEvent: String? = null,
+)
+
+@Serializable
+data class VideoFreezeEvidence(
+    val presentationBackend: String,
+    val diagnosticProfile: String,
+    val freezeLabSource: String,
+    val guestProcessAlive: Boolean,
+    val transportFreshnessSeconds: Long? = null,
+    val outputFrameIndex: Long = -1L,
+    val issueSwapCount: Long = 0L,
+    val captureSuccessCount: Long = 0L,
+    val exportFrameCount: Long = 0L,
+    val decodedFrameCount: Long = 0L,
+    val presentedFrameCount: Long = 0L,
+    val guestSwapFps: Float = 0f,
+    val captureFps: Float = 0f,
+    val transportPublishFps: Float = 0f,
+    val transportChangeFps: Float = 0f,
+    val visiblePresentFps: Float = 0f,
+    val visibleChangeFps: Float = 0f,
+    val screenChangeFps: Float = 0f,
+    val visibleFps: Float = 0f,
+    val transportFrameHash: String = "",
+    val transportFramePerceptualHash: String = "",
+    val visibleFrameHash: String = "",
+    val visibleFramePerceptualHash: String = "",
+    val screenFrameHash: String = "",
+    val screenFramePerceptualHash: String = "",
+    val screenBlackRatio: Float = 0f,
+    val screenAverageLuma: Float = 0f,
+    val presenterSubmittedAtEpochMillis: Long = 0L,
+    val uiLongFrameCount: Long = 0L,
+    val uiLongestFrameMillis: Long = 0L,
+    val inputEventsPerSecond: Float = 0f,
+    val lastLifecycleEvent: String = "",
+    val lastSurfaceEvent: String = "",
+    val storageFailureLabels: List<String> = emptyList(),
+    val lastMeaningfulGuestTransition: String? = null,
+    val lastContentCallResult: String? = null,
+    val lastXamCallResult: String? = null,
+    val lastXliveCallResult: String? = null,
+    val lastXnetCallResult: String? = null,
+    val lastDiscResolveLine: String? = null,
+    val lastHostResolveLine: String? = null,
+    val lastEmptyDiscResolveLine: String? = null,
+    val lastTrueFileMiss: String? = null,
+    val lastRootProbe: String? = null,
+    val emptyDiscResolveCount: Int = 0,
+    val movieDecodeThreadCount: Int = 0,
+    val audioClientRegisterCount: Int = 0,
+    val movieThreadBurstCount: Int = 0,
+    val lastMovieDecodeThreadLine: String? = null,
+    val lastMovieAudioState: String? = null,
+    val guestTimelineMarkers: List<String> = emptyList(),
+)
+
+@Serializable
+data class VideoFreezeConfidenceReport(
+    val cause: AndroidVideoFreezeCause = AndroidVideoFreezeCause.UNKNOWN,
+    val confidencePercent: Int = 0,
+    val reason: String = "insufficient-evidence",
+    val corroboratingSignals: List<String> = emptyList(),
+)
+
+@Serializable
 data class PlayerSessionDiagnosticsBundle(
-    val version: Int = 1,
+    val version: Int = 5,
     val sessionId: String,
     val capturedAtEpochMillis: Long,
     val startupStage: String,
@@ -142,16 +259,31 @@ data class PlayerSessionDiagnosticsBundle(
     val lastXamCallResult: String? = null,
     val lastXliveCallResult: String? = null,
     val lastXnetCallResult: String? = null,
+    val guestTimelineMarkers: List<String> = emptyList(),
+    val lastThreadSnapshotHeader: String? = null,
+    val lastThreadSnapshotLines: List<String> = emptyList(),
     val appLogPath: String,
     val fexLogPath: String,
     val guestLogPath: String,
     val launchSummary: PlayerSessionLaunchSummary,
     val storageRoots: List<DiagnosticRootAccessState>,
     val installedContent: List<InstalledTitleContentSummary>,
+    val installedMarketplaceContentCount: Int = 0,
     val patchState: PlayerSessionPatchState,
     val presentation: PlayerSessionPresentationSnapshot,
     val input: PlayerSessionInputSnapshot,
     val host: PlayerSessionHostSnapshot,
+    val movieAudioState: MovieAudioDebugSnapshot = MovieAudioDebugSnapshot(),
+    val audioClientEvents: List<String> = emptyList(),
+    val threadCreationEvents: List<String> = emptyList(),
+    val vfsAccessTimeline: List<String> = emptyList(),
+    val freezeEvidence: VideoFreezeEvidence = VideoFreezeEvidence(
+        presentationBackend = "unknown",
+        diagnosticProfile = "unknown",
+        freezeLabSource = "unknown",
+        guestProcessAlive = false,
+    ),
+    val freezeReport: VideoFreezeConfidenceReport = VideoFreezeConfidenceReport(),
 )
 
 object PlayerSessionDiagnosticsBundleCodec {

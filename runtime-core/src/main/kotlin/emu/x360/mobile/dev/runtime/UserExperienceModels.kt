@@ -28,6 +28,7 @@ data class GameOptionsEntry(
     val entryId: String,
     val renderScaleOverride: GuestRenderScaleProfile? = null,
     val showFpsCounterOverride: Boolean? = null,
+    val dlcEnabledOverride: Boolean? = null,
     val presentationBackendOverride: PresentationBackend? = null,
     val note: String? = null,
 )

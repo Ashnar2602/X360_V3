@@ -8,7 +8,7 @@ This repository contains:
 
 Current implemented path:
 
-`Android app shell -> FEX host on Android arm64 -> Ubuntu 24.04 amd64 guest slice -> guest Vulkan loader -> dual Mesa guest trees -> Turnip or lavapipe -> pinned Xenia Canary -> no-copy ISO library -> descriptor-backed title portal -> visible fullscreen player -> controller input bridge -> patch DB + content tooling + progression diagnostics`
+`Android app shell -> FEX host on Android arm64 -> Ubuntu 24.04 amd64 guest slice -> guest Vulkan loader -> dual Mesa guest trees -> Turnip or lavapipe -> pinned Xenia Canary -> no-copy ISO library -> descriptor-backed title portal -> visible fullscreen player -> controller input bridge -> patch DB + title-content tooling + progression diagnostics + freeze lab`
 
 Current practical product baseline:
 
@@ -21,7 +21,7 @@ Current practical product baseline:
 
 Implemented in this workspace today:
 
-- Android wrapper app with splash, library-first shell, options flow, debug screen, and fullscreen player
+- Android wrapper app with splash, library-first shell, options flow, debug screen, freeze-lab controls, and fullscreen player
 - `runtime-core` manifest/install/metadata contracts
 - `native-bridge` JNI/CMake layer for Android-specific process and FD plumbing
 - deterministic runtime payload staging under `filesDir`
@@ -33,15 +33,17 @@ Implemented in this workspace today:
   - `mesa25` from `7f1ccad77883be68e7750ab30b99b16df02e679d`
   - `mesa26` from `44669146808b74024b9befeb59266db18ae5e165`
 - repo-owned Mesa patch queue under `third_party/mesa-patches`
-- pinned-source Xenia build pipeline from `canary_experimental@c50b036178108f87cb0acaf3691a7c3caf07820f`
-- repo-owned Xenia patch queue under `third_party/xenia-patches/phase4`
+- Xenia guest rebased to the desktop-working Canary family `canary_experimental@553aedebb59340d3106cd979ca7d09cc8e3bd98e`
+- patch-set-driven Xenia patch queues under `third_party/xenia-patches/<patchSetId>/`
+- current active Xenia patch set `phase11a-upstreamfirst-v1`
 - official `xenia-canary/game-patches` snapshot bundled into the runtime
 - persistent incremental Xenia dev workspace plus clean full-build fallback
 - no-copy ISO library persisted under `filesDir/library`
 - descriptor-backed title portal under `rootfs/mnt/library/<entry-id>.iso`
 - controller input bridge from Android controller events into headless Xenia
 - content-package UI/pipeline for title-specific XContent containers
-- progression diagnostics bundle and stall classification for live player sessions
+- per-game DLC visibility policy backed by `X360_MARKETPLACE_CONTENT_POLICY`
+- progression diagnostics bundle, stall classification, and freeze-lab reporting for live player sessions
 
 What is currently verified:
 
@@ -52,13 +54,34 @@ What is currently verified:
 - `Dante's Inferno` boots from ISO, renders visible frames, and accepts controller input on both validated devices
 - the official patch DB is loaded in runtime
 - the polling export regression that previously froze after the first frame is fixed in the live APK payload
+- the generated runtime payload now carries the Phase 11A guest:
+  - source revision `553aedebb59340d3106cd979ca7d09cc8e3bd98e`
+  - patch set `phase11a-upstreamfirst-v1`
+  - staged `xenia-canary` SHA-256 `6ae5bc7384ca5b59cac2b03035dcf26b9d3f39e5d6efe788c6795859601a5526`
+
+What Phase 11A deliberately changed:
+
+- rebased Android/Linux Xenia from the older `c50b...` family to the desktop-working `553...` family
+- changed the build to resolve Xenia patch queues from `patchSetId`
+- kept Android/platform deltas:
+  - headless presentation backends
+  - `android_shared_memory` HID
+  - content-tool packaging
+  - content-root/title-content plumbing
+  - diagnostics and freeze-lab tracing
+  - per-game DLC visibility policy
+- removed old default semantic drift from the XAM layer:
+  - no silent synthetic `xam_net` fallback by default
+  - no silent synthetic `xlivebase` fallback by default
+  - no carry-forward of the earlier custom XAM behavior unless explicitly re-proven necessary
 
 What is still open:
 
 - progression stalls after some loading transitions are not fully resolved yet
-- audio is still deferred
+- audio is still deferred as a product feature
 - direct surface bridge remains deferred
 - the shared-memory player path remains in the repo, but the current stable default is polling
+- Phase 11A removed old-pin drift and silent local XAM semantic divergence as primary suspects, but it has not yet eliminated Dante's loading freeze
 
 ## Active source pins
 
@@ -70,8 +93,8 @@ What is still open:
   - `mesa26`: `44669146808b74024b9befeb59266db18ae5e165`
   - Mesa patch set: `ubwc5-a830-v1`
 - Xenia:
-  - `canary_experimental@c50b036178108f87cb0acaf3691a7c3caf07820f`
-  - patch set: `phase10c-triage-v2`
+  - `canary_experimental@553aedebb59340d3106cd979ca7d09cc8e3bd98e`
+  - patch set: `phase11a-upstreamfirst-v1`
 
 ## Repository layout
 
@@ -79,7 +102,7 @@ What is still open:
   - Android UI shell
   - player session orchestration
   - runtime install/launch logic
-  - device-facing diagnostics and debug flows
+  - device-facing diagnostics, freeze lab, and debug flows
 - `runtime-core/`
   - manifest, install, metadata, directories, codec, and runtime contracts
 - `native-bridge/`
@@ -102,8 +125,8 @@ What is still open:
   - repo-owned FEX Android patches
 - `third_party/mesa-patches/`
   - repo-owned Mesa patches
-- `third_party/xenia-patches/phase4/`
-  - repo-owned Xenia patch queue
+- `third_party/xenia-patches/`
+  - patch-set-scoped Xenia patch queues
 - `docs/`
   - reconstruction notes, plans, playbooks, and developer hand-off
 - `artifacts/`

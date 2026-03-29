@@ -5,6 +5,7 @@ import emu.x360.mobile.dev.bootstrap.SharedFramePresentationReader
 import androidx.lifecycle.AndroidViewModel
 import emu.x360.mobile.dev.runtime.PresentationPerformanceMetrics
 import emu.x360.mobile.dev.runtime.AppSettings
+import emu.x360.mobile.dev.bootstrap.DiagnosticLaunchProfile
 import kotlinx.coroutines.flow.StateFlow
 
 internal class PlayerViewModel(
@@ -13,11 +14,19 @@ internal class PlayerViewModel(
     private val appSettingsStore = AppSettingsStore(application.applicationContext.filesDir.toPath())
     val uiState: StateFlow<PlayerSessionUiState> = PlayerSessionController.state
 
-    fun start(entryId: String) {
+    fun start(
+        entryId: String,
+        diagnosticProfile: DiagnosticLaunchProfile = DiagnosticLaunchProfile.XENIA_REAL_TITLE,
+        inputMuted: Boolean = false,
+        overlayHidden: Boolean = false,
+    ) {
         PlayerSessionController.start(
             context = getApplication<Application>().applicationContext,
             entryId = entryId,
             settings = appSettingsStore.load(),
+            diagnosticProfile = diagnosticProfile,
+            inputMuted = inputMuted,
+            overlayHidden = overlayHidden,
         )
     }
 

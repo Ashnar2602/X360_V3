@@ -1,0 +1,411 @@
+﻿diff --git a/src/xenia/kernel/xam/content_manager.cc b/src/xenia/kernel/xam/content_manager.cc
+index 1cefbe0..103fb04 100644
+--- a/src/xenia/kernel/xam/content_manager.cc
++++ b/src/xenia/kernel/xam/content_manager.cc
+@@ -16,6 +16,8 @@
+ #include "xenia/base/filesystem.h"
+ #include "xenia/base/logging.h"
+ #include "xenia/base/string.h"
++#include "xenia/cpu/processor.h"
++#include "xenia/cpu/thread_debug_info.h"
+ #include "xenia/cpu/thread_state.h"
+ #include "xenia/emulator.h"
+ #include "xenia/kernel/kernel_state.h"
+@@ -76,6 +78,21 @@ bool ShouldEmitThreadSnapshot() {
+   return true;
+ }
+ 
++uint32_t QueryGuestPc(KernelState* kernel_state, XThread* thread) {
++  if (!kernel_state || !thread) {
++    return 0;
++  }
++  auto* processor = kernel_state->processor();
++  if (!processor) {
++    return 0;
++  }
++  auto* debug_info = processor->QueryThreadDebugInfo(thread->thread_id());
++  if (!debug_info || debug_info->frames.empty()) {
++    return 0;
++  }
++  return debug_info->frames.front().guest_pc;
++}
++
+ void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
+                                      const char* reason) {
+   if (!ShouldEmitThreadSnapshot()) {
+@@ -90,20 +107,24 @@ void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
+     auto* kthread = thread->guest_object<X_KTHREAD>();
+     auto* context = thread->thread_state() ? thread->thread_state()->context()
+                                            : nullptr;
++    const uint32_t guest_pc = QueryGuestPc(kernel_state, thread.get());
+     const std::string& thread_name = thread->thread_name();
+     XELOGW(
+         "X360_THREAD tid={:08X} handle={:08X} state={} suspend={} main={} "
+-        "guest={} cpu={} start={:08X} lr={:08X} r1={:08X} wait_result={:08X} "
++        "guest={} cpu={} start={:08X} pc={:08X} lr={:08X} r1={:08X} "
++        "wait_result={:08X} wait_status={:08X} wait_type={:04X} "
+         "wait_obj={:08X} alertable={} terminated={} last_error={:08X} name={}",
+         thread->thread_id(), thread->handle(),
+         ThreadStateName(kthread ? kthread->thread_state : KTHREAD_STATE_UNKNOWN),
+         kthread ? static_cast<uint32_t>(kthread->suspend_count) : 0u,
+         thread->main_thread() ? 1u : 0u, thread->is_guest_thread() ? 1u : 0u,
+         kthread ? static_cast<uint32_t>(kthread->current_cpu) : 0u,
+-        thread->start_address(),
++        thread->start_address(), guest_pc,
+         context ? static_cast<uint32_t>(context->lr) : 0u,
+         context ? static_cast<uint32_t>(context->r[1]) : 0u,
+         kthread ? static_cast<uint32_t>(kthread->wait_result) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->wait_timeout_block.wait_result_xstatus) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->wait_timeout_block.wait_type) : 0u,
+         kthread ? static_cast<uint32_t>(kthread->wait_timeout_block.object.m_ptr) : 0u,
+         kthread ? static_cast<uint32_t>(kthread->alertable) : 0u,
+         kthread ? static_cast<uint32_t>(kthread->terminated) : 0u,
+diff --git a/src/xenia/kernel/xam/xam_content.cc b/src/xenia/kernel/xam/xam_content.cc
+index 50b6f78..1575f82 100644
+--- a/src/xenia/kernel/xam/xam_content.cc
++++ b/src/xenia/kernel/xam/xam_content.cc
+@@ -15,6 +15,8 @@
+ #include "xenia/base/logging.h"
+ #include "xenia/base/math.h"
+ #include "xenia/base/string_util.h"
++#include "xenia/cpu/processor.h"
++#include "xenia/cpu/thread_debug_info.h"
+ #include "xenia/cpu/thread_state.h"
+ #include "xenia/kernel/kernel_state.h"
+ #include "xenia/kernel/smc.h"
+@@ -82,6 +84,21 @@ bool ShouldEmitThreadSnapshot() {
+   return true;
+ }
+ 
++uint32_t QueryGuestPc(KernelState* kernel_state, XThread* thread) {
++  if (!kernel_state || !thread) {
++    return 0;
++  }
++  auto* processor = kernel_state->processor();
++  if (!processor) {
++    return 0;
++  }
++  auto* debug_info = processor->QueryThreadDebugInfo(thread->thread_id());
++  if (!debug_info || debug_info->frames.empty()) {
++    return 0;
++  }
++  return debug_info->frames.front().guest_pc;
++}
++
+ void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
+                                      const char* reason) {
+   if (!ShouldEmitThreadSnapshot()) {
+@@ -96,20 +113,24 @@ void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
+     auto* kthread = thread->guest_object<X_KTHREAD>();
+     auto* context = thread->thread_state() ? thread->thread_state()->context()
+                                            : nullptr;
++    const uint32_t guest_pc = QueryGuestPc(kernel_state, thread.get());
+     const std::string& thread_name = thread->thread_name();
+     XELOGW(
+         "X360_THREAD tid={:08X} handle={:08X} state={} suspend={} main={} "
+-        "guest={} cpu={} start={:08X} lr={:08X} r1={:08X} wait_result={:08X} "
++        "guest={} cpu={} start={:08X} pc={:08X} lr={:08X} r1={:08X} "
++        "wait_result={:08X} wait_status={:08X} wait_type={:04X} "
+         "wait_obj={:08X} alertable={} terminated={} last_error={:08X} name={}",
+         thread->thread_id(), thread->handle(),
+         ThreadStateName(kthread ? kthread->thread_state : KTHREAD_STATE_UNKNOWN),
+         kthread ? static_cast<uint32_t>(kthread->suspend_count) : 0u,
+         thread->main_thread() ? 1u : 0u, thread->is_guest_thread() ? 1u : 0u,
+         kthread ? static_cast<uint32_t>(kthread->current_cpu) : 0u,
+-        thread->start_address(),
++        thread->start_address(), guest_pc,
+         context ? static_cast<uint32_t>(context->lr) : 0u,
+         context ? static_cast<uint32_t>(context->r[1]) : 0u,
+         kthread ? static_cast<uint32_t>(kthread->wait_result) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->wait_timeout_block.wait_result_xstatus) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->wait_timeout_block.wait_type) : 0u,
+         kthread ? static_cast<uint32_t>(kthread->wait_timeout_block.object.m_ptr) : 0u,
+         kthread ? static_cast<uint32_t>(kthread->alertable) : 0u,
+         kthread ? static_cast<uint32_t>(kthread->terminated) : 0u,
+@@ -384,6 +405,12 @@ dword_result_t XamContentCreateEnumerator_entry(
+                   e->handle(),
+                   MarketplaceContentPolicyName(marketplace_policy),
+                   ShouldProbeOddMarketplaceContent() ? 1 : 0));
++  if (content_type_value ==
++          static_cast<uint32_t>(XContentType::kMarketplaceContent) &&
++      e->item_count() == 0) {
++    DumpGuestThreadsForFreezeTriage(kernel_state(),
++                                    "XamContentCreateEnumeratorEmptyMarketplace");
++  }
+ 
+   *handle_out = e->handle();
+   return X_ERROR_SUCCESS;
+diff --git a/src/xenia/kernel/xthread.cc b/src/xenia/kernel/xthread.cc
+index f89bd29..4db3f88 100644
+--- a/src/xenia/kernel/xthread.cc
++++ b/src/xenia/kernel/xthread.cc
+@@ -9,16 +9,21 @@
+ 
+ #include "xenia/kernel/xthread.h"
+ 
++#include <atomic>
++
+ #if XE_PLATFORM_LINUX
+ #include <signal.h>
+ #endif
+ 
+ #include "xenia/base/byte_stream.h"
++#include "xenia/base/clock.h"
+ #include "xenia/base/logging.h"
+ #include "xenia/base/platform.h"
+ #include "xenia/base/profiling.h"
+ #include "xenia/base/threading.h"
+ #include "xenia/cpu/processor.h"
++#include "xenia/cpu/thread_debug_info.h"
++#include "xenia/cpu/thread_state.h"
+ #include "xenia/emulator.h"
+ #include "xenia/kernel/kernel_state.h"
+ #include "xenia/kernel/user_module.h"
+@@ -47,6 +52,123 @@ using namespace xe::literals;
+ 
+ uint32_t next_xthread_id_ = 0;
+ 
++namespace {
++
++const char* ThreadStateName(uint8_t state) {
++  switch (state) {
++    case KTHREAD_STATE_INITIALIZED:
++      return "initialized";
++    case KTHREAD_STATE_READY:
++      return "ready";
++    case KTHREAD_STATE_RUNNING:
++      return "running";
++    case KTHREAD_STATE_STANDBY:
++      return "standby";
++    case KTHREAD_STATE_TERMINATED:
++      return "terminated";
++    case KTHREAD_STATE_WAITING:
++      return "waiting";
++    case KTHREAD_STATE_UNKNOWN:
++    default:
++      return "unknown";
++  }
++}
++
++bool ShouldEmitThreadSnapshot() {
++  static std::atomic<uint64_t> last_dump_tick{0};
++  const uint64_t now = Clock::QueryHostTickCount();
++  const uint64_t min_delta = Clock::QueryHostTickFrequency();
++  const uint64_t last = last_dump_tick.load();
++  if (last != 0 && now > last && now - last < min_delta) {
++    return false;
++  }
++  last_dump_tick.store(now);
++  return true;
++}
++
++uint32_t QueryGuestPc(XThread* thread) {
++  if (!thread) {
++    return 0;
++  }
++  auto* processor = thread->kernel_state()->processor();
++  if (!processor) {
++    return 0;
++  }
++  auto* debug_info = processor->QueryThreadDebugInfo(thread->thread_id());
++  if (!debug_info || debug_info->frames.empty()) {
++    return 0;
++  }
++  return debug_info->frames.front().guest_pc;
++}
++
++void DumpGuestThreadsForFreezeTriage(KernelState* kernel_state,
++                                     const char* reason) {
++  if (!ShouldEmitThreadSnapshot()) {
++    return;
++  }
++
++  auto threads = kernel_state->object_table()->GetObjectsByType<XThread>();
++  XELOGW("X360_THREAD_SNAPSHOT reason={} trigger_tid={:08X} count={}", reason,
++         cpu::ThreadState::GetThreadID(), threads.size());
++
++  for (const auto& thread : threads) {
++    auto* kthread = thread->guest_object<X_KTHREAD>();
++    auto* context = thread->thread_state() ? thread->thread_state()->context()
++                                           : nullptr;
++    const uint32_t guest_pc = QueryGuestPc(thread.get());
++    const std::string& thread_name = thread->thread_name();
++    XELOGW(
++        "X360_THREAD tid={:08X} handle={:08X} state={} suspend={} main={} "
++        "guest={} cpu={} start={:08X} pc={:08X} lr={:08X} r1={:08X} "
++        "wait_result={:08X} wait_status={:08X} wait_type={:04X} "
++        "wait_obj={:08X} alertable={} terminated={} last_error={:08X} name={}",
++        thread->thread_id(), thread->handle(),
++        ThreadStateName(kthread ? kthread->thread_state : KTHREAD_STATE_UNKNOWN),
++        kthread ? static_cast<uint32_t>(kthread->suspend_count) : 0u,
++        thread->main_thread() ? 1u : 0u, thread->is_guest_thread() ? 1u : 0u,
++        kthread ? static_cast<uint32_t>(kthread->current_cpu) : 0u,
++        thread->start_address(), guest_pc,
++        context ? static_cast<uint32_t>(context->lr) : 0u,
++        context ? static_cast<uint32_t>(context->r[1]) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->wait_result) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->wait_timeout_block.wait_result_xstatus) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->wait_timeout_block.wait_type) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->wait_timeout_block.object.m_ptr) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->alertable) : 0u,
++        kthread ? static_cast<uint32_t>(kthread->terminated) : 0u,
++        thread->last_error(),
++        thread_name.empty() ? "<unnamed>" : thread_name);
++  }
++}
++
++void TraceMovieThreadExecute(XThread* thread) {
++  const std::string& thread_name = thread->thread_name();
++  if (thread_name.find("MoviePlayer2 Decode Thread") == std::string::npos) {
++    return;
++  }
++
++  static std::atomic<uint64_t> last_tick{0};
++  static std::atomic<uint32_t> burst_count{0};
++  const uint64_t now = Clock::QueryHostTickCount();
++  const uint64_t window = Clock::QueryHostTickFrequency() * 2;
++  const uint64_t last = last_tick.exchange(now);
++  uint32_t next_count = 1;
++  if (last != 0 && now > last && now - last <= window) {
++    next_count = burst_count.fetch_add(1) + 1;
++  } else {
++    burst_count.store(1);
++  }
++
++  XELOGW("X360_MOVIE_THREAD_EVENT tid={:08X} handle={:08X} burst={} name={}",
++         thread->thread_id(), thread->handle(), next_count, thread_name);
++  if (next_count >= 2) {
++    DumpGuestThreadsForFreezeTriage(thread->kernel_state(),
++                                    "movie-thread-churn");
++  }
++}
++
++}  // namespace
++
+ XThread::XThread(KernelState* kernel_state)
+     : XObject(kernel_state, kObjectType), guest_thread_(true) {}
+ 
+@@ -520,6 +642,7 @@ X_STATUS XThread::Terminate(int exit_code) {
+ void XThread::Execute() {
+   XELOGKERNEL("XThread::Execute thid {} (handle={:08X}, '{}', native={:08X})",
+               thread_id_, handle(), thread_name_, thread_->system_id());
++  TraceMovieThreadExecute(this);
+   // Let the kernel know we are starting.
+   kernel_state()->OnThreadExecute(this);
+ 
+diff --git a/src/xenia/vfs/devices/disc_image_device.cc b/src/xenia/vfs/devices/disc_image_device.cc
+index a35932b..a9dc5db 100644
+--- a/src/xenia/vfs/devices/disc_image_device.cc
++++ b/src/xenia/vfs/devices/disc_image_device.cc
+@@ -9,6 +9,9 @@
+ 
+ #include "xenia/vfs/devices/disc_image_device.h"
+ 
++#include <atomic>
++
++#include "xenia/base/clock.h"
+ #include "xenia/base/literals.h"
+ #include "xenia/base/logging.h"
+ #include "xenia/base/math.h"
+@@ -21,6 +24,42 @@ using namespace xe::literals;
+ 
+ constexpr size_t kXESectorSize = 2_KiB;
+ 
++namespace {
++
++const char* ResolvePathKind(const std::string_view path) {
++  if (path.empty()) {
++    return "empty";
++  }
++  if (path == "\\" || path == "/") {
++    return "root";
++  }
++  if (path.front() == '\\' || path.front() == '/') {
++    return "absolute";
++  }
++  return "relative";
++}
++
++void TraceEmptyDiscResolveBurst(const std::filesystem::path& host_path) {
++  static std::atomic<uint64_t> last_tick{0};
++  static std::atomic<uint32_t> burst_count{0};
++  const uint64_t now = Clock::QueryHostTickCount();
++  const uint64_t window = Clock::QueryHostTickFrequency();
++  const uint64_t last = last_tick.exchange(now);
++  uint32_t next_count = 1;
++  if (last != 0 && now > last && now - last <= window) {
++    next_count = burst_count.fetch_add(1) + 1;
++  } else {
++    burst_count.store(1);
++  }
++  if (next_count == 1 || next_count == 8 || next_count == 32 ||
++      (next_count % 64) == 0) {
++    XELOGW("X360_VFS_DISC_EMPTY_RESOLVE count={} image={}", next_count,
++           xe::path_to_utf8(host_path));
++  }
++}
++
++}  // namespace
++
+ DiscImageDevice::DiscImageDevice(const std::string_view mount_path,
+                                  const std::filesystem::path& host_path)
+     : Device(mount_path), name_("GDFX"), host_path_(host_path) {}
+@@ -83,14 +122,17 @@ Entry* DiscImageDevice::ResolvePath(const std::string_view path) {
+   // some\PATH.foo
+   XELOGFS("DiscImageDevice::ResolvePath({})", path);
+   auto entry = root_entry_->ResolvePath(path);
++  if (path.empty()) {
++    TraceEmptyDiscResolveBurst(host_path_);
++  }
+   if (!entry && !path.empty()) {
+     XELOGW("X360_VFS_DISC_MISS path={} image={}", path,
+            xe::path_to_utf8(host_path_));
+   } else if (path.empty() ||
+              path.find("default.xex") != std::string_view::npos ||
+              path.find("content") != std::string_view::npos) {
+-    XELOGD("X360_VFS_DISC_RESOLVE path={} image={}", path,
+-           xe::path_to_utf8(host_path_));
++    XELOGD("X360_VFS_DISC_RESOLVE path={} kind={} exists={} image={}", path,
++           ResolvePathKind(path), entry ? 1 : 0, xe::path_to_utf8(host_path_));
+   }
+   return entry;
+ }
+diff --git a/src/xenia/vfs/devices/host_path_device.cc b/src/xenia/vfs/devices/host_path_device.cc
+index 22bf6c1..e0381af 100644
+--- a/src/xenia/vfs/devices/host_path_device.cc
++++ b/src/xenia/vfs/devices/host_path_device.cc
+@@ -18,6 +18,23 @@
+ namespace xe {
+ namespace vfs {
+ 
++namespace {
++
++const char* ResolvePathKind(const std::string_view path) {
++  if (path.empty()) {
++    return "empty";
++  }
++  if (path == "\\" || path == "/") {
++    return "root";
++  }
++  if (path.front() == '\\' || path.front() == '/') {
++    return "absolute";
++  }
++  return "relative";
++}
++
++}  // namespace
++
+ HostPathDevice::HostPathDevice(const std::string_view mount_path,
+                                const std::filesystem::path& host_path,
+                                bool read_only)
+@@ -65,8 +82,8 @@ Entry* HostPathDevice::ResolvePath(const std::string_view path) {
+              path.find("content") != std::string_view::npos ||
+              path.find("save") != std::string_view::npos ||
+              path.find("profile") != std::string_view::npos) {
+-    XELOGD("X360_VFS_HOST_RESOLVE path={} host_root={}", path,
+-           xe::path_to_utf8(host_path_));
++    XELOGD("X360_VFS_HOST_RESOLVE path={} kind={} exists={} host_root={}", path,
++           ResolvePathKind(path), entry ? 1 : 0, xe::path_to_utf8(host_path_));
+   }
+   return entry;
+ }

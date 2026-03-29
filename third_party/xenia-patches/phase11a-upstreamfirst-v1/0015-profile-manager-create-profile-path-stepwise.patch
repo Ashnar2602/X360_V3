@@ -1,0 +1,54 @@
+diff --git a/src/xenia/kernel/xam/profile_manager.cc b/src/xenia/kernel/xam/profile_manager.cc
+--- a/src/xenia/kernel/xam/profile_manager.cc
++++ b/src/xenia/kernel/xam/profile_manager.cc
+@@ -29,6 +29,32 @@
+ namespace kernel {
+ namespace xam {
+ 
++namespace {
++
++bool EnsureDirectoryChainExists(const std::filesystem::path& path,
++                                const char* context) {
++  std::error_code ec;
++  std::filesystem::path current_path;
++  for (const auto& segment : path) {
++    current_path /= segment;
++    if (current_path.empty()) {
++      continue;
++    }
++    if (std::filesystem::exists(current_path, ec)) {
++      ec.clear();
++      continue;
++    }
++    std::filesystem::create_directory(current_path, ec);
++    if (ec) {
++      XELOGE("{}: failed to create {} ({})", context, current_path.string(), ec.message());
++      return false;
++    }
++  }
++  return true;
++}
++
++}  // namespace
++
+ bool ProfileManager::DecryptAccountFile(const uint8_t* data,
+                                         X_XAMACCOUNTINFO* output, bool devkit) {
+   const uint8_t* key = util::GetXeKey(0x19, devkit);
+@@ -450,7 +476,7 @@
+                                    bool default_xuid) {
+   const auto xuid = !default_xuid ? GenerateXuid() : 0xB13EBABEBABEBABE;
+ 
+-  if (!std::filesystem::create_directories(GetProfilePath(xuid))) {
++  if (!EnsureDirectoryChainExists(GetProfilePath(xuid), "CreateProfile")) {
+     return false;
+   }
+ 
+@@ -471,7 +497,7 @@
+     xuid = GenerateXuid();
+   }
+ 
+-  if (!std::filesystem::create_directories(GetProfilePath(xuid))) {
++  if (!EnsureDirectoryChainExists(GetProfilePath(xuid), "CreateProfile")) {
+     return false;
+   }
+ 

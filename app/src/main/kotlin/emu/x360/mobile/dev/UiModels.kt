@@ -5,6 +5,7 @@ import emu.x360.mobile.dev.bootstrap.XeniaPatchDatabaseSummary
 import emu.x360.mobile.dev.runtime.GameLibraryEntry
 import emu.x360.mobile.dev.runtime.GameOptionsEntry
 import emu.x360.mobile.dev.runtime.TitleContentEntry
+import emu.x360.mobile.dev.runtime.TitleContentInstallStatus
 
 data class OutputPreviewUiState(
     val framebufferPath: String = "",
@@ -67,6 +68,10 @@ data class GameOptionsUi(
     val patchDatabaseLoadedCount: String,
     val appliedPatches: List<String>,
     val lastContentMiss: String,
+    val dlcEnabled: Boolean,
+    val dlcPolicyLabel: String,
+    val dlcPolicyDescription: String,
+    val installedMarketplaceContentCount: Int,
     val renderScaleOverrideLabel: String,
     val fpsCounterOverrideLabel: String,
     val presentationBackendOverrideLabel: String,
@@ -82,6 +87,11 @@ data class GameOptionsUi(
             patchDatabase: XeniaPatchDatabaseSummary,
             contentEntries: List<TitleContentEntry>,
         ): GameOptionsUi {
+            val installedMarketplaceContentCount = contentEntries.count { contentEntry ->
+                contentEntry.contentType.equals("00000002", ignoreCase = true) &&
+                    contentEntry.installStatus == TitleContentInstallStatus.INSTALLED
+            }
+            val dlcEnabled = options.dlcEnabledOverride != false
             return GameOptionsUi(
                 entryId = entry.id,
                 titleName = entry.lastKnownTitleName ?: entry.displayName,
@@ -95,6 +105,14 @@ data class GameOptionsUi(
                 patchDatabaseLoadedCount = patchDatabase.loadedTitleCount.toString(),
                 appliedPatches = patchDatabase.appliedPatches,
                 lastContentMiss = patchDatabase.lastContentMiss ?: "none",
+                dlcEnabled = dlcEnabled,
+                dlcPolicyLabel = if (dlcEnabled) "enabled" else "disabled",
+                dlcPolicyDescription = if (dlcEnabled) {
+                    "Expose installed DLC if present; ignore missing DLC."
+                } else {
+                    "Hide all installed DLC for this title."
+                },
+                installedMarketplaceContentCount = installedMarketplaceContentCount,
                 renderScaleOverrideLabel = options.renderScaleOverride?.name?.lowercase()?.replace('_', ' ') ?: "inherit global (1.0x)",
                 fpsCounterOverrideLabel = when (options.showFpsCounterOverride) {
                     true -> "on"
@@ -102,7 +120,7 @@ data class GameOptionsUi(
                     null -> "inherit global"
                 },
                 presentationBackendOverrideLabel = options.presentationBackendOverride?.name?.lowercase()?.replace('_', ' ')
-                    ?: "inherit global (framebuffer shared memory)",
+                    ?: "inherit global",
                 canImportContent = !entry.lastKnownTitleId.isNullOrBlank(),
                 contentHint = if (entry.lastKnownTitleId.isNullOrBlank()) {
                     "Launch once to identify this title."
@@ -110,7 +128,7 @@ data class GameOptionsUi(
                     "Import XContent packages (CON/LIVE/PIRS) for this title."
                 },
                 contentEntries = contentEntries.map(TitleContentEntryUi::from),
-                note = options.note ?: "Per-game overrides are reserved for a future milestone.",
+                note = options.note ?: "Render scale and backend overrides stay reserved; DLC visibility is live now.",
             )
         }
     }

@@ -52,6 +52,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import emu.x360.mobile.dev.bootstrap.DiagnosticLaunchProfile
 import emu.x360.mobile.dev.bootstrap.RollingPresentationMetricsTracker
 import emu.x360.mobile.dev.bootstrap.SharedFramePresentationReader
 import emu.x360.mobile.dev.runtime.PresentationPerformanceMetrics
@@ -78,6 +79,11 @@ class PlayerActivity : ComponentActivity() {
     private val controllerMappingStore by lazy { ControllerMappingStore(applicationContext.filesDir.toPath()) }
     private var controllerInputMapper = AndroidControllerInputMapper()
     private val inputManager by lazy { getSystemService(InputManager::class.java) }
+    private val inputEventRateCounter = RollingRateCounter()
+    private var controllerInputMuted: Boolean = false
+    private var overlayHidden: Boolean = false
+    @Volatile
+    private var lastLifecycleEvent: String = "activity-created"
     private val inputDeviceListener = object : InputManager.InputDeviceListener {
         override fun onInputDeviceAdded(deviceId: Int) = refreshConnectedControllers()
 
@@ -88,7 +94,13 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lastLifecycleEvent = "activity-onCreate"
         val entryId = intent.getStringExtra(EXTRA_ENTRY_ID)
+        val diagnosticProfile = DiagnosticLaunchProfile.fromWireName(
+            intent.getStringExtra(EXTRA_DIAGNOSTIC_PROFILE),
+        )
+        controllerInputMuted = intent.getBooleanExtra(EXTRA_INPUT_MUTED, false)
+        overlayHidden = intent.getBooleanExtra(EXTRA_OVERLAY_HIDDEN, false)
         if (entryId.isNullOrBlank()) {
             finish()
             return
@@ -102,7 +114,12 @@ class PlayerActivity : ComponentActivity() {
             X360RebuildTheme {
                 val state by viewModel.uiState.collectAsStateWithLifecycle()
                 LaunchedEffect(entryId) {
-                    viewModel.start(entryId)
+                    viewModel.start(
+                        entryId = entryId,
+                        diagnosticProfile = diagnosticProfile,
+                        inputMuted = controllerInputMuted,
+                        overlayHidden = overlayHidden,
+                    )
                 }
                 PlayerScreen(
                     state = state,
@@ -114,6 +131,9 @@ class PlayerActivity : ComponentActivity() {
                     onOpenControllerMapping = {
                         startActivity(ControllerMappingActivity.intent(this))
                     },
+                    overlayHidden = overlayHidden,
+                    currentInputEventsPerSecond = { inputEventRateCounter.ratePerSecond },
+                    currentLifecycleEvent = { lastLifecycleEvent },
                     onExitHome = {
                         viewModel.stop()
                         finish()
@@ -130,6 +150,7 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        lastLifecycleEvent = if (hasFocus) "window-focus-gained" else "window-focus-lost"
         if (hasFocus) {
             setImmersiveMode()
         }
@@ -137,17 +158,30 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        lastLifecycleEvent = "activity-onStart"
         controllerInputMapper.reloadProfile(controllerMappingStore.load())
         inputManager?.registerInputDeviceListener(inputDeviceListener, null)
         refreshConnectedControllers()
     }
 
+    override fun onResume() {
+        super.onResume()
+        lastLifecycleEvent = "activity-onResume"
+    }
+
+    override fun onPause() {
+        lastLifecycleEvent = "activity-onPause"
+        super.onPause()
+    }
+
     override fun onStop() {
+        lastLifecycleEvent = "activity-onStop"
         inputManager?.unregisterInputDeviceListener(inputDeviceListener)
         super.onStop()
     }
 
     override fun onDestroy() {
+        lastLifecycleEvent = "activity-onDestroy"
         if (isFinishing) {
             viewModel.stop("activity-destroy")
         }
@@ -159,8 +193,12 @@ class PlayerActivity : ComponentActivity() {
         event: KeyEvent,
     ): Boolean {
         if (keyCode != KeyEvent.KEYCODE_BACK) {
+            if (controllerInputMuted && isControllerInputEvent(event)) {
+                return true
+            }
             controllerInputMapper.onKeyDown(event)?.let { update ->
-                viewModel.submitControllerInput(update)
+                inputEventRateCounter.record()
+                viewModel.submitControllerInput(update.copy(inputEventsPerSecond = inputEventRateCounter.ratePerSecond))
                 return true
             }
         }
@@ -172,8 +210,12 @@ class PlayerActivity : ComponentActivity() {
         event: KeyEvent,
     ): Boolean {
         if (keyCode != KeyEvent.KEYCODE_BACK) {
+            if (controllerInputMuted && isControllerInputEvent(event)) {
+                return true
+            }
             controllerInputMapper.onKeyUp(event)?.let { update ->
-                viewModel.submitControllerInput(update)
+                inputEventRateCounter.record()
+                viewModel.submitControllerInput(update.copy(inputEventsPerSecond = inputEventRateCounter.ratePerSecond))
                 return true
             }
         }
@@ -181,8 +223,12 @@ class PlayerActivity : ComponentActivity() {
     }
 
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        if (controllerInputMuted && isControllerMotionEvent(event)) {
+            return true
+        }
         controllerInputMapper.onGenericMotionEvent(event)?.let { update ->
-            viewModel.submitControllerInput(update)
+            inputEventRateCounter.record()
+            viewModel.submitControllerInput(update.copy(inputEventsPerSecond = inputEventRateCounter.ratePerSecond))
             return true
         }
         return super.onGenericMotionEvent(event)
@@ -209,10 +255,22 @@ class PlayerActivity : ComponentActivity() {
 
     companion object {
         private const val EXTRA_ENTRY_ID = "entry_id"
+        private const val EXTRA_DIAGNOSTIC_PROFILE = "diagnostic_profile"
+        private const val EXTRA_INPUT_MUTED = "input_muted"
+        private const val EXTRA_OVERLAY_HIDDEN = "overlay_hidden"
 
-        fun intent(context: Context, entryId: String): Intent {
+        internal fun intent(
+            context: Context,
+            entryId: String,
+            diagnosticProfile: DiagnosticLaunchProfile = DiagnosticLaunchProfile.XENIA_REAL_TITLE,
+            inputMuted: Boolean = false,
+            overlayHidden: Boolean = false,
+        ): Intent {
             return Intent(context, PlayerActivity::class.java)
                 .putExtra(EXTRA_ENTRY_ID, entryId)
+                .putExtra(EXTRA_DIAGNOSTIC_PROFILE, diagnosticProfile.wireName)
+                .putExtra(EXTRA_INPUT_MUTED, inputMuted)
+                .putExtra(EXTRA_OVERLAY_HIDDEN, overlayHidden)
         }
     }
 }
@@ -226,6 +284,9 @@ private fun PlayerScreen(
     onResumePlayer: () -> Boolean,
     onSetShowFpsCounter: (Boolean) -> Unit,
     onOpenControllerMapping: () -> Unit,
+    overlayHidden: Boolean,
+    currentInputEventsPerSecond: () -> Float,
+    currentLifecycleEvent: () -> String,
     onExitHome: () -> Unit,
     onExitAndroid: () -> Unit,
 ) {
@@ -270,6 +331,7 @@ private fun PlayerScreen(
         val tracker = RollingPresentationMetricsTracker()
         var lastOverlayReportAtMillis = 0L
         var lastMetricsReportAtMillis = 0L
+        var lastUiTickAtMillis = System.currentTimeMillis()
         if (sharedMemoryBackend) {
             val reader = openPresentationReader()
             if (reader == null) {
@@ -277,9 +339,18 @@ private fun PlayerScreen(
                 return@LaunchedEffect
             }
             try {
+                tracker.onSurfaceEvent("shared-memory-reader-ready")
                 var lastFrameIndex = Long.MIN_VALUE
                 var lastBuffer: PlayerBitmapBuffer? = null
                 while (currentCoroutineContext().isActive) {
+                    val loopStartedAtMillis = System.currentTimeMillis()
+                    tracker.onInputRateObserved(currentInputEventsPerSecond())
+                    tracker.onLifecycleEvent(currentLifecycleEvent())
+                    val uiGapMillis = loopStartedAtMillis - lastUiTickAtMillis
+                    if (uiGapMillis >= 700L) {
+                        tracker.onUiLongFrameObserved(uiGapMillis)
+                    }
+                    lastUiTickAtMillis = loopStartedAtMillis
                     val frame = withContext(Dispatchers.IO) {
                         reader.awaitNextFrame(
                             lastFrameIndex = lastFrameIndex,
@@ -287,21 +358,32 @@ private fun PlayerScreen(
                         )
                     }
                     if (frame != null) {
-                        val transportHash = computePlayerFrameHash(frame.rgbaBytes, frame.header.payloadSize)
-                        tracker.onExportObserved(frame.header.frameIndex, transportHash)
-                        tracker.onDecoded()
-                        val updatedBuffer = withContext(Dispatchers.Default) {
+                        val updatedFrame = withContext(Dispatchers.Default) {
                             updatePlayerBitmapBufferFromSharedFrame(frame, lastBuffer)
                         }
-                        lastBuffer = updatedBuffer
-                        if (imageView.tag !== updatedBuffer.bitmap) {
-                            imageView.setImageBitmap(updatedBuffer.bitmap)
-                            imageView.tag = updatedBuffer.bitmap
+                        tracker.onExportObserved(
+                            frame.header.frameIndex,
+                            updatedFrame.transportSummary.rawHash,
+                            updatedFrame.transportSummary.perceptualHash,
+                        )
+                        tracker.onDecoded()
+                        lastBuffer = updatedFrame.buffer
+                        if (imageView.tag !== updatedFrame.buffer.bitmap) {
+                            imageView.setImageBitmap(updatedFrame.buffer.bitmap)
+                            imageView.tag = updatedFrame.buffer.bitmap
                         }
                         imageView.postInvalidateOnAnimation()
+                        tracker.onSurfaceEvent("shared-memory-frame-submitted")
                         tracker.onPresented(
                             frame.header.frameIndex,
-                            computePlayerFrameHash(updatedBuffer.scratchBytes, frame.header.width * frame.header.height * 4),
+                            updatedFrame.visibleSummary.rawHash,
+                            updatedFrame.visibleSummary.perceptualHash,
+                        )
+                        tracker.onScreenObserved(
+                            screenFrameHash = updatedFrame.visibleSummary.rawHash,
+                            screenPerceptualHash = updatedFrame.visibleSummary.perceptualHash,
+                            blackRatio = updatedFrame.visibleSummary.blackRatio,
+                            averageLuma = updatedFrame.visibleSummary.averageLuma,
                         )
                         lastFrameIndex = frame.header.frameIndex
                     }
@@ -336,10 +418,19 @@ private fun PlayerScreen(
                 reader.close()
             }
         } else {
+            tracker.onSurfaceEvent("polling-reader-ready")
             var lastModifiedMillis = Long.MIN_VALUE
             var lastFrameIndex = Long.MIN_VALUE
             var lastBuffer: PlayerBitmapBuffer? = null
             while (currentCoroutineContext().isActive) {
+                val loopStartedAtMillis = System.currentTimeMillis()
+                tracker.onInputRateObserved(currentInputEventsPerSecond())
+                tracker.onLifecycleEvent(currentLifecycleEvent())
+                val uiGapMillis = loopStartedAtMillis - lastUiTickAtMillis
+                if (uiGapMillis >= 700L) {
+                    tracker.onUiLongFrameObserved(uiGapMillis)
+                }
+                lastUiTickAtMillis = loopStartedAtMillis
                 val updated = withContext(Dispatchers.IO) {
                     readPlayerFrameState(
                         framebufferPath = state.framebufferPath,
@@ -358,6 +449,7 @@ private fun PlayerScreen(
                         imageView.tag = bitmap
                     }
                     imageView.postInvalidateOnAnimation()
+                    tracker.onSurfaceEvent("polling-frame-submitted")
                 }
 
                 val nowMillis = System.currentTimeMillis()
@@ -421,7 +513,7 @@ private fun PlayerScreen(
             }
         }
 
-        if (state.showFpsCounter && overlayState.hasFrame) {
+        if (!overlayHidden && state.showFpsCounter && overlayState.hasFrame) {
             Text(
                 text = String.format(Locale.US, "Visible %.1f FPS", overlayState.metrics.visibleFps),
                 modifier = Modifier
@@ -435,7 +527,7 @@ private fun PlayerScreen(
             )
         }
 
-        if (state.errorMessage != null) {
+        if (!overlayHidden && state.errorMessage != null) {
             Text(
                 text = state.errorMessage,
                 modifier = Modifier
@@ -483,6 +575,9 @@ private fun PlayerScreen(
                             progressionBucket = state.progressionBucket,
                             progressionReason = state.progressionReason,
                             lastMeaningfulTransition = state.lastMeaningfulTransition,
+                            videoFreezeCause = state.videoFreezeCause,
+                            videoFreezeConfidencePercent = state.videoFreezeConfidencePercent,
+                            videoFreezeReason = state.videoFreezeReason,
                             frameIndex = state.frameIndex,
                             lastInputSequence = state.lastInputSequence,
                             onSetShowFpsCounter = onSetShowFpsCounter,
@@ -495,6 +590,19 @@ private fun PlayerScreen(
             }
         }
     }
+}
+
+private fun isControllerInputEvent(event: KeyEvent): Boolean {
+    val source = event.source
+    return (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+        (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK ||
+        (source and InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD
+}
+
+private fun isControllerMotionEvent(event: MotionEvent): Boolean {
+    val source = event.source
+    return (source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+        (source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
 }
 
 private enum class PlayerPauseOverlay {
@@ -606,6 +714,9 @@ private fun PauseOptionsCard(
     progressionBucket: String,
     progressionReason: String,
     lastMeaningfulTransition: String?,
+    videoFreezeCause: String,
+    videoFreezeConfidencePercent: Int,
+    videoFreezeReason: String,
     frameIndex: Long,
     lastInputSequence: Long,
     onSetShowFpsCounter: (Boolean) -> Unit,
@@ -718,7 +829,18 @@ private fun PauseOptionsCard(
             color = Color(0xFFAFC0CF),
         )
         Text(
+            text = "Video freeze cause: $videoFreezeCause (${videoFreezeConfidencePercent}%)",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFAFC0CF),
+        )
+        Text(
             text = "Reason: $progressionReason",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFAFC0CF),
+            lineHeight = 18.sp,
+        )
+        Text(
+            text = "Freeze reason: $videoFreezeReason",
             style = MaterialTheme.typography.bodySmall,
             color = Color(0xFFAFC0CF),
             lineHeight = 18.sp,
@@ -770,6 +892,12 @@ private class PlayerBitmapBuffer(
 private data class PlayerFramebufferSample(
     val header: XeniaFramebufferHeader,
     val buffer: PlayerBitmapBuffer,
+)
+
+private data class PlayerFrameAnalysis(
+    val buffer: PlayerBitmapBuffer,
+    val transportSummary: FreezeLabFrameSummary,
+    val visibleSummary: FreezeLabFrameSummary,
 )
 
 private fun readPlayerFrameState(
@@ -837,8 +965,12 @@ private fun readPlayerFrameState(
         )
     }
 
-    val transportHash = computePlayerFrameHash(sample.buffer.sourceBytes, sample.header.minimumPayloadSize)
-    tracker.onExportObserved(sample.header.frameIndex, transportHash)
+    val analyzedFrame = updatePlayerBitmapBuffer(sample)
+    tracker.onExportObserved(
+        sample.header.frameIndex,
+        analyzedFrame.transportSummary.rawHash,
+        analyzedFrame.transportSummary.perceptualHash,
+    )
 
     if (keepLastVisibleFrame &&
         lastBuffer != null &&
@@ -854,13 +986,19 @@ private fun readPlayerFrameState(
     }
 
     tracker.onDecoded()
-    val updatedBuffer = updatePlayerBitmapBuffer(sample)
     tracker.onPresented(
         sample.header.frameIndex,
-        computePlayerFrameHash(updatedBuffer.scratchBytes, sample.header.width * sample.header.height * 4),
+        analyzedFrame.visibleSummary.rawHash,
+        analyzedFrame.visibleSummary.perceptualHash,
+    )
+    tracker.onScreenObserved(
+        screenFrameHash = analyzedFrame.visibleSummary.rawHash,
+        screenPerceptualHash = analyzedFrame.visibleSummary.perceptualHash,
+        blackRatio = analyzedFrame.visibleSummary.blackRatio,
+        averageLuma = analyzedFrame.visibleSummary.averageLuma,
     )
     return PlayerFrameState(
-        buffer = updatedBuffer,
+        buffer = analyzedFrame.buffer,
         frameIndex = sample.header.frameIndex,
         modifiedAtMillis = modifiedMillis,
         message = "Frame ${sample.header.frameIndex}",
@@ -924,7 +1062,7 @@ private fun createPlayerBitmapBuffer(
 
 private fun updatePlayerBitmapBuffer(
     sample: PlayerFramebufferSample,
-): PlayerBitmapBuffer {
+): PlayerFrameAnalysis {
     val header = sample.header
     val buffer = sample.buffer
     val width = header.width
@@ -944,13 +1082,27 @@ private fun updatePlayerBitmapBuffer(
         }
     }
     buffer.commitScratchBufferToBitmap()
-    return buffer
+    return PlayerFrameAnalysis(
+        buffer = buffer,
+        transportSummary = FreezeLabHashAnalyzer.analyzeRgba(
+            rgbaBytes = buffer.sourceBytes,
+            width = width,
+            height = height,
+            stride = stride,
+        ),
+        visibleSummary = FreezeLabHashAnalyzer.analyzeRgba(
+            rgbaBytes = buffer.scratchBytes,
+            width = width,
+            height = height,
+            stride = width * 4,
+        ),
+    )
 }
 
 private fun updatePlayerBitmapBufferFromSharedFrame(
     frame: SharedFrameTransportFrame,
     existing: PlayerBitmapBuffer?,
-): PlayerBitmapBuffer {
+): PlayerFrameAnalysis {
     val header = frame.header
     val payloadSize = header.payloadSize
     val buffer = if (existing == null ||
@@ -976,7 +1128,21 @@ private fun updatePlayerBitmapBufferFromSharedFrame(
         stride = header.stride,
     )
     buffer.commitScratchBufferToBitmap()
-    return buffer
+    return PlayerFrameAnalysis(
+        buffer = buffer,
+        transportSummary = FreezeLabHashAnalyzer.analyzeRgba(
+            rgbaBytes = buffer.sourceBytes,
+            width = header.width,
+            height = header.height,
+            stride = header.stride,
+        ),
+        visibleSummary = FreezeLabHashAnalyzer.analyzeRgba(
+            rgbaBytes = buffer.scratchBytes,
+            width = header.width,
+            height = header.height,
+            stride = header.width * 4,
+        ),
+    )
 }
 
 private fun copySharedFrameRowsToBitmapBuffer(

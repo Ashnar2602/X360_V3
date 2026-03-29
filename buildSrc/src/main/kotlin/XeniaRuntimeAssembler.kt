@@ -331,7 +331,10 @@ class XeniaRuntimeAssembler(
         lock: XeniaSourceBuildLock,
         patchesRoot: Path,
     ): List<Path> {
-        val patchDir = patchesRoot.resolve("phase4")
+        val patchDir = when (lock.patchSetId) {
+            "none" -> patchesRoot.resolve("__none__")
+            else -> patchesRoot.resolve(lock.patchSetId)
+        }
         val patchFiles = if (patchDir.exists()) {
             Files.list(patchDir).use { stream ->
                 stream

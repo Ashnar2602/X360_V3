@@ -1,0 +1,81 @@
+diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
+index b0acd0feb..b26756ba7 100644
+--- a/src/xenia/emulator.cc
++++ b/src/xenia/emulator.cc
+@@ -452,11 +454,37 @@ X_STATUS Emulator::MountPath(const std::filesystem::path& path,
+   return X_STATUS_SUCCESS;
+ }
+ 
++static const char* FileSignatureTypeName(Emulator::FileSignatureType type) {
++  switch (type) {
++    case Emulator::FileSignatureType::XEX1:
++      return "xex1";
++    case Emulator::FileSignatureType::XEX2:
++      return "xex2";
++    case Emulator::FileSignatureType::CON:
++      return "con";
++    case Emulator::FileSignatureType::LIVE:
++      return "live";
++    case Emulator::FileSignatureType::PIRS:
++      return "pirs";
++    case Emulator::FileSignatureType::XISO:
++      return "xiso";
++    case Emulator::FileSignatureType::ELF:
++      return "elf";
++    case Emulator::FileSignatureType::EXE:
++      return "exe";
++    case Emulator::FileSignatureType::ZAR:
++      return "zar";
++    default:
++      return "unknown";
++  }
++}
++
+ Emulator::FileSignatureType Emulator::GetFileSignature(
+     const std::filesystem::path& path) {
+   FILE* file = xe::filesystem::OpenFile(path, "rb");
+ 
+   if (!file) {
++    XELOGE("GetFileSignature: unable to open '{}'", xe::path_to_utf8(path));
+     return FileSignatureType::Unknown;
+   }
+ 
+@@ -464,6 +492,8 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
+   constexpr int64_t header_size = 4;
+ 
+   if (file_size < header_size) {
++    XELOGE("GetFileSignature: file too small '{}', size={}",
++           xe::path_to_utf8(path), file_size);
+     return FileSignatureType::Unknown;
+   }
+ 
+@@ -512,6 +542,8 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
+     return FileSignatureType::ZAR;
+   }
+ 
++  XELOGI("GetFileSignature: probing disc image '{}'", xe::path_to_utf8(path));
++
+   // Check if XISO
+   std::unique_ptr<vfs::Device> device =
+       std::make_unique<vfs::DiscImageDevice>("", path);
+@@ -522,14 +554,18 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
+     return FileSignatureType::XISO;
+   }
+ 
+-  XELOGE("{}: {} ({:08X})", __func__, path.extension(), magic_value);
++  XELOGE("GetFileSignature: unknown target='{}' extension='{}' trailer_magic={:08X}",
++         xe::path_to_utf8(path), xe::path_to_utf8(path.extension()), magic_value);
+   return FileSignatureType::Unknown;
+ }
+ 
+ X_STATUS Emulator::LaunchPath(const std::filesystem::path& path) {
+   X_STATUS mount_result = X_STATUS_SUCCESS;
++  const auto signature = GetFileSignature(path);
++  XELOGI("LaunchPath: target='{}' signature={}", xe::path_to_utf8(path),
++         FileSignatureTypeName(signature));
+ 
+-  switch (GetFileSignature(path)) {
++  switch (signature) {
+     case FileSignatureType::XEX1:
+     case FileSignatureType::XEX2:
+     case FileSignatureType::ELF: {

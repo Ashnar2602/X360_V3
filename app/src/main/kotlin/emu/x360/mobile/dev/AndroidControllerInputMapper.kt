@@ -11,6 +11,7 @@ import kotlin.math.roundToInt
 internal data class PlayerControllerInputUpdate(
     val controllerState: SharedInputControllerState,
     val controllerName: String?,
+    val inputEventsPerSecond: Float = 0f,
 )
 
 internal class AndroidControllerInputMapper(

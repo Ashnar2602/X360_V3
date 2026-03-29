@@ -1,0 +1,174 @@
+diff --git a/src/xenia/kernel/xam/xam_content.cc b/src/xenia/kernel/xam/xam_content.cc
+index 18e318b..50b6f78 100644
+--- a/src/xenia/kernel/xam/xam_content.cc
++++ b/src/xenia/kernel/xam/xam_content.cc
+@@ -8,6 +8,8 @@
+  */
+ 
+ #include <atomic>
++#include <cstdlib>
++#include <cstring>
+ 
+ #include "xenia/base/clock.h"
+ #include "xenia/base/logging.h"
+@@ -130,6 +132,38 @@ void LogXamContentCall(const char* name, const std::string& message) {
+          CurrentGuestThreadId(), message);
+ }
+ 
++enum class MarketplaceContentPolicy {
++  kEnabled,
++  kDisabled,
++};
++
++MarketplaceContentPolicy ResolveMarketplaceContentPolicy() {
++  const char* raw_value = std::getenv("X360_MARKETPLACE_CONTENT_POLICY");
++  if (!raw_value || !raw_value[0] || std::strcmp(raw_value, "enabled") == 0) {
++    return MarketplaceContentPolicy::kEnabled;
++  }
++  if (std::strcmp(raw_value, "disabled") == 0) {
++    return MarketplaceContentPolicy::kDisabled;
++  }
++  return MarketplaceContentPolicy::kEnabled;
++}
++
++const char* MarketplaceContentPolicyName(
++    MarketplaceContentPolicy policy) {
++  return policy == MarketplaceContentPolicy::kDisabled ? "disabled"
++                                                       : "enabled";
++}
++
++bool ShouldProbeOddMarketplaceContent() {
++  const char* raw_value = std::getenv("X360_MARKETPLACE_CONTENT_ODD_PROBING");
++  if (!raw_value || !raw_value[0]) {
++    return false;
++  }
++  return std::strcmp(raw_value, "1") == 0 ||
++         std::strcmp(raw_value, "true") == 0 ||
++         std::strcmp(raw_value, "enabled") == 0;
++}
++
+ }  // namespace
+ 
+ dword_result_t XamContentGetLicenseMask_entry(lpdword_t mask_ptr,
+@@ -269,6 +303,14 @@ dword_result_t XamContentCreateEnumerator_entry(
+   const uint32_t content_flags_value = static_cast<uint32_t>(content_flags);
+   const uint32_t items_per_enumerate_value =
+       static_cast<uint32_t>(items_per_enumerate);
++  const XContentType requested_content_type = XContentType(content_type_value);
++  const MarketplaceContentPolicy marketplace_policy =
++      ResolveMarketplaceContentPolicy();
++  const bool marketplace_content =
++      requested_content_type == XContentType::kMarketplaceContent;
++  const bool hide_marketplace_content =
++      marketplace_content &&
++      marketplace_policy == MarketplaceContentPolicy::kDisabled;
+   LogXamContentCall(
+       "XamContentCreateEnumerator",
+       fmt::format("device={:08X} type={:08X} flags={:08X} items={} xuid={:016X}",
+@@ -285,7 +327,8 @@ dword_result_t XamContentCreateEnumerator_entry(
+ 
+   std::vector<XCONTENT_AGGREGATE_DATA> enumerated_content = {};
+ 
+-  if (!device_info || device_info->device_id == DummyDeviceId::HDD) {
++  if (!hide_marketplace_content &&
++      (!device_info || device_info->device_id == DummyDeviceId::HDD)) {
+     std::vector<uint64_t> xuids_to_enumerate = {};
+     if (xuid) {
+       xuids_to_enumerate.push_back(xuid);
+@@ -299,8 +342,7 @@ dword_result_t XamContentCreateEnumerator_entry(
+       auto user_enumerated_data =
+           kernel_state()->content_manager()->ListContent(
+               static_cast<uint32_t>(DummyDeviceId::HDD), xuid,
+-              kernel_state()->title_id(),
+-              static_cast<XContentType>(content_type.value()));
++              kernel_state()->title_id(), requested_content_type);
+ 
+       enumerated_content.insert(enumerated_content.end(),
+                                 user_enumerated_data.cbegin(),
+@@ -313,11 +355,13 @@ dword_result_t XamContentCreateEnumerator_entry(
+         enumerated_content.end());
+   }
+ 
+-  if (!device_info || device_info->device_id == DummyDeviceId::ODD) {
++  if (!hide_marketplace_content &&
++      (!device_info || device_info->device_id == DummyDeviceId::ODD) &&
++      (!marketplace_content || ShouldProbeOddMarketplaceContent())) {
+     auto disc_enumerated_data =
+         kernel_state()->content_manager()->ListContentODD(
+             static_cast<uint32_t>(DummyDeviceId::ODD), 0,
+-            kernel_state()->title_id(), XContentType(uint32_t(content_type)));
++            kernel_state()->title_id(), requested_content_type);
+ 
+     enumerated_content.insert(enumerated_content.end(),
+                               disc_enumerated_data.cbegin(),
+@@ -334,9 +378,12 @@ dword_result_t XamContentCreateEnumerator_entry(
+          e->item_count());
+   LogXamContentCall(
+       "XamContentCreateEnumeratorResult",
+-      fmt::format("device={:08X} type={:08X} items={} handle={:08X}",
++      fmt::format("device={:08X} type={:08X} items={} handle={:08X} "
++                  "policy={} odd_probe={}",
+                   device_id_value, content_type_value, e->item_count(),
+-                  e->handle()));
++                  e->handle(),
++                  MarketplaceContentPolicyName(marketplace_policy),
++                  ShouldProbeOddMarketplaceContent() ? 1 : 0));
+ 
+   *handle_out = e->handle();
+   return X_ERROR_SUCCESS;
+@@ -392,6 +439,8 @@ dword_result_t xeXamContentCreate(dword_t user_index, lpstring_t root_name,
+   }
+ 
+   auto content_manager = kernel_state()->content_manager();
++  const MarketplaceContentPolicy marketplace_policy =
++      ResolveMarketplaceContentPolicy();
+   auto current_kernel_state = kernel_state();
+ 
+   if (overlapped_ptr && disposition_ptr) {
+@@ -407,8 +456,29 @@ dword_result_t xeXamContentCreate(dword_t user_index, lpstring_t root_name,
+ 
+   auto run = [content_manager, xuid, root_name = root_name.value(), flags_value,
+               content_data, disposition_ptr, license_mask_ptr, overlapped_ptr,
+-              current_kernel_state](uint32_t& extended_error,
++              marketplace_policy, current_kernel_state](uint32_t& extended_error,
+                                     uint32_t& length) -> X_RESULT {
++    if (content_data.content_type == XContentType::kMarketplaceContent &&
++        marketplace_policy == MarketplaceContentPolicy::kDisabled) {
++      constexpr X_RESULT result = X_ERROR_PATH_NOT_FOUND;
++      if (license_mask_ptr) {
++        *license_mask_ptr = 0;
++      }
++      if (disposition_ptr) {
++        *disposition_ptr = 0;
++      }
++      extended_error = X_HRESULT_FROM_WIN32(result);
++      length = 0;
++      LogXamContentCall(
++          "xeXamContentCreateResult",
++          fmt::format("root={} flags={:08X} disposition=0 result={:08X} "
++                      "request=[{}] policy=disabled",
++                      root_name, flags_value, static_cast<uint32_t>(result),
++                      DescribeContentRequest(content_data, xuid,
++                                             current_kernel_state->title_id())));
++      return result;
++    }
++
+     X_RESULT result = X_ERROR_INVALID_PARAMETER;
+     kDispositionState disposition = kDispositionState::Unknown;
+     switch (flags_value & 0xF) {
+@@ -485,11 +555,13 @@ dword_result_t xeXamContentCreate(dword_t user_index, lpstring_t root_name,
+     LogXamContentCall(
+         "xeXamContentCreateResult",
+         fmt::format(
+-            "root={} flags={:08X} disposition={} result={:08X} request=[{}]",
++            "root={} flags={:08X} disposition={} result={:08X} request=[{}] "
++            "policy={}",
+             root_name, flags_value, static_cast<uint32_t>(disposition),
+             static_cast<uint32_t>(result),
+             DescribeContentRequest(content_data, xuid,
+-                                   current_kernel_state->title_id())));
++                                   current_kernel_state->title_id()),
++            MarketplaceContentPolicyName(marketplace_policy)));
+     if (result == X_ERROR_FILE_NOT_FOUND || result == X_ERROR_PATH_NOT_FOUND ||
+         result == X_ERROR_FUNCTION_FAILED) {
+       DumpGuestThreadsForFreezeTriage(current_kernel_state,

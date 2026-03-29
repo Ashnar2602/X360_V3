@@ -52,28 +52,50 @@ Reason:
 
 ## Xenia strategy
 
-### Historical reference
+### Historical references
 
 - `canary_experimental@d9747704bedc4e691ba243bf399647b836ce493e`
+- `canary_experimental@c50b036178108f87cb0acaf3691a7c3caf07820f`
 
 Use:
 
-- historical forensics anchor only
+- historical forensics anchors only
 
 ### Active baseline
 
-- `canary_experimental@c50b036178108f87cb0acaf3691a7c3caf07820f`
-- patch set: `phase10c-triage-v2`
+- `canary_experimental@553aedebb59340d3106cd979ca7d09cc8e3bd98e`
+- patch set: `phase11a-upstreamfirst-v1`
 
 Reason:
 
-- this is the active pinned Xenia baseline used by the current app/runtime
-- the repo-owned patch queue now includes:
-  - headless bring-up fixes
-  - cache handling fixes
-  - input bridge support
-  - patch DB/content/progression instrumentation
-  - polling/shared-memory presentation-related fixes
+- this is the desktop-working Canary family now used by the Android/Linux guest
+- rebasing removed the old `c50b...` pin as a primary suspect for Dante's freeze
+- the active patch queue keeps Android platform/runtime deltas but returns XAM behavior to upstream-first semantics by default
+
+### XAM policy after Phase 11A
+
+Default policy:
+
+- `xam_media`: upstream-first
+- `xam_net`: upstream-first
+- `apps/xlivebase_app`: upstream-first
+- `xam_content`: upstream-first plus the minimum Android/product delta for DLC visibility and diagnostics
+
+Reason:
+
+- Android/runtime differences should stay explicit in launch args/env and patch-set-scoped platform patches
+- silent semantic rewrites in XAM made desktop parity too hard to reason about
+
+### Patch-queue structure
+
+Use:
+
+- `third_party/xenia-patches/<patchSetId>/`
+
+Reason:
+
+- the generator now resolves the patch directory from `patchSetId`
+- this keeps historical stacks like `phase4` available while allowing a clean active queue such as `phase11a-upstreamfirst-v1`
 
 ## Presentation strategy
 
@@ -84,7 +106,7 @@ Reason:
 Reason:
 
 - it is the current stable live-player path in the app
-- the latest packaged Xenia binary includes the polling export fix that restored multi-frame export instead of freezing after frame 1
+- the packaged Xenia binary includes the polling export fix that restored multi-frame export instead of freezing after frame 1
 
 ### Alternate backend kept in-tree
 
@@ -114,7 +136,7 @@ Reason:
 Reason:
 
 - the official DB should apply globally for all titles
-- local source patches are for runtime/platform recovery, not title-specific patch data
+- local source patches are for runtime/platform recovery and diagnostics, not title-specific patch data
 
 ## Development loop strategy
 
@@ -129,7 +151,9 @@ Reason:
 
 ### Current practical note
 
-If a fresh Xenia workspace fails for unrelated generator/build reasons, prefer:
+After the rebase to `553...`, full guest rebuilds can take a long time and should be judged by actual WSL compile activity, not just wrapper wall-clock time.
+
+If a fresh run is genuinely unhealthy, prefer:
 
 1. a known-good incremental workspace rebuild
 2. a debug payload override via `_local/runtime-drop/`
@@ -141,6 +165,7 @@ over:
 
 ## Comparative track
 
+- use desktop Canary at the same upstream revision as the parity oracle
 - study `Xenia Edge` only as a donor source for ideas or cherry-picks
 - keep Canary as the main codebase unless a measured reason exists to pivot
 
@@ -150,6 +175,7 @@ The current version policy is:
 
 1. keep the pinned FEX baseline stable
 2. keep dual Mesa support with measured routing
-3. keep modern pinned Canary as the active Xenia baseline
+3. keep the Android/Linux guest aligned with the desktop-working `553...` Canary family
 4. keep polling as the stable product presentation path for now
-5. move slowly, verify on real devices, and avoid changing multiple stack layers at once
+5. keep XAM semantics upstream-first by default
+6. move slowly, verify on real devices, and avoid changing multiple stack layers at once

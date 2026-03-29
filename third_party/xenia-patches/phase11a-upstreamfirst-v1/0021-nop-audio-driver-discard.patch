@@ -1,0 +1,82 @@
+diff --git a/src/xenia/apu/nop/nop_audio_system.cc b/src/xenia/apu/nop/nop_audio_system.cc
+index cfac7e7..009277b 100644
+--- a/src/xenia/apu/nop/nop_audio_system.cc
++++ b/src/xenia/apu/nop/nop_audio_system.cc
+@@ -7,6 +7,7 @@
+  ******************************************************************************
+  */
+ 
++#include "xenia/apu/audio_driver.h"
+ #include "xenia/apu/nop/nop_audio_system.h"
+ 
+ #include "xenia/apu/apu_flags.h"
+@@ -14,6 +15,25 @@
+ namespace xe {
+ namespace apu {
+ namespace nop {
++
++namespace {
++
++class NopAudioDriver final : public AudioDriver {
++ public:
++  bool Initialize() override { return true; }
++
++  void Shutdown() override {}
++
++  void SubmitFrame(float* samples) override { (void)samples; }
++
++  void Pause() override {}
++
++  void Resume() override {}
++
++  void SetVolume(float volume) override { (void)volume; }
++};
++
++}  // namespace
+ 
+ std::unique_ptr<AudioSystem> NopAudioSystem::Create(cpu::Processor* processor) {
+   return std::make_unique<NopAudioSystem>(processor);
+@@ -27,16 +47,40 @@
+ X_STATUS NopAudioSystem::CreateDriver(size_t index,
+                                       xe::threading::Semaphore* semaphore,
+                                       AudioDriver** out_driver) {
+-  return X_STATUS_NOT_IMPLEMENTED;
++  (void)index;
++  (void)semaphore;
++
++  auto driver = std::make_unique<NopAudioDriver>();
++  if (!driver->Initialize()) {
++    return X_STATUS_UNSUCCESSFUL;
++  }
++
++  *out_driver = driver.release();
++  return X_STATUS_SUCCESS;
+ }
+ 
+ AudioDriver* NopAudioSystem::CreateDriver(xe::threading::Semaphore* semaphore,
+                                           uint32_t frequency, uint32_t channels,
+                                           bool need_format_conversion) {
+-  return nullptr;
++  (void)semaphore;
++  (void)frequency;
++  (void)channels;
++  (void)need_format_conversion;
++
++  auto driver = std::make_unique<NopAudioDriver>();
++  if (!driver->Initialize()) {
++    return nullptr;
++  }
++
++  return driver.release();
+ }
+ 
+-void NopAudioSystem::DestroyDriver(AudioDriver* driver) { assert_always(); }
++void NopAudioSystem::DestroyDriver(AudioDriver* driver) {
++  if (driver) {
++    driver->Shutdown();
++    delete driver;
++  }
++}
+ 
+ }  // namespace nop
+ }  // namespace apu

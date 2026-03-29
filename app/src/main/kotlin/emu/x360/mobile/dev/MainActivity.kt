@@ -93,10 +93,25 @@ class MainActivity : ComponentActivity() {
                         onRefreshTitleContent = viewModel::refreshTitleContent,
                         onRemoveTitleContent = viewModel::removeTitleContent,
                         onReinstallTitleContent = viewModel::reinstallTitleContent,
+                        onSetGameDlcEnabled = viewModel::setGameDlcEnabled,
                         onSetShowFpsCounter = viewModel::setShowFpsCounter,
                         onOpenControllerMapping = { startActivity(ControllerMappingActivity.intent(this)) },
                         onLaunchPlayer = { entryId ->
                             startActivity(PlayerActivity.intent(this, entryId))
+                        },
+                        onOpenFreezeLabRun = { entryId, diagnosticProfile, inputMuted, overlayHidden ->
+                            startActivity(
+                                PlayerActivity.intent(
+                                    context = this,
+                                    entryId = entryId,
+                                    diagnosticProfile = diagnosticProfile,
+                                    inputMuted = inputMuted,
+                                    overlayHidden = overlayHidden,
+                                ),
+                            )
+                        },
+                        onCaptureCurrentFreezeReport = {
+                            PlayerSessionController.captureCurrentDiagnostics(applicationContext)
                         },
                     )
                 }
@@ -144,9 +159,12 @@ private fun MainShell(
     onRefreshTitleContent: (String) -> Unit,
     onRemoveTitleContent: (String) -> Unit,
     onReinstallTitleContent: (String) -> Unit,
+    onSetGameDlcEnabled: (String, Boolean) -> Unit,
     onSetShowFpsCounter: (Boolean) -> Unit,
     onOpenControllerMapping: () -> Unit,
     onLaunchPlayer: (String) -> Unit,
+    onOpenFreezeLabRun: (String, emu.x360.mobile.dev.bootstrap.DiagnosticLaunchProfile, Boolean, Boolean) -> Unit,
+    onCaptureCurrentFreezeReport: () -> Unit,
 ) {
     var destination by rememberSaveable { mutableStateOf(MainDestination.LIBRARY) }
     var selectedEntryId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -170,6 +188,11 @@ private fun MainShell(
             onImportIso = { isoPicker.launch(arrayOf("*/*")) },
             onLaunchImportedTitle = debugViewModel::launchImportedTitle,
             onLaunchImportedTitleDiagnostic = debugViewModel::launchImportedTitleDiagnostic,
+            onOpenFreezeLabRun = onOpenFreezeLabRun,
+            onCaptureCurrentFreezeReport = {
+                onCaptureCurrentFreezeReport()
+                debugViewModel.refresh()
+            },
             onRemoveLibraryEntry = debugViewModel::removeLibraryEntry,
             onLaunchXeniaBringup = debugViewModel::launchXeniaBringup,
             onLaunchTurnipProbe = debugViewModel::launchTurnipProbe,
@@ -223,6 +246,7 @@ private fun MainShell(
                 onRefreshContent = selectedEntry?.id?.let { id -> { onRefreshTitleContent(id) } } ?: {},
                 onRemoveContent = onRemoveTitleContent,
                 onReinstallContent = onReinstallTitleContent,
+                onSetDlcEnabled = selectedEntry?.id?.let { id -> { enabled -> onSetGameDlcEnabled(id, enabled) } } ?: {},
             )
 
             MainDestination.DEBUG -> Unit
@@ -482,6 +506,7 @@ private fun GameOptionsScreen(
     onRefreshContent: () -> Unit,
     onRemoveContent: (String) -> Unit,
     onReinstallContent: (String) -> Unit,
+    onSetDlcEnabled: (Boolean) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -539,6 +564,32 @@ private fun GameOptionsScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFFAFC0CF),
             )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "DLC: ${options.dlcPolicyLabel}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFFE6ECF2),
+                    )
+                    Text(
+                        text = options.dlcPolicyDescription,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFAFC0CF),
+                    )
+                    Text(
+                        text = "Installed DLC packages: ${options.installedMarketplaceContentCount}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFAFC0CF),
+                    )
+                }
+                Switch(
+                    checked = options.dlcEnabled,
+                    onCheckedChange = onSetDlcEnabled,
+                )
+            }
             Text(
                 text = "Render scale override: ${options.renderScaleOverrideLabel}",
                 style = MaterialTheme.typography.bodyMedium,
@@ -562,9 +613,6 @@ private fun GameOptionsScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = onPlay, enabled = entry.status == "ready") {
                     Text("Play")
-                }
-                OutlinedButton(onClick = {}, enabled = false) {
-                    Text("Coming Soon")
                 }
             }
         }

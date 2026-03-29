@@ -234,10 +234,19 @@ class XeniaBringupModelTest {
             Title ID: 454108CF
             Module hash: 8b5ce7c2f1ab44de
             Patcher: Applying patch for: Dante's Inferno(454108CF) - Disable broken post FX
+            X360_XAM_CONTENT_CALL name=XamContentResolve tid=00000001 request=[device=00000002 type=00000002 title=454108CF xuid=0000000000000000 file=TU0001] path=GAME:\Content\0000000000000000\454108CF\00000002\TU0001
+            X360_CONTENT_CALL=ResolvePackagePath tid=00000001 request=[device=00000002 title=454108CF type=00000002 xuid=0000000000000000 file=TU0001] caller_xuid=0000000000000000 path=/tmp/x360-v3/xenia/content/0000000000000000/454108CF/00000002/TU0001 disc=4294967295 exists=0
             X360_CONTENT_MISS=OpenContent request=[device=00000001 title=454108CF type=00000002 xuid=0000000000000000 file=TU0001] caller_xuid=0000000000000000 path=/tmp/x360-v3/xenia/content/0000000000000000/454108CF/00000002/TU0001
+            X360_THREAD_SNAPSHOT reason=OpenContent trigger_tid=00000001 count=2
+            X360_THREAD tid=00000001 handle=F8000004 state=running suspend=0 main=1 guest=1 cpu=1 start=82000000 lr=82123456 r1=7FFFF000 wait_result=00000102 wait_obj=00000000 alertable=0 terminated=0 last_error=00000000 name=Main Thread (F8000004)
+            X360_THREAD tid=00000002 handle=F8000008 state=waiting suspend=0 main=0 guest=1 cpu=2 start=82001000 lr=82111111 r1=7FFFE000 wait_result=00000103 wait_obj=81234567 alertable=1 terminated=0 last_error=00000000 name=MoviePlayer2 Decode Thread (F8000008)
             XNetLogonGetTitleID offline stub success title_id=454108CF
             XLIVEBASE message 0005000E offline response size=0x28
             X360_VFS_DISC_MISS path=content\\0000000000000000\\454108CF\\00000002 image=/storage/roms/Dante.iso
+            F> F8000058 DiscImageDevice::ResolvePath()
+            F> F8000058 DiscImageDevice::ResolvePath()
+            AudioSystem::RegisterClient: client 0 registered successfully
+            K> F8000388 XThread::Execute thid 22 (handle=F8000388, 'MoviePlayer2 Decode Thread (F8000388)', native=8B7FF6C0)
             Loading module game:\default.xex
             """.trimIndent(),
         )
@@ -247,11 +256,66 @@ class XeniaBringupModelTest {
         assertThat(analysis.moduleHash).isEqualTo("8B5CE7C2F1AB44DE")
         assertThat(analysis.patchDatabaseLoadedTitleCount).isEqualTo(482)
         assertThat(analysis.appliedPatches).hasSize(1)
-        assertThat(analysis.lastContentMiss).contains("X360_CONTENT_MISS=OpenContent")
+        assertThat(analysis.lastContentMiss).contains("X360_VFS_DISC_MISS")
+        assertThat(analysis.lastTrueFileMiss).contains("X360_VFS_DISC_MISS")
         assertThat(analysis.lastContentCallResult).contains("X360_VFS_DISC_MISS")
+        assertThat(analysis.lastXamCallResult).contains("X360_XAM_CONTENT_CALL")
         assertThat(analysis.lastXliveCallResult).contains("XLIVEBASE")
         assertThat(analysis.lastXnetCallResult).contains("XNetLogonGetTitleID")
+        assertThat(analysis.lastEmptyDiscResolveLine).contains("DiscImageDevice::ResolvePath()")
+        assertThat(analysis.lastRootProbe).contains("DiscImageDevice::ResolvePath()")
+        assertThat(analysis.emptyDiscResolveCount).isEqualTo(2)
+        assertThat(analysis.movieDecodeThreadCount).isEqualTo(2)
+        assertThat(analysis.audioClientRegisterCount).isEqualTo(1)
+        assertThat(analysis.movieThreadBurstCount).isEqualTo(2)
+        assertThat(analysis.lastMovieDecodeThreadLine).contains("MoviePlayer2 Decode Thread")
+        assertThat(analysis.lastMovieAudioState).contains("MoviePlayer2 Decode Thread")
+        assertThat(analysis.guestTimelineMarkers).contains("FIRST_MISSION_LOADING_ENTERED")
+        assertThat(analysis.guestTimelineMarkers).contains("MOVIE_THREAD_CREATED")
+        assertThat(analysis.guestTimelineMarkers).contains("AUDIO_CLIENT_REGISTERED")
+        assertThat(analysis.lastThreadSnapshotHeader).contains("X360_THREAD_SNAPSHOT")
+        assertThat(analysis.lastThreadSnapshotLines).hasSize(2)
+        assertThat(analysis.lastThreadSnapshotLines.last()).contains("MoviePlayer2 Decode Thread")
         assertThat(analysis.lastMeaningfulTransition).contains("Loading module")
+    }
+
+    @Test
+    fun `startup parser keeps empty disc resolve separate from content miss`() {
+        val analysis = XeniaStartupStageParser.analyze(
+            """
+            Title name: Dante's Inferno
+            F> F8000058 DiscImageDevice::ResolvePath()
+            F> F8000058 DiscImageDevice::ResolvePath()
+            K> F8000388 XThread::Execute thid 21 (handle=F8000388, 'MoviePlayer2 Decode Thread (F8000388)', native=8B7FF6C0)
+            """.trimIndent(),
+        )
+
+        assertThat(analysis.lastContentMiss).isNull()
+        assertThat(analysis.lastDiscResolveLine).contains("DiscImageDevice::ResolvePath()")
+        assertThat(analysis.lastEmptyDiscResolveLine).contains("DiscImageDevice::ResolvePath()")
+        assertThat(analysis.lastRootProbe).contains("DiscImageDevice::ResolvePath()")
+        assertThat(analysis.emptyDiscResolveCount).isEqualTo(2)
+        assertThat(analysis.movieDecodeThreadCount).isEqualTo(1)
+    }
+
+    @Test
+    fun `title boot args include audio diagnostic flags when requested`() {
+        val args = buildXeniaBringupArgs(
+            directories = directories,
+            launchMode = XeniaLaunchMode.TitleBoot(
+                entryId = "dante",
+                guestPath = "/mnt/library/dante.iso",
+            ),
+            presentationSettings = XeniaPresentationSettings.FramebufferPollingPerformance.copy(
+                muteAudioOutput = true,
+                xmaDecoderMode = XeniaXmaDecoderMode.FAKE,
+                useDedicatedXmaThread = false,
+            ),
+        )
+
+        assertThat(args).contains("--mute=true")
+        assertThat(args).contains("--xma_decoder=fake")
+        assertThat(args).contains("--use_dedicated_xma_thread=false")
     }
 
     @Test

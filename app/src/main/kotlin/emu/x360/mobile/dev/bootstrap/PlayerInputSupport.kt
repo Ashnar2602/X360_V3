@@ -16,6 +16,7 @@ internal data class PlayerInputDiagnostics(
     val controllerName: String? = null,
     val lastInputSequence: Long = 0L,
     val lastInputAgeMs: Long? = null,
+    val inputEventsPerSecond: Float = 0f,
 ) {
     companion object {
         val Empty = PlayerInputDiagnostics()
@@ -38,6 +39,9 @@ internal class PlayerInputSession private constructor(
     @Volatile
     private var lastControllerName: String? = null
 
+    @Volatile
+    private var lastInputEventsPerSecond: Float = 0f
+
     val inheritedFileDescriptors = emptyList<emu.x360.mobile.dev.runtime.InheritedFileDescriptor>()
 
     val launchEnvironment: Map<String, String> = mapOf(
@@ -47,11 +51,13 @@ internal class PlayerInputSession private constructor(
     fun publish(
         controllerState: SharedInputControllerState,
         controllerName: String? = null,
+        inputEventsPerSecond: Float = lastInputEventsPerSecond,
     ): PlayerInputDiagnostics {
         val snapshot = synchronized(mapped) {
             SharedInputTransportCodec.publish(mapped, controllerState)
         }
         lastSnapshot = snapshot
+        lastInputEventsPerSecond = inputEventsPerSecond
         if (!controllerName.isNullOrBlank()) {
             lastControllerName = controllerName
         }
@@ -74,6 +80,7 @@ internal class PlayerInputSession private constructor(
             controllerName = lastControllerName,
             lastInputSequence = snapshot.header.sequence,
             lastInputAgeMs = ageMs,
+            inputEventsPerSecond = lastInputEventsPerSecond,
         )
     }
 

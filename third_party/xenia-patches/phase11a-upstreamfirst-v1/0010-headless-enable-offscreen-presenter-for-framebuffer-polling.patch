@@ -1,0 +1,35 @@
+diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
+index 0898820..52bf885 100644
+--- a/src/xenia/emulator.cc
++++ b/src/xenia/emulator.cc
+@@ -89,6 +89,8 @@ DEFINE_bool(allow_game_relative_writes, false,
+ DECLARE_int32(user_language);
+ 
+ DECLARE_bool(allow_plugins);
++DECLARE_bool(headless);
++DECLARE_string(x360_presentation_backend);
+ 
+ DEFINE_int32(priority_class, 0,
+              "Forces Xenia to use different process priority than default one. "
+@@ -320,10 +322,20 @@ X_STATUS Emulator::Setup(
+ 
+   XELOGI("{}: Starting graphics_system...", __func__);
+   // Setup the core components.
++  const bool with_presentation =
++      display_window_ != nullptr ||
++      (cvars::headless &&
++       (cvars::x360_presentation_backend == "framebuffer_polling" ||
++        cvars::x360_presentation_backend == "framebuffer_shared_memory"));
++  if (with_presentation && !display_window_) {
++    XELOGI(
++        "{}: Enabling offscreen presenter for headless frame capture backend",
++        __func__);
++  }
+   result = graphics_system_->Setup(
+       processor_.get(), kernel_state_.get(),
+       display_window_ ? &display_window_->app_context() : nullptr,
+-      display_window_ != nullptr);
++      with_presentation);
+   if (result) {
+     XELOGE("{}: Failed to setup graphics_system!", __func__);
+     return result;

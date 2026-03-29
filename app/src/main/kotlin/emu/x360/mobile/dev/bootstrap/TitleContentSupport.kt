@@ -4,8 +4,6 @@ import android.net.Uri
 import emu.x360.mobile.dev.runtime.RuntimeDirectories
 import emu.x360.mobile.dev.runtime.TitleContentEntry
 import emu.x360.mobile.dev.runtime.TitleContentInstallStatus
-import java.nio.file.Path
-import kotlin.io.path.exists
 
 data class XeniaPatchDatabaseSummary(
     val present: Boolean = false,
@@ -44,4 +42,4 @@ internal fun stableContentEntryId(libraryEntryId: String, uri: Uri): String =
     stableEntryId("$libraryEntryId|${uri}")
 
 private fun pathExistsOnDisk(rawPath: String): Boolean =
-    runCatching { Path.of(rawPath) }.getOrNull()?.exists() == true
+    java.io.File(rawPath).exists()

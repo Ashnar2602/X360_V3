@@ -1,6 +1,7 @@
 package emu.x360.mobile.dev.bootstrap
 
 import com.google.common.truth.Truth.assertThat
+import emu.x360.mobile.dev.runtime.GameOptionsEntry
 import emu.x360.mobile.dev.runtime.MesaRuntimeBranch
 import emu.x360.mobile.dev.runtime.RuntimeDirectories
 import java.nio.file.Path
@@ -58,5 +59,23 @@ class GuestRuntimeProfilesTest {
         assertThat(environment["VK_DRIVER_FILES"])
             .isEqualTo("/opt/x360-v3/mesa/mesa26/icd/turnip_icd.json")
         assertThat(environment["X360_DRIVER_MODE"]).isEqualTo("turnip")
+    }
+
+    @Test
+    fun `marketplace content policy defaults to enabled when override is absent`() {
+        val environment = buildMarketplaceContentPolicyEnvironment(
+            GameOptionsEntry(entryId = "dante").marketplaceContentPolicy(),
+        )
+
+        assertThat(environment[MarketplaceContentPolicyEnvName]).isEqualTo("enabled")
+    }
+
+    @Test
+    fun `marketplace content policy maps disabled override to disabled env`() {
+        val environment = buildMarketplaceContentPolicyEnvironment(
+            GameOptionsEntry(entryId = "dante", dlcEnabledOverride = false).marketplaceContentPolicy(),
+        )
+
+        assertThat(environment[MarketplaceContentPolicyEnvName]).isEqualTo("disabled")
     }
 }

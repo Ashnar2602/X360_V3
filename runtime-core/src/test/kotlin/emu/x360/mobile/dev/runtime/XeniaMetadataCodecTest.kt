@@ -10,9 +10,9 @@ class XeniaMetadataCodecTest {
             {
               "sourceUrl": "https://github.com/xenia-canary/xenia-canary.git",
               "sourceRef": "canary_experimental",
-              "sourceRevision": "c50b036178108f87cb0acaf3691a7c3caf07820f",
+              "sourceRevision": "553aedebb59340d3106cd979ca7d09cc8e3bd98e",
               "buildProfile": "linux-x64-release",
-              "patchSetId": "phase10c-triage-v1"
+              "patchSetId": "phase11a-upstreamfirst-v1"
             }
         """.trimIndent()
 
@@ -20,9 +20,9 @@ class XeniaMetadataCodecTest {
 
         assertThat(lock.sourceUrl).isEqualTo("https://github.com/xenia-canary/xenia-canary.git")
         assertThat(lock.sourceRef).isEqualTo("canary_experimental")
-        assertThat(lock.sourceRevision).isEqualTo("c50b036178108f87cb0acaf3691a7c3caf07820f")
+        assertThat(lock.sourceRevision).isEqualTo("553aedebb59340d3106cd979ca7d09cc8e3bd98e")
         assertThat(lock.buildProfile).isEqualTo("linux-x64-release")
-        assertThat(lock.patchSetId).isEqualTo("phase10c-triage-v1")
+        assertThat(lock.patchSetId).isEqualTo("phase11a-upstreamfirst-v1")
     }
 
     @Test

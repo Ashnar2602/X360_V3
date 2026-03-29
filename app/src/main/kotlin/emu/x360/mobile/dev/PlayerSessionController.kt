@@ -3,10 +3,12 @@ package emu.x360.mobile.dev
 import android.content.Context
 import emu.x360.mobile.dev.bootstrap.ActivePlayerSessionHandle
 import emu.x360.mobile.dev.bootstrap.AppRuntimeManager
+import emu.x360.mobile.dev.bootstrap.DiagnosticLaunchProfile
 import emu.x360.mobile.dev.bootstrap.GuestPresentationMetricsParser
 import emu.x360.mobile.dev.bootstrap.InternalDisplayResolution
 import emu.x360.mobile.dev.bootstrap.SharedFramePresentationReader
 import emu.x360.mobile.dev.bootstrap.XeniaPresentationSettings
+import emu.x360.mobile.dev.bootstrap.applyDiagnosticProfile
 import emu.x360.mobile.dev.runtime.AppSettings
 import emu.x360.mobile.dev.runtime.ExitClassification
 import emu.x360.mobile.dev.runtime.GuestRenderScaleProfile
@@ -55,9 +57,12 @@ internal object PlayerSessionController {
         context: Context,
         entryId: String,
         settings: AppSettings,
+        diagnosticProfile: DiagnosticLaunchProfile = DiagnosticLaunchProfile.XENIA_REAL_TITLE,
+        inputMuted: Boolean = false,
+        overlayHidden: Boolean = false,
     ) {
         stop(context, "replaced-session")
-        val presentationSettings = settings.toPresentationSettings()
+        val presentationSettings = settings.toPresentationSettings(diagnosticProfile)
         mutableState.value = PlayerSessionUiState(
             status = PlayerSessionStatus.LAUNCHING,
             entryId = entryId,
@@ -69,6 +74,8 @@ internal object PlayerSessionController {
             keepLastVisibleFrame = presentationSettings.keepLastVisibleFrame,
             controllerConnected = latestControllerUpdate?.controllerState?.connected ?: false,
             controllerName = latestControllerUpdate?.controllerName,
+            inputMuted = inputMuted,
+            overlayHidden = overlayHidden,
             detail = "Starting player session",
         )
         scope.launch {
@@ -76,6 +83,9 @@ internal object PlayerSessionController {
             val startResult = manager.startPlayerSession(
                 entryId = entryId,
                 presentationSettings = presentationSettings,
+                diagnosticProfile = diagnosticProfile,
+                inputMuted = inputMuted,
+                overlayHidden = overlayHidden,
             )
             val session = startResult.session
             if (session == null) {
@@ -88,6 +98,8 @@ internal object PlayerSessionController {
                     internalDisplayResolution = "1280x720",
                     playerPollIntervalMs = presentationSettings.playerPollIntervalMs,
                     keepLastVisibleFrame = presentationSettings.keepLastVisibleFrame,
+                    inputMuted = inputMuted,
+                    overlayHidden = overlayHidden,
                     detail = startResult.detail,
                     errorMessage = startResult.detail,
                 )
@@ -99,6 +111,7 @@ internal object PlayerSessionController {
                 val diagnostics = session.submitControllerState(
                     controllerState = pendingUpdate.controllerState,
                     controllerName = pendingUpdate.controllerName,
+                    inputEventsPerSecond = pendingUpdate.inputEventsPerSecond,
                 )
                 mutableState.update { current ->
                     current.copy(
@@ -154,15 +167,30 @@ internal object PlayerSessionController {
                     decodedFrameCount = metrics.decodedFrameCount,
                     presentedFrameCount = metrics.presentedFrameCount,
                     exportFps = metrics.exportFps,
+                    transportChangeFps = metrics.transportChangeFps,
                     decodeFps = metrics.decodeFps,
                     presentFps = metrics.presentFps,
-                visibleFps = metrics.visibleFps,
-                frameSourceStatus = metrics.frameSourceStatus,
-                transportFrameHash = metrics.transportFrameHash,
-                visibleFrameHash = metrics.visibleFrameHash,
-            ),
-            fps = metrics.visibleFps,
-        )
+                    visibleChangeFps = metrics.visibleChangeFps,
+                    visibleFps = metrics.visibleFps,
+                    screenChangeFps = metrics.screenChangeFps,
+                    frameSourceStatus = metrics.frameSourceStatus,
+                    transportFrameHash = metrics.transportFrameHash,
+                    transportFramePerceptualHash = metrics.transportFramePerceptualHash,
+                    visibleFrameHash = metrics.visibleFrameHash,
+                    visibleFramePerceptualHash = metrics.visibleFramePerceptualHash,
+                    screenFrameHash = metrics.screenFrameHash,
+                    screenFramePerceptualHash = metrics.screenFramePerceptualHash,
+                    screenBlackRatio = metrics.screenBlackRatio,
+                    screenAverageLuma = metrics.screenAverageLuma,
+                    presenterSubmittedAtEpochMillis = metrics.presenterSubmittedAtEpochMillis,
+                    uiLongFrameCount = metrics.uiLongFrameCount,
+                    uiLongestFrameMillis = metrics.uiLongestFrameMillis,
+                    inputEventsPerSecond = metrics.inputEventsPerSecond,
+                    lastLifecycleEvent = metrics.lastLifecycleEvent,
+                    lastSurfaceEvent = metrics.lastSurfaceEvent,
+                ),
+                fps = metrics.visibleFps,
+            )
         }
     }
 
@@ -238,6 +266,15 @@ internal object PlayerSessionController {
         return activeSession?.openPresentationReader()
     }
 
+    fun captureCurrentDiagnostics(
+        context: Context,
+    ): String? {
+        val session = activeSession ?: return null
+        val manager = AppRuntimeManager(context.applicationContext)
+        val bundle = manager.capturePlayerSessionDiagnostics(session)
+        return manager.latestDiagnosticsBundlePath(bundle.sessionId)
+    }
+
     private fun applyControllerUpdate(
         update: PlayerControllerInputUpdate,
     ) {
@@ -245,6 +282,7 @@ internal object PlayerSessionController {
         val diagnostics = session.submitControllerState(
             controllerState = update.controllerState,
             controllerName = update.controllerName,
+            inputEventsPerSecond = update.inputEventsPerSecond,
         )
         mutableState.update { current ->
             val nextConnected = diagnostics.controllerConnected
@@ -294,6 +332,9 @@ internal object PlayerSessionController {
                 decodeFps = currentState.presentationMetrics.decodeFps,
                 presentFps = currentState.presentationMetrics.presentFps,
                 visibleFps = currentState.presentationMetrics.visibleFps,
+                transportChangeFps = currentState.presentationMetrics.transportChangeFps,
+                visibleChangeFps = currentState.presentationMetrics.visibleChangeFps,
+                screenChangeFps = currentState.presentationMetrics.screenChangeFps,
                 frameSourceStatus = if (currentState.presentationMetrics.frameSourceStatus != "idle") {
                     currentState.presentationMetrics.frameSourceStatus
                 } else {
@@ -302,9 +343,21 @@ internal object PlayerSessionController {
                 transportFrameHash = currentState.presentationMetrics.transportFrameHash.ifBlank {
                     guestMetrics.transportFrameHash
                 },
+                transportFramePerceptualHash = currentState.presentationMetrics.transportFramePerceptualHash,
                 visibleFrameHash = currentState.presentationMetrics.visibleFrameHash.ifBlank {
                     guestMetrics.visibleFrameHash
                 },
+                visibleFramePerceptualHash = currentState.presentationMetrics.visibleFramePerceptualHash,
+                screenFrameHash = currentState.presentationMetrics.screenFrameHash,
+                screenFramePerceptualHash = currentState.presentationMetrics.screenFramePerceptualHash,
+                screenBlackRatio = currentState.presentationMetrics.screenBlackRatio,
+                screenAverageLuma = currentState.presentationMetrics.screenAverageLuma,
+                presenterSubmittedAtEpochMillis = currentState.presentationMetrics.presenterSubmittedAtEpochMillis,
+                uiLongFrameCount = currentState.presentationMetrics.uiLongFrameCount,
+                uiLongestFrameMillis = currentState.presentationMetrics.uiLongestFrameMillis,
+                inputEventsPerSecond = currentState.presentationMetrics.inputEventsPerSecond,
+                lastLifecycleEvent = currentState.presentationMetrics.lastLifecycleEvent,
+                lastSurfaceEvent = currentState.presentationMetrics.lastSurfaceEvent,
             )
 
             val nextState = PlayerSessionUiState(
@@ -328,6 +381,8 @@ internal object PlayerSessionController {
                 internalDisplayResolution = currentState.internalDisplayResolution,
                 playerPollIntervalMs = currentState.playerPollIntervalMs,
                 keepLastVisibleFrame = currentState.keepLastVisibleFrame,
+                inputMuted = currentState.inputMuted,
+                overlayHidden = currentState.overlayHidden,
                 presentationMetrics = mergedMetrics,
                 controllerConnected = inputDiagnostics.controllerConnected,
                 controllerName = inputDiagnostics.controllerName?.takeIf { inputDiagnostics.controllerConnected },
@@ -339,6 +394,9 @@ internal object PlayerSessionController {
                 progressionBucket = diagnosticsBundle.progressionBucket.name.lowercase(),
                 progressionReason = diagnosticsBundle.progressionReason,
                 lastMeaningfulTransition = diagnosticsBundle.lastMeaningfulGuestTransition,
+                videoFreezeCause = diagnosticsBundle.freezeReport.cause.name.lowercase(),
+                videoFreezeConfidencePercent = diagnosticsBundle.freezeReport.confidencePercent,
+                videoFreezeReason = diagnosticsBundle.freezeReport.reason,
                 diagnosticsBundlePath = manager.latestDiagnosticsBundlePath(session.sessionId),
             )
             if (mutableState.value != nextState) {
@@ -410,6 +468,8 @@ internal data class PlayerSessionUiState(
     val internalDisplayResolution: String = "1280x720",
     val playerPollIntervalMs: Long = 120L,
     val keepLastVisibleFrame: Boolean = true,
+    val inputMuted: Boolean = false,
+    val overlayHidden: Boolean = false,
     val presentationMetrics: PresentationPerformanceMetrics = PresentationPerformanceMetrics.Empty,
     val controllerConnected: Boolean = false,
     val controllerName: String? = null,
@@ -421,6 +481,9 @@ internal data class PlayerSessionUiState(
     val progressionBucket: String = "unknown",
     val progressionReason: String = "insufficient-evidence",
     val lastMeaningfulTransition: String? = null,
+    val videoFreezeCause: String = "unknown",
+    val videoFreezeConfidencePercent: Int = 0,
+    val videoFreezeReason: String = "insufficient-evidence",
     val diagnosticsBundlePath: String? = null,
     val errorMessage: String? = null,
 ) {
@@ -428,19 +491,40 @@ internal data class PlayerSessionUiState(
         get() = frameWidth != null && frameHeight != null && frameIndex >= 0
 }
 
-private fun AppSettings.toPresentationSettings(): XeniaPresentationSettings {
-    return when (defaultPresentationBackend) {
-        PresentationBackend.HEADLESS_ONLY -> XeniaPresentationSettings.HeadlessBringup
-        PresentationBackend.FRAMEBUFFER_SHARED_MEMORY -> XeniaPresentationSettings.FramebufferSharedMemory.copy(
-            guestRenderScaleProfile = GuestRenderScaleProfile.ONE,
-            internalDisplayResolution = InternalDisplayResolution(1280, 720),
-        )
-        PresentationBackend.FRAMEBUFFER_POLLING,
-        PresentationBackend.SURFACE_BRIDGE,
-        -> XeniaPresentationSettings.FramebufferPollingPerformance.copy(
-            presentationBackend = defaultPresentationBackend,
-            guestRenderScaleProfile = GuestRenderScaleProfile.ONE,
-            internalDisplayResolution = InternalDisplayResolution(1280, 720),
-        )
+private fun AppSettings.toPresentationSettings(
+    diagnosticProfile: DiagnosticLaunchProfile,
+): XeniaPresentationSettings {
+    val baseSettings = when (diagnosticProfile) {
+        DiagnosticLaunchProfile.XENIA_REAL_TITLE -> when (defaultPresentationBackend) {
+            PresentationBackend.HEADLESS_ONLY -> XeniaPresentationSettings.HeadlessBringup
+            PresentationBackend.FRAMEBUFFER_SHARED_MEMORY -> XeniaPresentationSettings.FramebufferSharedMemory
+            PresentationBackend.FRAMEBUFFER_POLLING,
+            PresentationBackend.SURFACE_BRIDGE,
+            -> XeniaPresentationSettings.FramebufferPollingPerformance.copy(
+                presentationBackend = defaultPresentationBackend,
+            )
+        }
+        DiagnosticLaunchProfile.FRAMEBUFFER_POLLING_DIAGNOSTIC,
+        DiagnosticLaunchProfile.SHARED_MEMORY_SILENT_AUDIO,
+        DiagnosticLaunchProfile.AUDIO_MUTED,
+        DiagnosticLaunchProfile.XMA_FAKE,
+        DiagnosticLaunchProfile.XMA_OLD,
+        DiagnosticLaunchProfile.XMA_SINGLE_THREAD,
+        DiagnosticLaunchProfile.APP_SYNTHETIC_SOURCE,
+        DiagnosticLaunchProfile.GUEST_SYNTHETIC_SOURCE,
+        DiagnosticLaunchProfile.XENIA_SYNTHETIC_EXPORT_SOURCE,
+        -> when (defaultPresentationBackend) {
+            PresentationBackend.HEADLESS_ONLY -> XeniaPresentationSettings.FramebufferPollingPerformance
+            PresentationBackend.FRAMEBUFFER_SHARED_MEMORY -> XeniaPresentationSettings.FramebufferSharedMemory
+            PresentationBackend.FRAMEBUFFER_POLLING,
+            PresentationBackend.SURFACE_BRIDGE,
+            -> XeniaPresentationSettings.FramebufferPollingPerformance.copy(
+                presentationBackend = defaultPresentationBackend,
+            )
+        }
     }
+    return baseSettings.applyDiagnosticProfile(diagnosticProfile).copy(
+        guestRenderScaleProfile = GuestRenderScaleProfile.ONE,
+        internalDisplayResolution = InternalDisplayResolution(1280, 720),
+    )
 }
